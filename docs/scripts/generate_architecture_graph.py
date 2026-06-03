@@ -544,6 +544,14 @@ def generate():
   }
   
   var options = {
+    nodes: {
+      chosen: {
+        label: function(values, id, selected, hovering) {
+          values.color = (selected || hovering) ? '#FFFFFF' : '#111111';
+          values.strokeWidth = 0;
+        }
+      }
+    },
     interaction: { hover: true, hoverConnectedEdges: false, tooltipDelay: 100 },
     physics: buildPhysicsOptions(0.82, true)
   };
