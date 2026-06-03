@@ -7,6 +7,10 @@ DropLogic has two public split-style operations:
 
 Both functions extend `system.advanced_drop.plan` and return the IDs of newly created droplets.
 
+The `1to3` extraction mode is included for compact reservoir geometries where
+temporarily opening space around the daughter droplet can improve pinch-off
+control and repeatability.<sup class="dl-cite" data-preview="Hu et al., Applied Physics Letters 120, 121602 (2022). A geometrical model explaining one-to-three pinch-off in digital microfluidics. DOI: 10.1063/5.0086953"><a href="#ref-hu-2022">1</a></sup><sup class="dl-cite" data-preview="Jin et al., Lab on a Chip 21, 2892-2900 (2021). Demonstrates one-to-three droplet generation for parallel chemiluminescence immunoassays. DOI: 10.1039/D1LC00421B"><a href="#ref-jin-2021">2</a></sup>
+
 ## Reservoir Extraction
 
 ```python
@@ -92,18 +96,7 @@ new_ids = ad.reservoir_extraction(
 
 For `"1to3"`, `split_size` is interpreted as `(height, width)`.
 
-This mode is useful when direct reservoir dispensing is geometrically constrained.
-The idea is related to the "one-to-three" droplet generation literature: rather
-than pulling a single daughter droplet directly from a reservoir, the protocol
-temporarily opens space around the extracted droplet so pinch-off can happen
-with more controlled geometry. That can make `1to3` preferable to a simple
-`1to2` extraction when small, repeatable droplets are needed from compact
-electrode layouts.
-
-Further reading:
-
-- C. Hu, H. Zhang, C. Jiang and H. Ma, ["A geometrical model of pinch-off in digital microfluidics underpins 'one-to-three' droplet generation"](https://pubs.aip.org/aip/apl/article/120/12/121602/2833126/A-geometrical-model-of-pinch-off-in-digital), Applied Physics Letters 120, 121602 (2022), DOI: [10.1063/5.0086953](https://doi.org/10.1063/5.0086953).
-- K. Jin, C. Hu, S. Hu, C. Hu, J. Li and H. Ma, ["'One-to-three' droplet generation in digital microfluidics for parallel chemiluminescence immunoassays"](https://pubs.rsc.org/it-it/content/articlelanding/2021/lc/d1lc00421b), Lab on a Chip 21, 2892-2900 (2021), DOI: [10.1039/D1LC00421B](https://doi.org/10.1039/D1LC00421B).
+Use this when direct reservoir dispensing is geometrically constrained.
 
 ## `linear`
 
@@ -185,3 +178,10 @@ Arguments:
 - The extracted droplet overlaps the reservoir.
 - The source droplet does not have enough electrodes for the requested split.
 - The surrounding area is too constrained for separation movement.
+
+## References
+
+<ol class="dl-references-list">
+  <li id="ref-hu-2022">C. Hu, H. Zhang, C. Jiang and H. Ma, <a href="https://pubs.aip.org/aip/apl/article/120/12/121602/2833126/A-geometrical-model-of-pinch-off-in-digital">"A geometrical model of pinch-off in digital microfluidics underpins 'one-to-three' droplet generation"</a>, <em>Applied Physics Letters</em> 120, 121602 (2022), DOI: <a href="https://doi.org/10.1063/5.0086953">10.1063/5.0086953</a>.</li>
+  <li id="ref-jin-2021">K. Jin, C. Hu, S. Hu, C. Hu, J. Li and H. Ma, <a href="https://pubs.rsc.org/it-it/content/articlelanding/2021/lc/d1lc00421b">"'One-to-three' droplet generation in digital microfluidics for parallel chemiluminescence immunoassays"</a>, <em>Lab on a Chip</em> 21, 2892-2900 (2021), DOI: <a href="https://doi.org/10.1039/D1LC00421B">10.1039/D1LC00421B</a>.</li>
+</ol>
