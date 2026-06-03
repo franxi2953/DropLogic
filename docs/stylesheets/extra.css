@@ -310,8 +310,8 @@ body {
   --dl-nav-toggle-arrow-size: 0.58em;
   --dl-nav-toggle-arrow-shift: -0.06em;
   --dl-nav-toggle-offset: calc(var(--dl-nav-toggle-size) + var(--dl-nav-toggle-gap));
-  --dl-nav-row-padding-y: 0.16rem;
-  --dl-nav-row-gap: 0.16rem;
+  --dl-nav-row-padding-y: 0.08rem;
+  --dl-nav-row-gap: 0.08rem;
 }
 
 .md-sidebar--primary .md-nav__item {

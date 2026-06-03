@@ -51,11 +51,23 @@ nav:
           - Overview: systems/dmlite/index.md
           - Modules:
               - Electrode Matrix: systems/dmlite/electrode_matrix.md
+      - Hardware Notes: hardware.md
       - Creating New Systems: creating_systems.md
-  - Reference:
-      - Examples: examples.md
-      - Hardware: hardware.md
-      - API Reference: api.md
+  - Planning:
+      - Overview: planning/index.md
+      - AdvancedDrop: planning/advanced_drop.md
+      - Plan Executor: planning/plan_executor.md
+  - Visualization:
+      - Overview: visualization/index.md
+      - Visualizers: visualization/visualizers.md
+      - Recording: visualization/recording.md
+  - Utilities:
+      - Overview: utilities/index.md
+      - Hardware Utilities: utilities/hardware_utilities.md
+      - Calibration: utilities/calibration.md
+      - Drop Vision: utilities/drop_vision.md
+      - Debugging and Diagnostics: utilities/debugging.md
+  - API: api.md
 
 markdown_extensions:
   - admonition

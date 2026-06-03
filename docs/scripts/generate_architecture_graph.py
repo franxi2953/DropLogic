@@ -399,22 +399,6 @@ def generate():
     color: #FFF;
   }
 
-  .hardware-note {
-    color: #111111;
-    border: 1px solid #111111;
-    background: #FFFFFF;
-    padding: 8px 12px;
-    font-size: 12px;
-    line-height: 1;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    text-decoration: none;
-  }
-  .hardware-note:hover {
-    background: #111111;
-    color: #FFFFFF;
-  }
-  
   #color-legend {
     position: absolute; bottom: 15px; left: 320px; z-index: 1000;
     background: #FFFFFF;
@@ -566,7 +550,6 @@ def generate():
       <input type="radio" name="mode" id="mode-dep" value="dep">
       <label for="mode-dep">Dependencies</label>
     </div>
-    <a class="hardware-note" href="https://www.acxel.com/" target="_blank" rel="noopener">Acxel hardware adapters: DMLite / BOXMini</a>
   </div>
   THE_LEGEND_HTML
   <div id="hover-legend">

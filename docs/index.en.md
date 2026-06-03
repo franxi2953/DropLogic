@@ -9,12 +9,13 @@
   <p class="dl-home__eyebrow">Digital Microfluidics Control Platform</p>
   <h1 class="dl-home__title">DropLogic</h1>
   <p class="dl-home__copy">
-    Minimal, deployment-ready control for digital microfluidics: routing, hardware orchestration, visualization, and simulation in one library.
+    Minimal, deployment-ready control for digital microfluidics: systems, planning, execution, visualization, and utilities in one library.
   </p>
   <div class="dl-home__actions">
     <a class="md-button dl-button" href="getting_started/">Getting Started</a>
-    <a class="md-button dl-button" href="repository_structure/">Architecture Map</a>
     <a class="md-button dl-button" href="systems/">Systems</a>
+    <a class="md-button dl-button" href="planning/">Planning</a>
+    <a class="md-button dl-button" href="visualization/">Visualization</a>
   </div>
 </div>
 
@@ -28,5 +29,8 @@ Welcome to the official documentation for **DropLogic**! We built this platform 
   <li><strong><a href="getting_started/">Getting Started</a></strong>: Installation, basic usage, and first steps.</li>
   <li><strong><a href="repository_structure/">Architecture Map</a></strong>: A detailed look into the structure of the repository and how modules are organized.</li>
   <li><strong><a href="systems/">Systems</a></strong>: The structure of systems, modules, versions, and how to create new machines.</li>
-  <li><strong><a href="hardware/">Reference</a></strong>: Hardware notes, examples, and API documentation.</li>
+  <li><strong><a href="planning/">Planning</a></strong>: AdvancedDrop, droplet plans, SIPP movement, and executor-driven runtime.</li>
+  <li><strong><a href="visualization/">Visualization</a></strong>: Matrix and streamer visualizers, snapshots, and synchronized recording.</li>
+  <li><strong><a href="utilities/">Utilities</a></strong>: Calibration, drop vision, hardware helpers, debugging, and diagnostics.</li>
+  <li><strong><a href="api/">API</a></strong>: Generated Python documentation from the source tree.</li>
 </ul>

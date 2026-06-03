@@ -9,12 +9,13 @@
   <p class="dl-home__eyebrow">Plataforma de control para microfluídica digital</p>
   <h1 class="dl-home__title">DropLogic</h1>
   <p class="dl-home__copy">
-    Control minimalista y listo para despliegue en microfluídica digital: rutas, hardware, visualización y simulación dentro de una sola librería.
+    Control minimalista y listo para despliegue en microfluidica digital: sistemas, planificacion, ejecucion, visualizacion y utilidades dentro de una sola libreria.
   </p>
   <div class="dl-home__actions">
     <a class="md-button dl-button" href="getting_started/">Empezando</a>
-    <a class="md-button dl-button" href="repository_structure/">Mapa de Arquitectura</a>
     <a class="md-button dl-button" href="systems/">Sistemas</a>
+    <a class="md-button dl-button" href="planning/">Planificacion</a>
+    <a class="md-button dl-button" href="visualization/">Visualizacion</a>
   </div>
 </div>
 
@@ -28,5 +29,8 @@
   <li><strong><a href="getting_started/">Empezando</a></strong>: Instalación, uso básico y primeros pasos.</li>
   <li><strong><a href="repository_structure/">Mapa de Arquitectura</a></strong>: Una mirada detallada a la estructura de la librería y su organización de hardware.</li>
   <li><strong><a href="systems/">Sistemas</a></strong>: La estructura de sistemas, módulos, versiones y cómo crear máquinas nuevas.</li>
-  <li><strong><a href="hardware/">Referencia</a></strong>: Notas de hardware, ejemplos y documentación de API.</li>
+  <li><strong><a href="planning/">Planificacion</a></strong>: AdvancedDrop, planes de gotas, movimiento SIPP y ejecucion en runtime.</li>
+  <li><strong><a href="visualization/">Visualizacion</a></strong>: Visualizadores de matriz y streamer, snapshots y grabacion sincronizada.</li>
+  <li><strong><a href="utilities/">Utilidades</a></strong>: Calibracion, vision de gotas, helpers de hardware, depuracion y diagnosticos.</li>
+  <li><strong><a href="api/">API</a></strong>: Documentacion Python generada desde el codigo fuente.</li>
 </ul>
