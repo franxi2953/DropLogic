@@ -1,0 +1,48 @@
+site_name: DropLogic
+site_description: A comprehensive digital microfluidics (DMF) control platform.
+theme:
+  name: material
+  language: en
+  logo: assets/droplets-mark.svg
+  favicon: assets/droplets-mark.svg
+  font: false
+  palette:
+    scheme: default
+
+extra:
+  alternate:
+    - name: English
+      link: /en/
+      lang: en
+    - name: Español
+      link: /es/
+      lang: es
+
+plugins:
+  - search
+  - mkdocstrings
+  - i18n:
+      docs_structure: suffix
+      fallback_to_default: true
+      languages:
+        - locale: en
+          default: true
+          name: English
+          build: true
+        - locale: es
+          name: Español
+          build: true
+
+nav:
+  - Home: index.md
+  - Getting Started: getting_started.md
+  - Architecture Map: repository_structure.md
+  - Creating New Systems: creating_systems.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+
+extra_css:
+  - stylesheets/extra.css

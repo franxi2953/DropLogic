@@ -1,0 +1,135 @@
+{
+    "temperature": {
+        "target": -1.0,
+        "current": -1.0,
+        "Port": "COM11",
+        "PID": "0x6001",
+        "VID": "0x0403",
+        "version": "TemperatureV2"
+    },
+    "capacitive_feedback": {
+        "version": "CapacitiveFeedbackV1"
+    },
+    "xy_stage": {
+        "version": "XYStageV1",
+        "safe_limits": {
+            "X": 108000,
+            "Z": 30000,
+            "Y": 50000
+        },
+        "position": {
+            "X": 108000,
+            "Z": 30000,
+            "Y": 50000
+        },
+        "motion_params": {
+            "dV_ini": 0.0,
+            "dMaxV": 10000.0,
+            "dMaxA": 1000000.0,
+            "dJerk": 10000000.0,
+            "dV_end": 0.0,
+            "profile": 0,
+            "position_mode": 0
+        },
+        "continuous_movement": {
+            "X": 0,
+            "Z": 0,
+            "Y": 0
+        }
+    },
+    "camera_settings": {
+        "auto_exposure": true,
+        "exposure_time": 60000,
+        "version": "CameraV1",
+        "gain": 0
+    },
+    "microscope_settings": {
+        "auto_exposure": false,
+        "exposure_time": 10000,
+        "version": "MicroscopeV1",
+        "gain": 12,
+        "Port": "COM8",
+        "total_channels": [
+            "FAM",
+            "Brightfield"
+        ],
+        "current_channel": "Brightfield"
+    },
+    "stage_position": [
+        0,
+        0,
+        0
+    ],
+    "light_settings": {
+        "light_on": false,
+        "coaxial_intensity": 30,
+        "ring_intensity": 0,
+        "PID": "0x0978",
+        "VID": "0x07D0",
+        "upled_serial": "M01289453",
+        "version": "LightV2"
+    },
+    "electrode_matrix": {
+        "PID": "0x0913",
+        "VID": "0x04BC",
+        "rows": 128,
+        "columns": 128,
+        "voltage": 55,
+        "matrix": [],
+        "version": "DMLite"
+    },
+    "calibration": {
+        "xy_pixel_step_ratio_camera": {
+            "X": 0.061661682128906256,
+            "Y": 0.3033271789550781
+        },
+        "xy_pixel_step_ratio_microscope": {
+            "X": 1.45234375,
+            "Y": 3.553125
+        },
+        "chip_origin": {
+            "X": 61625.666666666664,
+            "Y": 8584.333333333334,
+            "Z": 11319.0
+        },
+        "camera_to_microscope_offset": {
+            "X": -44793,
+            "Y": 390,
+            "Z": 3910
+        },
+        "electrode_mapping": {
+            "offset_x": 0,
+            "offset_y": 0,
+            "inter_row": [
+                -250.18635170603673,
+                -0.3805774278215223,
+                3.598425196850394
+            ],
+            "inter_column": [
+                2.5118110236220472,
+                -49.99212598425197,
+                -4.094488188976378
+            ]
+        },
+        "field_of_view": {
+            "width": 0,
+            "height": 0
+        },
+        "backlash_steps": {
+            "left_to_right": 96,
+            "right_to_left": 90,
+            "up_to_down": null,
+            "down_to_up": null
+        }
+    },
+    "inter_row_distance": {
+        "X": -251.22834645669292,
+        "Y": -0.905511811023622,
+        "Z": 0.0
+    },
+    "inter_column_distance": {
+        "X": 1.2755905511811023,
+        "Y": -50.54330708661417,
+        "Z": 0.0
+    }
+}

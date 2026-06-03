@@ -1,0 +1,4 @@
+- droplets with classes and methods (trash droplets, reservoir, etc)
+    - trash method check a droplet closest trash and trash it
+- plan executor execute until last frame so i dont need the boilerplate i always put with the last frame
+- drop_vision stadard way for ppl to add new vision.

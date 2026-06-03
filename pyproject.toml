@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+
+[project]
+name = "droplogic"
+version = "0.1.0"
+description = "Digital microfluidics control platform with SIPP planning and real-time visualization"
+authors = [{ name = "Fran Quero", email = "fjq21@cam.ac.uk" }]
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.8"
+keywords = ["digital-microfluidics", "dmf", "lab-automation", "robotics", "scientific"]
+urls = { repository = "https://github.com/franxi2953/DropLogic" }
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+
+dependencies = [
+    "rich",
+    "numpy",
+    "opencv-python",
+    "pyserial",
+    "asciichartpy",
+    "ultralytics",
+    "scipy",
+    "pygame",
+    "pynput",
+    "easyocr",
+    "matplotlib",
+    "pillow",
+    "crcmod",
+    "pyusb",
+]
+
+[project.scripts]
+droplogic-doctor = "droplogic.utils.doctor:run_doctor"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["droplogic*"]

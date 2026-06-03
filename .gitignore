@@ -1,0 +1,54 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Entornos virtuales
+.venv/
+.venv-1/
+venv/
+env/
+
+# IDEs
+.idea/
+.vscode/
+
+# Resultados de pruebas o experimentales
+runs/
+test_images/
+melting_results/
+
+# Binarios e integraciones pesadas de hardware
+*.dll
+*.so
+*.dylib
+droplogic/hardware/modules/camera/versions/mvs_camera/drivers/
+droplogic/hardware/modules/electrode_matrix/versions/sdk/bin/*.dll
+droplogic/hardware/modules/electrode_matrix/versions/sdk/bin/*.so
+droplogic/hardware/modules/electrode_matrix/versions/sdk/bin/*.dylib
+droplogic/hardware/modules/xy_stage/versions/nmc_controller/*.dll
+
+# Scripts temporales de parche/diagnostico
+patch_*.py
+fix_*.py
+
+# Logs locales
+*.log
+
+# Archivos de MacOS
+.DS_Store
+
+# Paquetes y distribuciones
+*.egg-info/
+build/
+dist/
+
+# Salida generada de documentación
+site/
+
+# Proprietary binaries / standalone installers
+vendor_bin/
+installer/
+Output/
+*.exe
+MERGE_SUMMARY*.md
