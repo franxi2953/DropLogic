@@ -307,6 +307,7 @@ body {
 :root {
   --dl-nav-toggle-size: 1.1em;
   --dl-nav-toggle-gap: 5px;
+  --dl-nav-toggle-arrow-size: 0.42em;
 }
 
 .md-sidebar--primary .md-nav__item--nested > label.md-nav__link,
@@ -352,23 +353,36 @@ body {
 
 .md-sidebar--primary .md-nav__item--nested > label.md-nav__link > .md-nav__icon,
 .md-sidebar--primary .md-nav__item--nested > .md-nav__container > label.md-nav__link .md-nav__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--dl-nav-toggle-size);
+  min-width: var(--dl-nav-toggle-size);
+  height: var(--dl-nav-toggle-size);
+  margin: 0;
+  padding: 0;
   border: 1px solid var(--dl-black);
-  transition: transform 180ms ease, color 180ms ease, background-color 180ms ease;
-  transform-origin: center;
+  border-radius: 0 !important;
+  box-sizing: border-box;
+  background: var(--dl-white);
+  transition: color 180ms ease, background-color 180ms ease, border-color 180ms ease;
 }
 
 .md-sidebar--primary .md-nav__item--nested > label.md-nav__link > .md-nav__icon::after,
 .md-sidebar--primary .md-nav__item--nested > .md-nav__container > label.md-nav__link .md-nav__icon::after {
-  width: 70%;
-  height: 70%;
+  content: "";
+  display: block;
+  width: var(--dl-nav-toggle-arrow-size);
+  height: var(--dl-nav-toggle-arrow-size);
+  background: currentColor;
+  clip-path: polygon(0 0, 100% 50%, 0 100%, 0 76%, 48% 50%, 0 24%);
+  transition: transform 180ms ease;
+  transform-origin: center;
 }
 
-.md-sidebar--primary .md-nav__item--nested > .md-nav__toggle:checked + label.md-nav__link > .md-nav__icon {
-  transform: translateY(-50%) rotate(-90deg);
-}
-
-.md-sidebar--primary .md-nav__item--nested > .md-nav__toggle:checked ~ .md-nav__container > label.md-nav__link .md-nav__icon {
-  transform: rotate(-90deg);
+.md-sidebar--primary .md-nav__item--nested > .md-nav__toggle:checked + label.md-nav__link > .md-nav__icon::after,
+.md-sidebar--primary .md-nav__item--nested > .md-nav__toggle:checked ~ .md-nav__container > label.md-nav__link .md-nav__icon::after {
+  transform: rotate(90deg);
 }
 
 .md-sidebar--primary .md-nav__item--nested > .md-nav {
