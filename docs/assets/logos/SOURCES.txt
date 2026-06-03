@@ -3,6 +3,7 @@ Logo sources
 
 These assets are used only in the repository README affiliation panel. The logos remain the property of their respective organisations.
 
+- labs.png: composite README affiliation panel provided by the repository author from the lab and University of Cambridge marks listed below.
 - cambridge-university.svg: downloaded from the University of Cambridge website, https://www.cam.ac.uk/themes/custom/fresh/images/interface/cambridge_university2.svg
 - cambridge-university-white.svg: downloaded from the University of Cambridge website, https://www.cam.ac.uk/themes/custom/fresh/images/interface/university_logo_white-01.svg
 - cambridge-shield.png: cropped from cambridge-university.svg to use only the shield in the README affiliation panel.

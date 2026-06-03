@@ -33,11 +33,7 @@
 </p>
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-affiliations-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/readme-affiliations-light.png">
-    <img src="docs/assets/readme-affiliations-light.png" alt="PhD project at the University of Cambridge with the Occhipinti Group, Di Michele Lab, UKRI, EPSRC, and Sensor CDT" width="840">
-  </picture>
+  <img src="docs/assets/logos/labs.png" alt="PhD project at the University of Cambridge with the Occhipinti Group and Di Michele Lab" width="840">
 </p>
 
 DropLogic is a Python library for digital microfluidics (DMF): systems, modules, SIPP-based droplet planning, synchronized execution, visualization, and hardware-facing utilities in one library.
