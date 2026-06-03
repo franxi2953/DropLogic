@@ -32,5 +32,4 @@
   <li><strong><a href="planning/">Planificacion</a></strong>: AdvancedDrop, planes de gotas, movimiento SIPP y ejecucion en runtime.</li>
   <li><strong><a href="visualization/">Visualizacion</a></strong>: Visualizadores de matriz y streamer, snapshots y grabacion sincronizada.</li>
   <li><strong><a href="utilities/">Utilidades</a></strong>: Calibracion, vision de gotas, helpers de hardware, depuracion y diagnosticos.</li>
-  <li><strong><a href="api/">API</a></strong>: Documentacion Python generada desde el codigo fuente.</li>
 </ul>

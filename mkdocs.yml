@@ -67,7 +67,6 @@ nav:
       - Calibration: utilities/calibration.md
       - Drop Vision: utilities/drop_vision.md
       - Debugging and Diagnostics: utilities/debugging.md
-  - API: api.md
 
 markdown_extensions:
   - admonition

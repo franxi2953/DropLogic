@@ -32,5 +32,4 @@ Welcome to the official documentation for **DropLogic**! We built this platform 
   <li><strong><a href="planning/">Planning</a></strong>: AdvancedDrop, droplet plans, SIPP movement, and executor-driven runtime.</li>
   <li><strong><a href="visualization/">Visualization</a></strong>: Matrix and streamer visualizers, snapshots, and synchronized recording.</li>
   <li><strong><a href="utilities/">Utilities</a></strong>: Calibration, drop vision, hardware helpers, debugging, and diagnostics.</li>
-  <li><strong><a href="api/">API</a></strong>: Generated Python documentation from the source tree.</li>
 </ul>

@@ -310,8 +310,8 @@ body {
   --dl-nav-toggle-arrow-size: 0.58em;
   --dl-nav-toggle-arrow-shift: -0.06em;
   --dl-nav-toggle-offset: calc(var(--dl-nav-toggle-size) + var(--dl-nav-toggle-gap));
-  --dl-nav-row-padding-y: 0.08rem;
-  --dl-nav-row-gap: 0.08rem;
+  --dl-nav-row-height: 1.45em;
+  --dl-nav-row-gap: 0.18em;
 }
 
 .md-sidebar--primary .md-nav__item {
@@ -331,10 +331,13 @@ body {
 .md-sidebar--primary .md-nav__item > label.md-nav__link,
 .md-sidebar--primary .md-nav__item > .md-nav__container {
   align-items: center;
+  box-sizing: border-box;
   display: flex;
   gap: 0;
+  height: var(--dl-nav-row-height);
+  line-height: var(--dl-nav-row-height);
   margin-top: 0;
-  min-height: calc(var(--dl-nav-toggle-size) + (2 * var(--dl-nav-row-padding-y)));
+  min-height: 0;
 }
 
 .md-sidebar--primary .md-nav__item > label.md-nav__link[for="__toc"] {
@@ -345,6 +348,8 @@ body {
 .md-sidebar--primary .md-nav__item > .md-nav__container > label.md-nav__link {
   align-items: center;
   gap: 0;
+  height: 100%;
+  line-height: var(--dl-nav-row-height);
   margin-top: 0;
   min-height: 0;
   padding: 0;
@@ -355,8 +360,8 @@ body {
 .md-sidebar--primary .md-nav__item > .md-nav__container {
   position: relative;
   padding-left: var(--dl-nav-toggle-offset);
-  padding-top: var(--dl-nav-row-padding-y);
-  padding-bottom: var(--dl-nav-row-padding-y);
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 .md-sidebar--primary .md-nav__item--nested > label.md-nav__link {
