@@ -4,6 +4,11 @@
 
 The plan is a `DropletPlan`: a frame-by-frame description of matrix states, droplet trajectories, active droplets, and event metadata.
 
+<figure class="dl-plan-demo" markdown>
+  ![Simulator GIF showing a plan extended by retargeting a droplet and calling move() again](../../assets/advanced-drop/plan-extension.gif)
+  <figcaption>Plan extension: create, move, retarget, then append another <code>move()</code></figcaption>
+</figure>
+
 ## `DropletPlan` Fields
 
 - `frames`: list of 2D arrays. Each frame is the electrode matrix to send to the system.
@@ -77,6 +82,8 @@ ad.remove_duplicates(start_idx=0, end_idx=-1)
 ```
 
 This removes duplicate frames in a range and remaps trajectories/events. Use it after planning, not while the executor is running.
+
+This is still mostly a development/debugging cleanup tool. It may merge event boundaries that are useful for breakpoints, diagnostics, or protocol inspection, so avoid using it routinely in production unless you have checked the resulting plan.
 
 ## Merge Sequential Events
 

@@ -64,7 +64,7 @@ The result is stored as `ad.plan` and also returned from planning functions.
 - Do not directly mutate `droplet.origin_corner` from protocol scripts unless you are deliberately bypassing planner state.
 - If the physical droplet is somewhere else after a failed hardware move, use `correct_droplet_position()`.
 - `move(mode="sipp")` is the only public movement mode currently implemented. Other `mode` values raise `ValueError`.
-- Use `remove_duplicate_frames=True` carefully; it can shorten plans but may also merge event boundaries that are useful for debugging.
+- Treat `remove_duplicate_frames=True` as development-oriented and potentially unstable. It can shorten plans, but may also merge event boundaries that are useful for debugging, breakpoints, and protocol inspection. For now, prefer leaving it off in production workflows unless you have inspected the resulting plan.
 
 ## Where It Lives
 

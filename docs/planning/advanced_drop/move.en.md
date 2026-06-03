@@ -2,6 +2,11 @@
 
 `move()` plans coordinated movement for droplets whose current position differs from their target.
 
+<figure class="dl-plan-demo" markdown>
+  ![Simulator GIF showing two droplets routed with move()](../../assets/advanced-drop/move.gif)
+  <figcaption><code>move(mode="sipp")</code> routing two droplets through a simulator plan</figcaption>
+</figure>
+
 To move an existing droplet again, update its target first:
 
 ```python
@@ -126,4 +131,6 @@ The planner reads the last plan state and extends from there.
 ad.move(mode="sipp", remove_duplicate_frames=True)
 ```
 
-This can shorten plans, but it may also merge event boundaries. Leave it `False` when you care about debugging events, breakpoints, or exact protocol structure.
+Treat this as development-oriented and potentially unstable. It can shorten plans, but it may also merge event boundaries that are useful for debugging, breakpoints, and protocol inspection.
+
+For now, prefer leaving `remove_duplicate_frames=False` in production workflows unless you have inspected the resulting plan and are confident that the removed frames do not matter.

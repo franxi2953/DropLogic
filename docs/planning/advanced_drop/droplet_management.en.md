@@ -4,6 +4,11 @@ Droplets are managed through `system.advanced_drop.droplets`.
 
 This object behaves like a list, but adds helper methods for creating, updating, and inspecting `Droplet` objects.
 
+<figure class="dl-plan-demo" markdown>
+  ![Simulator GIF showing two droplets being created and held in a manual frame](../../assets/advanced-drop/droplet-management.gif)
+  <figcaption><code>create_droplet()</code> and <code>push_frame()</code> in a simulator-backed plan</figcaption>
+</figure>
+
 ## `create_droplet()`
 
 Create one logical droplet and append a frame showing it at its origin.

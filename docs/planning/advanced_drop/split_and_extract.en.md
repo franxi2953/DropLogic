@@ -36,6 +36,11 @@ Arguments:
 
 Extract one droplet from the reservoir.
 
+<figure class="dl-plan-demo" markdown>
+  ![Simulator GIF showing reservoir_extraction(split_mode="1to2") creating one droplet from a reservoir](../../assets/advanced-drop/reservoir-extraction-1to2.gif)
+  <figcaption><code>reservoir_extraction(split_mode="1to2")</code> extracting one droplet</figcaption>
+</figure>
+
 ```python
 new_ids = ad.reservoir_extraction(
     reservoir_droplet_id=1,
@@ -52,6 +57,11 @@ Use this when you want a reservoir to keep most of its footprint while producing
 
 Extract a central droplet and separate the resulting pieces.
 
+<figure class="dl-plan-demo" markdown>
+  ![Simulator GIF showing reservoir_extraction(split_mode="1to3") extracting and separating droplets from a reservoir](../../assets/advanced-drop/reservoir-extraction-1to3.gif)
+  <figcaption><code>reservoir_extraction(split_mode="1to3")</code> extracting and separating pieces</figcaption>
+</figure>
+
 ```python
 new_ids = ad.reservoir_extraction(
     reservoir_droplet_id=1,
@@ -67,6 +77,11 @@ For `"1to3"`, `split_size` is interpreted as `(height, width)`.
 ## `linear`
 
 Create multiple droplets in a linear sweep from a reservoir.
+
+<figure class="dl-plan-demo" markdown>
+  ![Simulator GIF showing reservoir_extraction(split_mode="linear") creating multiple droplets in a row](../../assets/advanced-drop/reservoir-extraction-linear.gif)
+  <figcaption><code>reservoir_extraction(split_mode="linear")</code> creating a row of droplets</figcaption>
+</figure>
 
 ```python
 new_ids = ad.reservoir_extraction(
@@ -86,6 +101,11 @@ Use `linear_direction=(0, 1)` for a horizontal sweep to the right, `(1, 0)` for 
 ## Isometric Split
 
 `isometric_split()` recursively splits a droplet into equal subdroplets and moves them symmetrically.
+
+<figure class="dl-plan-demo" markdown>
+  ![Simulator GIF showing isometric_split() dividing one droplet into symmetric droplets](../../assets/advanced-drop/isometric-split.gif)
+  <figcaption><code>isometric_split()</code> recursively splitting into symmetric subdroplets</figcaption>
+</figure>
 
 ```python
 new_ids = ad.isometric_split(

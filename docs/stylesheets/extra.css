@@ -264,7 +264,8 @@ body {
   height: 4.5rem;
 }
 
-.dl-home__mark svg {
+.dl-home__mark svg,
+.dl-home__mark img {
   display: block;
   width: 100%;
   height: 100%;
@@ -302,6 +303,55 @@ body {
 
 .dl-home__list li + li {
   margin-top: 0.65rem;
+}
+
+.dl-plan-demo {
+  border: 1px solid var(--dl-black);
+  margin: 1.1rem 0 1.6rem;
+  padding: 0;
+  background: var(--dl-white);
+}
+
+.dl-plan-demo img {
+  display: block;
+  width: 100%;
+  max-width: 38rem;
+  margin: 0 auto;
+}
+
+.dl-plan-demo p,
+.dl-plan-demo-grid p {
+  margin: 0;
+}
+
+.dl-plan-demo-grid {
+  align-items: start;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+  margin: 1.1rem 0 1.6rem;
+}
+
+.dl-plan-demo-grid figure {
+  border: 1px solid var(--dl-black);
+  margin: 0;
+  background: var(--dl-white);
+}
+
+.dl-plan-demo-grid img {
+  display: block;
+  width: 100%;
+}
+
+.dl-plan-demo figcaption,
+.dl-plan-demo-grid figcaption {
+  border-top: 1px solid var(--dl-black);
+  padding: 0.45rem 0.6rem;
+  color: var(--dl-black);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-align: center;
+  text-transform: uppercase;
 }
 
 :root {
@@ -473,5 +523,9 @@ body {
   .dl-home__actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .dl-plan-demo-grid {
+    grid-template-columns: 1fr;
   }
 }

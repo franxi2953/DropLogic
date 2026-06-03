@@ -30,6 +30,11 @@ system.advanced_drop.mix(
 
 This mode repeatedly splits and recombines a droplet when the droplet shape allows it.
 
+<figure class="dl-plan-demo" markdown>
+  ![Simulator GIF showing mix(mode="split_recombine") splitting and recombining a droplet](../../assets/advanced-drop/mix-split-recombine.gif)
+  <figcaption><code>mix(mode="split_recombine")</code> splitting and recombining a droplet</figcaption>
+</figure>
+
 ```python
 new_ids = ad.mix(
     droplet_id=1,
@@ -56,6 +61,11 @@ If the droplet cannot be split safely, the implementation can fall back to loop-
 ## `2d_loop`
 
 This mode moves the droplet around a rectangular loop.
+
+<figure class="dl-plan-demo" markdown>
+  ![Simulator GIF showing mix(mode="2d_loop") moving a droplet around a loop](../../assets/advanced-drop/mix-2d-loop.gif)
+  <figcaption><code>mix(mode="2d_loop")</code> creating a repeated loop trajectory</figcaption>
+</figure>
 
 ```python
 ad.mix(
