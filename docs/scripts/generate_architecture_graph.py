@@ -30,14 +30,83 @@ def parse_file(filepath):
                 public_funcs.append(name)
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                imports.append(alias.name)
+                imports.append({
+                    'kind': 'import',
+                    'module': alias.name,
+                    'level': 0,
+                    'names': [],
+                })
         elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                imports.append(node.module)
-            else:
-                imports.append("." * node.level)
+            imports.append({
+                'kind': 'from',
+                'module': node.module or '',
+                'level': node.level,
+                'names': [alias.name for alias in node.names],
+            })
                 
     return num_lines, public_funcs, private_funcs, imports
+
+def canonical_module_name(mod_name):
+    if mod_name.endswith('.__init__'):
+        return mod_name[:-9]
+    return mod_name
+
+def resolve_absolute_import(module_name, level, current_module):
+    if level <= 0:
+        return module_name
+
+    current_package_parts = current_module.split('.')[:-1]
+    trim = max(level - 1, 0)
+    if trim > len(current_package_parts):
+        return module_name
+
+    prefix_parts = current_package_parts[:len(current_package_parts) - trim]
+    suffix_parts = module_name.split('.') if module_name else []
+    resolved_parts = [part for part in prefix_parts + suffix_parts if part]
+    return '.'.join(resolved_parts)
+
+def resolve_import_targets(current_module, import_entry, canonical_modules):
+    targets = []
+
+    if import_entry['kind'] == 'import':
+        module_name = import_entry['module']
+        if module_name in canonical_modules:
+            targets.append(module_name)
+        return targets
+
+    base_module = resolve_absolute_import(
+        import_entry['module'],
+        import_entry['level'],
+        current_module,
+    )
+    if not base_module:
+        return targets
+
+    unresolved_names = False
+    imported_names = import_entry.get('names') or []
+
+    for imported_name in imported_names:
+        if imported_name == '*':
+            unresolved_names = True
+            continue
+
+        candidate = f"{base_module}.{imported_name}"
+        if candidate in canonical_modules:
+            targets.append(candidate)
+        else:
+            unresolved_names = True
+
+    if (not imported_names or unresolved_names) and base_module in canonical_modules:
+        targets.append(base_module)
+
+    deduped_targets = []
+    seen = set()
+    for target in targets:
+        if target in seen:
+            continue
+        seen.add(target)
+        deduped_targets.append(target)
+    return deduped_targets
 
 def generate():
     docs_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -150,6 +219,11 @@ def generate():
                         'length': 60
                     })
 
+    canonical_modules = {
+        canonical_module_name(module_name): module_info
+        for module_name, module_info in modules.items()
+    }
+
     added_deps = set()
     for mod_name, info in modules.items():
         lines, pub, priv, imps = parse_file(info['path'])
@@ -190,22 +264,9 @@ def generate():
             })
 
         for imp in imps:
-            for other_mod, other_info in modules.items():
-                parts = other_mod.split('.')
-                target_str = parts[-1]
-                
-                # If the target is an __init__.py, importing its parent folder name matches it
-                match = False
-                if target_str == '__init__' and len(parts) >= 2:
-                    parent_target = parts[-2]
-                    if imp.endswith(parent_target) or parent_target in imp:
-                        match = True
-                
-                # Standard relative / absolute match
-                if imp.endswith(target_str) or target_str in imp:
-                    match = True
-                    
-                if match and info['id'] != other_info['id']:
+            for target_name in resolve_import_targets(mod_name, imp, canonical_modules):
+                other_info = canonical_modules[target_name]
+                if info['id'] != other_info['id']:
                     edge_id = f"edge_dep_{other_info['id']}_{info['id']}"
                     if edge_id not in added_deps:
                         added_deps.add(edge_id)
