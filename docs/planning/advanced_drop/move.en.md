@@ -43,12 +43,13 @@ ValueError: Unsupported mode
 ## Basic Move
 
 <figure class="dl-plan-demo" markdown>
-  ![Executor-recorded simulator GIF showing move(mode="sipp") moving one 2x2 droplet across the matrix](../../assets/advanced-drop/move-basic.gif)
-  <figcaption><code>PlanExecutor</code> recording of <code>move(mode="sipp")</code>: one 2x2 droplet routed to a new target</figcaption>
+  ![Executor-recorded simulator GIF showing move(mode="sipp") moving one 2x2 droplet with its route arrow overlaid](../../assets/advanced-drop/move-basic.gif)
+  <figcaption><code>PlanExecutor</code> recording of <code>move(mode="sipp")</code>: one 2x2 droplet routed to a new target, with the visualizer path overlay showing the planned route</figcaption>
 </figure>
 
 ```python
 ad = system.advanced_drop
+ad.clear()
 
 ad.droplets.create_droplet(
     1,
@@ -71,25 +72,43 @@ print(plan.targets_reached)
 ## Multi-Droplet Move
 
 <figure class="dl-plan-demo" markdown>
-  ![Executor-recorded simulator GIF showing coordinated SIPP movement for two droplets with intersecting routes](../../assets/advanced-drop/move-coordinated.gif)
-  <figcaption><code>PlanExecutor</code> recording of coordinated <code>move(mode="sipp")</code>: two 2x2 droplets routed through intersecting paths</figcaption>
+  ![Executor-recorded simulator GIF showing coordinated SIPP movement for twenty droplets with route arrows overlaid](../../assets/advanced-drop/move-coordinated.gif)
+  <figcaption><code>PlanExecutor</code> recording of coordinated <code>move(mode="sipp")</code>: twenty 1x1 droplets routed together across the matrix</figcaption>
 </figure>
 
 ```python
-ad.droplets.add_droplets([
-    {"id": 1, "origin": (18, 18), "target": (34, 34), "width": 2, "height": 2},
-    {"id": 2, "origin": (34, 18), "target": (18, 34), "width": 2, "height": 2},
-])
+ad = system.advanced_drop
+ad.clear()
+
+droplet_specs = []
+droplet_id = 1
+
+for row in range(18, 58, 8):
+    for col in range(18, 50, 8):
+        droplet_specs.append({
+            "id": droplet_id,
+            "origin": (row, col),
+            "target": (row + 24, col + 40),
+            "width": 1,
+            "height": 1,
+            "priority": droplet_id,
+            "vital_space": 1,
+        })
+        droplet_id += 1
+
+ad.droplets.add_droplets(droplet_specs)
 
 plan = ad.move(
     mode="sipp",
-    planning_timeout=60,
-    max_path_frames=160,
-    reservation_horizon=200,
+    planning_timeout=30,
+    max_path_frames=100,
+    reservation_horizon=110,
 )
 ```
 
 Only droplets whose `origin_corner != target_corner` are planned. Droplets already at target are kept as active droplets when extending plans.
+
+When the matrix visualizer is enabled, `PlanExecutor` can display the stored `droplet_trajectories` as route overlays. The documentation GIFs use that same visualizer path layer so the arrows correspond to the actual planned trajectories.
 
 ## Useful Planner Options
 

@@ -849,6 +849,10 @@ class MatrixVisualizer:
         # Path tracking for droplet trajectories
         self.paths       = paths or []                # list of paths (each path is a list of (row, col) positions)
         self.path_colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255), (0, 255, 255)]  # BGR colors
+        self.path_color = (230, 230, 230)
+        self.path_alpha = 0.6
+        self.path_line_thickness = 2
+        self.path_arrow_length = 10
 
         # Breakpoint visualization
         self.breakpoint_positions = {}                # Dict: frame_num -> list of (row, col) positions
@@ -1093,8 +1097,8 @@ class MatrixVisualizer:
                 # Create individual overlay for this trajectory
                 trajectory_overlay = np.zeros_like(canvas, dtype=np.uint8)
 
-                # Use white color for thin 1px line
-                color = (221, 221, 221)  # White in BGR
+                color = getattr(self, "path_color", (230, 230, 230))
+                line_thickness = max(1, int(getattr(self, "path_line_thickness", 2)))
 
                 # Convert path positions to canvas coordinates and draw lines
                 prev_point = None
@@ -1116,7 +1120,14 @@ class MatrixVisualizer:
 
                         # Draw thin white line from previous point to current point
                         if prev_point is not None:
-                            cv2.line(trajectory_overlay, prev_point, current_point, color, 1)
+                            cv2.line(
+                                trajectory_overlay,
+                                prev_point,
+                                current_point,
+                                color,
+                                line_thickness,
+                                lineType=cv2.LINE_AA,
+                            )
 
                         prev_point = current_point
 
@@ -1143,8 +1154,7 @@ class MatrixVisualizer:
                     # Normalize and scale for arrow size
                     length = np.sqrt(dx*dx + dy*dy)
                     if length > 0:
-                        # Arrow size (shorter)
-                        arrow_length = 5
+                        arrow_length = max(4, int(getattr(self, "path_arrow_length", 10)))
                         arrow_angle = 0.5  # radians
 
                         # Unit direction vector
@@ -1164,15 +1174,29 @@ class MatrixVisualizer:
                         right_y = int(tip_y - arrow_length * (uy * np.cos(arrow_angle) + ux * np.sin(arrow_angle)))
 
                         # Draw arrow lines (1px thickness)
-                        cv2.line(trajectory_overlay, (tip_x, tip_y), (left_x, left_y), color, 1)
-                        cv2.line(trajectory_overlay, (tip_x, tip_y), (right_x, right_y), color, 1)
+                        cv2.line(
+                            trajectory_overlay,
+                            (tip_x, tip_y),
+                            (left_x, left_y),
+                            color,
+                            line_thickness,
+                            lineType=cv2.LINE_AA,
+                        )
+                        cv2.line(
+                            trajectory_overlay,
+                            (tip_x, tip_y),
+                            (right_x, right_y),
+                            color,
+                            line_thickness,
+                            lineType=cv2.LINE_AA,
+                        )
                 elif len(path_points) == 1:
                     # For single-point paths, draw a small dot to indicate the endpoint
                     point = path_points[0]
-                    cv2.circle(trajectory_overlay, point, 3, color, -1)
+                    cv2.circle(trajectory_overlay, point, 4, color, -1, lineType=cv2.LINE_AA)
 
-                # Blend this trajectory overlay with 0.3 opacity
-                canvas = cv2.addWeighted(canvas, 1.0, trajectory_overlay, 0.3, 0)
+                path_alpha = float(getattr(self, "path_alpha", 0.6))
+                canvas = cv2.addWeighted(canvas, 1.0, trajectory_overlay, path_alpha, 0)
 
 
         # ───── overlay microscope position on the rotated grid ──────

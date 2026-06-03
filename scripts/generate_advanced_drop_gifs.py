@@ -44,6 +44,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from droplogic.hardware.simulator import Simulator
+from droplogic.utils.advanced_drop.common import (
+    DropletPlan,
+    create_droplet,
+    get_droplet_positions,
+)
 
 
 def _fresh_simulator():
@@ -77,6 +82,84 @@ def _prepare_visualizer(system):
             visualizer.margins = (margin, margin, margin, margin)
         else:
             visualizer.matrix_size = MATRIX_CAPTURE_SIZE
+
+
+def _seed_droplets_in_single_frame(ad, droplet_specs):
+    """Seed droplets without recording one setup frame per droplet."""
+    ad.clear()
+    frame = np.zeros_like(ad.matrix, dtype=np.int32)
+    occupied = set()
+
+    for spec in droplet_specs:
+        droplet = create_droplet(
+            droplet_id=spec["id"],
+            origin=spec["origin"],
+            target=spec["target"],
+            shape=spec.get("shape"),
+            width=spec.get("width", 1),
+            height=spec.get("height", 1),
+            priority=spec.get("priority", 0),
+            vital_space=spec.get("vital_space", 1),
+        )
+        positions = get_droplet_positions(droplet, droplet.origin_corner)
+
+        for row, col in positions:
+            if row < 0 or row >= frame.shape[0] or col < 0 or col >= frame.shape[1]:
+                raise ValueError(
+                    f"Droplet {droplet.id} starts outside the simulator matrix: {(row, col)}"
+                )
+            if (row, col) in occupied:
+                raise ValueError(
+                    f"Droplet {droplet.id} overlaps an existing seeded droplet at {(row, col)}"
+                )
+            occupied.add((row, col))
+            frame[row, col] = 1
+
+        ad.droplets.append(droplet)
+
+    active_ids = [droplet.id for droplet in ad.droplets]
+    ad.plan = DropletPlan(
+        frames=[frame],
+        frame_count=1,
+        droplet_trajectories={
+            droplet.id: [droplet.origin_corner] for droplet in ad.droplets
+        },
+        active_droplets_per_frame=[active_ids],
+        events=[],
+        planning_success=True,
+        conflicts_resolved=[],
+        targets_reached={},
+        event_id_per_frame=[],
+    )
+    ad.plan._next_event_id = 1
+
+
+def _set_visualizer_paths_from_plan(system, droplet_ids=None):
+    visualizer = system.advanced_drop.visualizer
+    plan = system.advanced_drop.plan
+    if visualizer is None or not hasattr(visualizer, "set_paths"):
+        return
+    if plan is None or not getattr(plan, "droplet_trajectories", None):
+        return
+
+    selected_ids = None if droplet_ids is None else set(droplet_ids)
+    paths = []
+    for droplet_id in sorted(plan.droplet_trajectories):
+        if selected_ids is not None and droplet_id not in selected_ids:
+            continue
+
+        cleaned_path = []
+        for position in plan.droplet_trajectories[droplet_id]:
+            if position is None:
+                continue
+            point = tuple(position[:2])
+            if not cleaned_path or cleaned_path[-1] != point:
+                cleaned_path.append(point)
+
+        if len(cleaned_path) > 1:
+            paths.append(cleaned_path)
+
+    visualizer.set_paths(paths)
 
 
 def _build_reservoir_extraction_1to2(system):
@@ -153,31 +236,47 @@ def _build_move_basic(system):
     _prepare_visualizer(system)
     ad = system.advanced_drop
 
-    ad.droplets.create_droplet(
-        1,
-        origin=(18, 18),
-        target=(34, 32),
-        width=2,
-        height=2,
-    )
+    _seed_droplets_in_single_frame(ad, [
+        {
+            "id": 1,
+            "origin": (18, 18),
+            "target": (34, 32),
+            "width": 2,
+            "height": 2,
+        },
+    ])
     ad.move(mode="sipp", planning_timeout=60, max_path_frames=120)
+    _set_visualizer_paths_from_plan(system)
 
 
 def _build_move_coordinated(system):
-    """Move two droplets through intersecting routes with SIPP coordination."""
+    """Move twenty droplets together across the simulator matrix."""
     _prepare_visualizer(system)
     ad = system.advanced_drop
 
-    ad.droplets.add_droplets([
-        {"id": 1, "origin": (18, 18), "target": (34, 34), "width": 2, "height": 2},
-        {"id": 2, "origin": (34, 18), "target": (18, 34), "width": 2, "height": 2},
-    ])
+    droplet_specs = []
+    droplet_id = 1
+    for row in range(18, 58, 8):
+        for col in range(18, 50, 8):
+            droplet_specs.append({
+                "id": droplet_id,
+                "origin": (row, col),
+                "target": (row + 24, col + 40),
+                "width": 1,
+                "height": 1,
+                "priority": droplet_id,
+                "vital_space": 1,
+            })
+            droplet_id += 1
+
+    _seed_droplets_in_single_frame(ad, droplet_specs)
     ad.move(
         mode="sipp",
-        planning_timeout=60,
-        max_path_frames=160,
-        reservation_horizon=200,
+        planning_timeout=30,
+        max_path_frames=100,
+        reservation_horizon=110,
     )
+    _set_visualizer_paths_from_plan(system)
 
 
 def _build_merge_two_droplets(system):
@@ -235,6 +334,13 @@ DEMOS = {
 }
 
 DEMO_GIF_OPTIONS = {
+    "move-basic": {
+        "duration_ms": 320,
+    },
+    "move-coordinated": {
+        "duration_ms": 220,
+        "frame_stride": 2,
+    },
     "isometric-split-1x1": {
         "duration_ms": 260,
         "frame_stride": 2,
