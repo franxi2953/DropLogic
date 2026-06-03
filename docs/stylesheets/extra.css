@@ -324,12 +324,21 @@ body {
 
 .md-sidebar--primary .md-nav__item > a.md-nav__link,
 .md-sidebar--primary .md-nav__item > label.md-nav__link,
+.md-sidebar--primary .md-nav__item > .md-nav__container {
+  align-items: center;
+  display: flex;
+  gap: 0;
+  margin-top: 0;
+  min-height: calc(var(--dl-nav-toggle-size) + (2 * var(--dl-nav-row-padding-y)));
+}
+
 .md-sidebar--primary .md-nav__item > .md-nav__container > a.md-nav__link,
 .md-sidebar--primary .md-nav__item > .md-nav__container > label.md-nav__link {
   align-items: center;
   gap: 0;
   margin-top: 0;
-  min-height: calc(var(--dl-nav-toggle-size) + (2 * var(--dl-nav-row-padding-y)));
+  min-height: 0;
+  padding: 0;
 }
 
 .md-sidebar--primary .md-nav__item > a.md-nav__link,
