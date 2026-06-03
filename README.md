@@ -9,7 +9,7 @@
 <h1 align="center">DropLogic</h1>
 
 <p align="center">
-  <strong>Minimal, deployment-ready control for digital microfluidics.</strong>
+  <strong>A Python library for digital microfluidics control.</strong>
 </p>
 
 <p align="center">
@@ -34,9 +34,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-affiliations-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/readme-affiliations-light.svg">
-    <img src="docs/assets/readme-affiliations-light.svg" alt="PhD project at the University of Cambridge with the Occhipinti Group, Di Michele Lab, UKRI, EPSRC, and Sensor CDT" width="840">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-affiliations-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/readme-affiliations-light.png">
+    <img src="docs/assets/readme-affiliations-light.png" alt="PhD project at the University of Cambridge with the Occhipinti Group, Di Michele Lab, UKRI, EPSRC, and Sensor CDT" width="840">
   </picture>
 </p>
 

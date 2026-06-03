@@ -44,6 +44,14 @@ Extract one droplet from the reservoir.
 </figure>
 
 ```python
+ad.droplets.create_droplet(
+    1,
+    origin=(20, 16),
+    target=(20, 16),
+    width=6,
+    height=6,
+)
+
 new_ids = ad.reservoir_extraction(
     reservoir_droplet_id=1,
     split_mode="1to2",
@@ -59,13 +67,26 @@ Use this when you want a reservoir to keep most of its footprint while producing
 
 Extract a central droplet and separate the resulting pieces.
 
+<figure class="dl-plan-demo" markdown>
+  ![Executor-recorded simulator GIF showing reservoir_extraction(split_mode="1to3") extracting a central 2x2 droplet from an 8x8 reservoir](../../assets/advanced-drop/reservoir-extraction-1to3.gif)
+  <figcaption><code>PlanExecutor</code> recording of <code>reservoir_extraction(split_mode="1to3")</code>: 8x8 reservoir, central 2x2 extracted droplet, reservoir pieces separated</figcaption>
+</figure>
+
 ```python
+ad.droplets.create_droplet(
+    1,
+    origin=(24, 16),
+    target=(24, 16),
+    width=8,
+    height=8,
+)
+
 new_ids = ad.reservoir_extraction(
     reservoir_droplet_id=1,
     split_mode="1to3",
-    steps=(0, 6),
-    split_size=(1, 2),
-    separation_steps=3,
+    steps=(0, 10),
+    split_size=(2, 2),
+    separation_steps=2,
 )
 ```
 
@@ -75,14 +96,27 @@ For `"1to3"`, `split_size` is interpreted as `(height, width)`.
 
 Create multiple droplets in a linear sweep from a reservoir.
 
+<figure class="dl-plan-demo" markdown>
+  ![Executor-recorded simulator GIF showing reservoir_extraction(split_mode="linear") sweeping a wide reservoir to create five droplets](../../assets/advanced-drop/reservoir-extraction-linear.gif)
+  <figcaption><code>PlanExecutor</code> recording of <code>reservoir_extraction(split_mode="linear")</code>: wide reservoir, five 1x1 droplets produced in a horizontal sweep</figcaption>
+</figure>
+
 ```python
+ad.droplets.create_droplet(
+    1,
+    origin=(18, 18),
+    target=(18, 18),
+    width=5,
+    height=14,
+)
+
 new_ids = ad.reservoir_extraction(
     reservoir_droplet_id=1,
     split_mode="linear",
-    linear_drops_number=4,
-    linear_offset=2,
-    linear_space_per_col=4,
-    linear_space_per_row=0,
+    linear_drops_number=5,
+    linear_offset=1,
+    linear_space_per_col=3,
+    linear_space_per_row=1,
     linear_drop_shape=(1, 1),
     linear_direction=(0, 1),
 )
