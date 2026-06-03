@@ -55,7 +55,15 @@ nav:
       - Creating New Systems: creating_systems.md
   - Planning:
       - Overview: planning/index.md
-      - AdvancedDrop: planning/advanced_drop.md
+      - AdvancedDrop:
+          - Overview: planning/advanced_drop.md
+          - Droplet Management: planning/advanced_drop/droplet_management.md
+          - Move: planning/advanced_drop/move.md
+          - Split and Extract: planning/advanced_drop/split_and_extract.md
+          - Merge: planning/advanced_drop/merge.md
+          - Mix: planning/advanced_drop/mix.md
+          - Vision and Correction: planning/advanced_drop/vision_and_correction.md
+          - Plan Objects: planning/advanced_drop/plan_objects.md
       - Plan Executor: planning/plan_executor.md
   - Visualization:
       - Overview: visualization/index.md

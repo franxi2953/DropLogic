@@ -12,6 +12,28 @@ In DropLogic, this is mostly handled by `AdvancedDrop`: it stores droplets, buil
 - **Operations**: movement, splitting, merging, mixing, and reservoir extraction
 - **PlanExecutor**: runtime execution of planned frames against a system
 
+## Public Workflow
+
+Most scripts follow the same shape:
+
+```python
+from droplogic.hardware.simulator import Simulator
+
+system = Simulator(log_level="INFO")
+ad = system.advanced_drop
+
+ad.droplets.create_droplet(1, origin=(10, 10), target=(30, 40), width=2, height=2)
+ad.move(mode="sipp")
+
+ad.executor.start(
+    frame_delay=0.5,
+    enable_visualizers=True,
+    save_to_file="runs/simple_plan.pkl",
+)
+```
+
+`AdvancedDrop` builds the plan. `PlanExecutor` executes and records it. Visualizers show or capture what the executor is doing.
+
 ## Typical Flow
 
 ```python

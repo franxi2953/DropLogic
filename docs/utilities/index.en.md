@@ -13,3 +13,10 @@ They are not the main user-facing workflow, but they make the workflow reliable:
 - logging setup
 
 Most users start with `Systems` and `Planning`, then come here when they need to tune hardware, inspect failures, or integrate new modules.
+
+## What to Use When
+
+- Use **Hardware Utilities** for `config.json`, electrode-stage conversion, pixel-micron conversion, and simple volume estimates.
+- Use **Calibration** for saving/loading calibration state and setting chip origin.
+- Use **Drop Vision** for direct droplet or condensate detection outside the visualizer.
+- Use **Debugging and Diagnostics** for saved-plan inspection, runtime doctor checks, logging, and executor timeout reports.
