@@ -307,9 +307,29 @@ body {
 :root {
   --dl-nav-toggle-size: 1em;
   --dl-nav-toggle-gap: 5px;
-  --dl-nav-toggle-arrow-size: 0.5em;
+  --dl-nav-toggle-arrow-size: 0.58em;
   --dl-nav-toggle-arrow-shift: -0.06em;
   --dl-nav-toggle-offset: calc(var(--dl-nav-toggle-size) + var(--dl-nav-toggle-gap));
+  --dl-nav-row-padding-y: 0.16rem;
+  --dl-nav-row-gap: 0.16rem;
+}
+
+.md-sidebar--primary .md-nav__item {
+  margin: 0;
+}
+
+.md-sidebar--primary .md-nav__item + .md-nav__item {
+  margin-top: var(--dl-nav-row-gap);
+}
+
+.md-sidebar--primary .md-nav__item > a.md-nav__link,
+.md-sidebar--primary .md-nav__item > label.md-nav__link,
+.md-sidebar--primary .md-nav__item > .md-nav__container > a.md-nav__link,
+.md-sidebar--primary .md-nav__item > .md-nav__container > label.md-nav__link {
+  align-items: center;
+  gap: 0;
+  margin-top: 0;
+  min-height: calc(var(--dl-nav-toggle-size) + (2 * var(--dl-nav-row-padding-y)));
 }
 
 .md-sidebar--primary .md-nav__item > a.md-nav__link,
@@ -317,6 +337,8 @@ body {
 .md-sidebar--primary .md-nav__item > .md-nav__container {
   position: relative;
   padding-left: var(--dl-nav-toggle-offset);
+  padding-top: var(--dl-nav-row-padding-y);
+  padding-bottom: var(--dl-nav-row-padding-y);
 }
 
 .md-sidebar--primary .md-nav__item--nested > label.md-nav__link {
