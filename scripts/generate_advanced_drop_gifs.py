@@ -35,6 +35,8 @@ GIF_CARD_INSET = 28
 GIF_CROP_PADDING_PX = 80
 MIN_ACTIVITY_PIXELS = 10
 MATRIX_CAPTURE_SIZE = (1400, 1000)
+MATRIX_CAPTURE_CELL_PX = 8
+MATRIX_CAPTURE_MARGIN_PX = 40
 
 
 if str(ROOT) not in sys.path:
@@ -58,7 +60,22 @@ def _close_simulator(system):
 def _prepare_visualizer(system):
     visualizer = system.advanced_drop.visualizer
     if visualizer is not None:
-        visualizer.matrix_size = MATRIX_CAPTURE_SIZE
+        matrix = None
+        if hasattr(system, "get_simulated_matrix"):
+            matrix = system.get_simulated_matrix()
+        elif hasattr(system, "_simulated_matrix"):
+            matrix = system._simulated_matrix
+
+        if matrix is not None:
+            rows, cols = matrix.shape
+            margin = MATRIX_CAPTURE_MARGIN_PX
+            visualizer.matrix_size = (
+                rows * MATRIX_CAPTURE_CELL_PX + margin * 2,
+                cols * MATRIX_CAPTURE_CELL_PX + margin * 2,
+            )
+            visualizer.margins = (margin, margin, margin, margin)
+        else:
+            visualizer.matrix_size = MATRIX_CAPTURE_SIZE
 
 
 def _build_reservoir_extraction_1to2(system):
@@ -92,15 +109,15 @@ def _build_reservoir_extraction_1to3(system):
         1,
         origin=(24, 16),
         target=(24, 16),
-        width=8,
-        height=8,
+        width=12,
+        height=12,
     )
     ad.reservoir_extraction(
         reservoir_droplet_id=1,
         split_mode="1to3",
-        steps=(0, 10),
+        steps=(0, 14),
         split_size=(2, 2),
-        separation_steps=2,
+        separation_steps=4,
         new_droplet_id=2,
     )
 
