@@ -236,6 +236,35 @@ body {
   border-color: var(--dl-black);
 }
 
+.md-typeset .dl-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.md-typeset .dl-mode-table {
+  width: 100%;
+  min-width: 42rem;
+  border: 1px solid var(--dl-black);
+  border-collapse: collapse;
+}
+
+.md-typeset .dl-mode-table th,
+.md-typeset .dl-mode-table td {
+  border: 1px solid var(--dl-black);
+  padding: 0.65rem 0.75rem;
+  vertical-align: top;
+}
+
+.md-typeset .dl-mode-table th {
+  font-weight: 600;
+}
+
+.md-typeset .dl-mode-table td:first-child,
+.md-typeset .dl-mode-table td:last-child,
+.md-typeset .dl-mode-table code {
+  white-space: nowrap;
+}
+
 .md-typeset hr {
   border-bottom: 1px solid var(--dl-black);
 }

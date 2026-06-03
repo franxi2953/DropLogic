@@ -12,6 +12,39 @@ new_ids = system.advanced_drop.mix(
 
 The function extends `system.advanced_drop.plan` and returns the IDs of any new droplets created during the operation.
 
+The two built-in modes follow classic digital-microfluidic mixing strategies:
+move the intact droplet through a 2D loop to reduce reversible flow, or split
+and recombine it when the droplet geometry makes splitting reliable.<sup class="dl-cite" data-preview="Paik, Pamula and Fair, Lab on a Chip 3, 253-259 (2003). Compares linear-array, 2D-array, and split-and-merge droplet mixers for digital microfluidics. DOI: 10.1039/B307628H"><a href="#ref-paik-2003">1</a></sup>
+
+## Choosing a Mode
+
+<div class="dl-table-scroll">
+  <table class="dl-mode-table">
+    <thead>
+      <tr>
+        <th>Mode</th>
+        <th>Use when</th>
+        <th>Be careful when</th>
+        <th>Main knobs</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>split_recombine</code></td>
+        <td>The droplet can split cleanly and you want strong internal rearrangement by repeated split/merge cycles.</td>
+        <td>The footprint is small, asymmetric, close to obstacles, or the physical system does not split reliably.</td>
+        <td><code>cycles</code><br><code>split_area</code></td>
+      </tr>
+      <tr>
+        <td><code>2d_loop</code></td>
+        <td>The droplet should stay intact while moving through a 2D loop; useful for smaller droplets or conservative protocols.</td>
+        <td>The available loop area is tiny, blocked, or too close to other active droplets.</td>
+        <td><code>cycles</code><br><code>mixing_area_size</code></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
 ## Public Signature
 
 ```python
@@ -94,12 +127,6 @@ ad.mix(
 
 Use this when you want mixing by repeated translation rather than splitting.
 
-## Choosing a Mode
-
-- Use `split_recombine` for larger droplets where split/rejoin mixing is physically meaningful.
-- Use `2d_loop` for smaller droplets, constrained layouts, or protocols where you want one droplet to stay intact.
-- Increase `cycles` for stronger mixing, but remember that this also increases plan length.
-
 ## Event Labels
 
 ```python
@@ -112,3 +139,9 @@ ad.mix(
 ```
 
 Event labels make long protocols easier to inspect in the plan debugger.
+
+## References
+
+<ol class="dl-references-list">
+  <li id="ref-paik-2003">P. Paik, V. K. Pamula and R. B. Fair, <a href="https://pubs.rsc.org/en/content/articlelanding/2003/lc/b307628h">"Rapid droplet mixers for digital microfluidic systems"</a>, <em>Lab on a Chip</em> 3, 253-259 (2003), DOI: <a href="https://doi.org/10.1039/B307628H">10.1039/B307628H</a>.</li>
+</ol>
