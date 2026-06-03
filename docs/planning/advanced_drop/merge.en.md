@@ -84,12 +84,20 @@ Events appear in the plan and in the plan debugger.
 
 ## Common Pattern
 
-```python
-ad.droplets.create_droplet(1, (10, 10), (30, 30), width=1, height=1)
-ad.droplets.create_droplet(2, (10, 20), (30, 30), width=1, height=1)
+<figure class="dl-plan-demo" markdown>
+  ![Executor-recorded simulator GIF showing merge() routing two 1x1 droplets into one merged footprint](../../assets/advanced-drop/merge-two-droplets.gif)
+  <figcaption><code>PlanExecutor</code> recording of <code>merge()</code>: two 1x1 droplets routed into one merged footprint</figcaption>
+</figure>
 
-ad.move(mode="sipp")
-merged_id = ad.merge([1, 2], target=(30, 30), hold_final_position=True)
+```python
+ad.droplets.create_droplet(1, origin=(18, 18), target=(18, 18), width=1, height=1)
+ad.droplets.create_droplet(2, origin=(18, 32), target=(18, 32), width=1, height=1)
+
+merged_id = ad.merge(
+    [1, 2],
+    target=(24, 25),
+    hold_final_position=True,
+)
 
 ad.executor.start(frame_delay=0.7, enable_visualizers=True)
 ```

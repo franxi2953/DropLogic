@@ -42,11 +42,27 @@ ValueError: Unsupported mode
 
 ## Basic Move
 
+<figure class="dl-plan-demo" markdown>
+  ![Executor-recorded simulator GIF showing move(mode="sipp") moving one 2x2 droplet across the matrix](../../assets/advanced-drop/move-basic.gif)
+  <figcaption><code>PlanExecutor</code> recording of <code>move(mode="sipp")</code>: one 2x2 droplet routed to a new target</figcaption>
+</figure>
+
 ```python
 ad = system.advanced_drop
 
-ad.droplets.create_droplet(1, origin=(8, 8), target=(40, 40), width=2, height=2)
-plan = ad.move(mode="sipp")
+ad.droplets.create_droplet(
+    1,
+    origin=(18, 18),
+    target=(34, 32),
+    width=2,
+    height=2,
+)
+
+plan = ad.move(
+    mode="sipp",
+    planning_timeout=60,
+    max_path_frames=120,
+)
 
 print(plan.frame_count)
 print(plan.targets_reached)
@@ -54,16 +70,22 @@ print(plan.targets_reached)
 
 ## Multi-Droplet Move
 
+<figure class="dl-plan-demo" markdown>
+  ![Executor-recorded simulator GIF showing coordinated SIPP movement for two droplets with intersecting routes](../../assets/advanced-drop/move-coordinated.gif)
+  <figcaption><code>PlanExecutor</code> recording of coordinated <code>move(mode="sipp")</code>: two 2x2 droplets routed through intersecting paths</figcaption>
+</figure>
+
 ```python
 ad.droplets.add_droplets([
-    {"id": 1, "origin": (10, 10), "target": (40, 40), "width": 2, "height": 2},
-    {"id": 2, "origin": (10, 30), "target": (40, 10), "width": 2, "height": 2},
+    {"id": 1, "origin": (18, 18), "target": (34, 34), "width": 2, "height": 2},
+    {"id": 2, "origin": (34, 18), "target": (18, 34), "width": 2, "height": 2},
 ])
 
 plan = ad.move(
     mode="sipp",
-    planning_timeout=120,
-    max_iterations=50000,
+    planning_timeout=60,
+    max_path_frames=160,
+    reservation_horizon=200,
 )
 ```
 

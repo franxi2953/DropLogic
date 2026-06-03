@@ -147,10 +147,90 @@ def _build_reservoir_extraction_linear(system):
     )
 
 
+def _build_move_basic(system):
+    """Move one 2x2 droplet across the simulator matrix."""
+    _prepare_visualizer(system)
+    ad = system.advanced_drop
+
+    ad.droplets.create_droplet(
+        1,
+        origin=(18, 18),
+        target=(34, 32),
+        width=2,
+        height=2,
+    )
+    ad.move(mode="sipp", planning_timeout=60, max_path_frames=120)
+
+
+def _build_move_coordinated(system):
+    """Move two droplets through intersecting routes with SIPP coordination."""
+    _prepare_visualizer(system)
+    ad = system.advanced_drop
+
+    ad.droplets.add_droplets([
+        {"id": 1, "origin": (18, 18), "target": (34, 34), "width": 2, "height": 2},
+        {"id": 2, "origin": (34, 18), "target": (18, 34), "width": 2, "height": 2},
+    ])
+    ad.move(
+        mode="sipp",
+        planning_timeout=60,
+        max_path_frames=160,
+        reservation_horizon=200,
+    )
+
+
+def _build_merge_two_droplets(system):
+    """Route two 1x1 droplets into a merged footprint."""
+    _prepare_visualizer(system)
+    ad = system.advanced_drop
+
+    ad.droplets.create_droplet(1, origin=(18, 18), target=(18, 18), width=1, height=1)
+    ad.droplets.create_droplet(2, origin=(18, 32), target=(18, 32), width=1, height=1)
+    ad.merge([1, 2], target=(24, 25), hold_final_position=True)
+
+
+def _build_mix_split_recombine(system):
+    """Split and recombine a 2x2 droplet for one mixing cycle."""
+    _prepare_visualizer(system)
+    ad = system.advanced_drop
+
+    ad.droplets.create_droplet(1, origin=(28, 28), target=(28, 28), width=2, height=2)
+    ad.mix(1, mode="split_recombine", cycles=1)
+
+
+def _build_mix_2d_loop(system):
+    """Move one 2x2 droplet around a rectangular loop."""
+    _prepare_visualizer(system)
+    ad = system.advanced_drop
+
+    ad.droplets.create_droplet(1, origin=(24, 24), target=(24, 24), width=2, height=2)
+    ad.mix(1, mode="2d_loop", mixing_area_size=8, cycles=1)
+
+
+def _build_isometric_split_1x1(system):
+    """Split a 2x2 droplet into four evenly spaced 1x1 droplets."""
+    _prepare_visualizer(system)
+    ad = system.advanced_drop
+
+    ad.droplets.create_droplet(1, origin=(28, 28), target=(28, 28), width=2, height=2)
+    ad.isometric_split(
+        1,
+        steps=[(0, 6), (6, 0)],
+        simultaneous=True,
+        new_droplet_id=2,
+    )
+
+
 DEMOS = {
+    "move-basic": _build_move_basic,
+    "move-coordinated": _build_move_coordinated,
+    "merge-two-droplets": _build_merge_two_droplets,
+    "mix-split-recombine": _build_mix_split_recombine,
+    "mix-2d-loop": _build_mix_2d_loop,
     "reservoir-extraction-1to2": _build_reservoir_extraction_1to2,
     "reservoir-extraction-1to3": _build_reservoir_extraction_1to3,
     "reservoir-extraction-linear": _build_reservoir_extraction_linear,
+    "isometric-split-1x1": _build_isometric_split_1x1,
 }
 
 

@@ -30,11 +30,24 @@ system.advanced_drop.mix(
 
 This mode repeatedly splits and recombines a droplet when the droplet shape allows it.
 
+<figure class="dl-plan-demo" markdown>
+  ![Executor-recorded simulator GIF showing mix(mode="split_recombine") splitting and recombining a 2x2 droplet](../../assets/advanced-drop/mix-split-recombine.gif)
+  <figcaption><code>PlanExecutor</code> recording of <code>mix(mode="split_recombine")</code>: one 2x2 droplet split and recombined for one cycle</figcaption>
+</figure>
+
 ```python
+ad.droplets.create_droplet(
+    1,
+    origin=(28, 28),
+    target=(28, 28),
+    width=2,
+    height=2,
+)
+
 new_ids = ad.mix(
     droplet_id=1,
     mode="split_recombine",
-    cycles=3,
+    cycles=1,
 )
 ```
 
@@ -57,12 +70,25 @@ If the droplet cannot be split safely, the implementation can fall back to loop-
 
 This mode moves the droplet around a rectangular loop.
 
+<figure class="dl-plan-demo" markdown>
+  ![Executor-recorded simulator GIF showing mix(mode="2d_loop") moving one 2x2 droplet around a rectangular loop](../../assets/advanced-drop/mix-2d-loop.gif)
+  <figcaption><code>PlanExecutor</code> recording of <code>mix(mode="2d_loop")</code>: one 2x2 droplet moved around a rectangular loop</figcaption>
+</figure>
+
 ```python
+ad.droplets.create_droplet(
+    1,
+    origin=(24, 24),
+    target=(24, 24),
+    width=2,
+    height=2,
+)
+
 ad.mix(
     droplet_id=1,
     mode="2d_loop",
     mixing_area_size=8,
-    cycles=5,
+    cycles=1,
 )
 ```
 

@@ -157,9 +157,10 @@ def _mix_split_recombine(active_droplets: List[Droplet], target_droplet: Droplet
 
                 # Now add the reverse sequence to bring droplets back together
                 reverse_frames = split_plan.frames[-2::-1]  # Reverse frames, skip the last frame (already added)
-                for frame in reverse_frames:
+                reverse_active = split_plan.active_droplets_per_frame[-2::-1]
+                for frame, active_ids in zip(reverse_frames, reverse_active):
                     plan.frames.append(frame)
-                    plan.active_droplets_per_frame.append(split_plan.active_droplets_per_frame[-1])  # Use final active droplets
+                    plan.active_droplets_per_frame.append(list(active_ids))
 
                 # Update trajectories with reverse sequence
                 for droplet_id, trajectory in split_plan.droplet_trajectories.items():
