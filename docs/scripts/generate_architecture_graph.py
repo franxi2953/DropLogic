@@ -525,24 +525,89 @@ def generate():
 
   var container = document.getElementById('mynetwork');
   var data = { nodes: nodesView, edges: edgesView };
+
+  function buildPhysicsOptions(damping, enabled) {
+    return {
+      enabled: enabled,
+      solver: 'forceAtlas2Based',
+      forceAtlas2Based: {
+        gravitationalConstant: -80,
+        centralGravity: 0.01,
+        springLength: 200,
+        springConstant: 0.08,
+        damping: damping
+      },
+      stabilization: false,
+      minVelocity: 0.02,
+      adaptiveTimestep: true
+    };
+  }
   
   var options = {
     interaction: { hover: true, hoverConnectedEdges: false, tooltipDelay: 100 },
-    physics: {
-      solver: 'forceAtlas2Based',
-      forceAtlas2Based: { gravitationalConstant: -80, centralGravity: 0.01, springLength: 200, springConstant: 0.08, damping: 0.85 },
-      stabilization: { iterations: 200 }
-    }
+    physics: buildPhysicsOptions(0.82, true)
   };
   
   var network = new vis.Network(container, data, options);
+  var settleAnimationFrame = null;
+  var settleFinalizeTimer = null;
 
-  // Auto-center precisely on stabilization
-  network.once("stabilizationIterationsDone", function() {
-      network.fit({
-          animation: { duration: 1000, easingFunction: 'easeInOutQuad' }
-      });
-  });
+  function easeOutCubic(t) {
+    return 1 - Math.pow(1 - t, 3);
+  }
+
+  function fitNetwork(duration) {
+    network.fit({
+      animation: { duration: duration || 1000, easingFunction: 'easeInOutQuad' }
+    });
+  }
+
+  function cancelSoftStop() {
+    if (settleAnimationFrame !== null) {
+      cancelAnimationFrame(settleAnimationFrame);
+      settleAnimationFrame = null;
+    }
+    if (settleFinalizeTimer !== null) {
+      clearTimeout(settleFinalizeTimer);
+      settleFinalizeTimer = null;
+    }
+  }
+
+  function beginSoftStop(duration) {
+    var startDamping = 0.82;
+    var endDamping = 0.985;
+    var durationMs = duration || 4200;
+    var startTime = performance.now();
+
+    cancelSoftStop();
+    network.setOptions({ physics: buildPhysicsOptions(startDamping, true) });
+    network.startSimulation();
+
+    function step(now) {
+      var progress = Math.min((now - startTime) / durationMs, 1);
+      var easing = easeOutCubic(progress);
+      var damping = startDamping + ((endDamping - startDamping) * easing);
+
+      network.setOptions({ physics: buildPhysicsOptions(damping, true) });
+
+      if (progress < 1) {
+        settleAnimationFrame = requestAnimationFrame(step);
+        return;
+      }
+
+      settleAnimationFrame = null;
+      settleFinalizeTimer = setTimeout(function() {
+        network.stopSimulation();
+        network.setOptions({ physics: buildPhysicsOptions(endDamping, false) });
+        fitNetwork(1000);
+        settleFinalizeTimer = null;
+      }, 180);
+    }
+
+    settleAnimationFrame = requestAnimationFrame(step);
+  }
+
+  beginSoftStop();
 
   // ---------- CUSTOM HOVER SEMANTIC HIGHLIGHT ---------- //
   var originalNodes = {};
@@ -666,6 +731,9 @@ def generate():
   });
   network.on("dragEnd", function (params) {
       isDragging = false;
+      if (params.nodes.length > 0) {
+          beginSoftStop(1800);
+      }
   });
 
   network.on("hoverNode", function (params) { 
@@ -717,12 +785,7 @@ def generate():
 
       nodesView.refresh();
       edgesView.refresh();
-      
-
-      
-      if(currentMode === 'dep') {
-         setTimeout(() => network.fit({animation: {duration: 800, easingFunction: 'easeInOutQuad'}}), 200);
-      }
+      beginSoftStop(currentMode === 'dep' ? 2400 : 3000);
       applyHighlight(null); 
     });
   });
