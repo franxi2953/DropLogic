@@ -305,12 +305,12 @@ body {
 }
 
 :root {
-  --dl-nav-toggle-size: 1em;
+  --dl-nav-toggle-size: 0.95em;
   --dl-nav-toggle-gap: 5px;
-  --dl-nav-toggle-arrow-size: 0.58em;
+  --dl-nav-toggle-arrow-size: 0.66em;
   --dl-nav-toggle-arrow-shift: -0.06em;
   --dl-nav-toggle-offset: calc(var(--dl-nav-toggle-size) + var(--dl-nav-toggle-gap));
-  --dl-nav-row-height: 1.45em;
+  --dl-nav-row-height: 1.62em;
   --dl-nav-row-gap: 0.18em;
 }
 
@@ -435,11 +435,12 @@ body {
 }
 
 .md-sidebar--primary .md-nav__item--nested > .md-nav {
+  margin-bottom: 0;
   max-height: 0;
   opacity: 0;
   overflow: hidden;
-  transform: translateY(-0.2rem);
-  transition: max-height 260ms ease, opacity 180ms ease, transform 260ms ease;
+  transform: none;
+  transition: max-height 260ms ease, opacity 180ms ease;
 }
 
 .md-sidebar--primary .md-nav__item--nested > .md-nav__toggle:checked ~ .md-nav {
