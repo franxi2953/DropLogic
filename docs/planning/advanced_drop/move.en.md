@@ -2,11 +2,6 @@
 
 `move()` plans coordinated movement for droplets whose current position differs from their target.
 
-<figure class="dl-plan-demo" markdown>
-  ![Simulator GIF showing two droplets routed with move()](../../assets/advanced-drop/move.gif)
-  <figcaption><code>move(mode="sipp")</code> routing two droplets through a simulator plan</figcaption>
-</figure>
-
 To move an existing droplet again, update its target first:
 
 ```python

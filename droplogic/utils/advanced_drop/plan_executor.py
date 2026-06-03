@@ -207,9 +207,10 @@ class PlanExecutor:
                 logger.error("No plan available for execution")
                 return
 
-            # Set validator and visualizer
+            # Set validator and matrix visualizer. Recording can use the visualizer
+            # snapshot path without opening an interactive window.
             self.validator = self.advanced_drop.validator if verify_positions else None
-            self.visualizer = self.advanced_drop.visualizer if enable_visualizers else None
+            self.visualizer = self.advanced_drop.visualizer if (enable_visualizers or record_matrix) else None
             self._owns_matrix_visualizer = False
             self._owns_streamer_visualizer = False
             self._stop_executor_synced_recorders()

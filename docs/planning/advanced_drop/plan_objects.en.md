@@ -4,11 +4,6 @@
 
 The plan is a `DropletPlan`: a frame-by-frame description of matrix states, droplet trajectories, active droplets, and event metadata.
 
-<figure class="dl-plan-demo" markdown>
-  ![Simulator GIF showing a plan extended by retargeting a droplet and calling move() again](../../assets/advanced-drop/plan-extension.gif)
-  <figcaption>Plan extension: create, move, retarget, then append another <code>move()</code></figcaption>
-</figure>
-
 ## `DropletPlan` Fields
 
 - `frames`: list of 2D arrays. Each frame is the electrode matrix to send to the system.

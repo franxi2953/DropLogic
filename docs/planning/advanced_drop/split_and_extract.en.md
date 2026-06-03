@@ -13,8 +13,8 @@ Both functions extend `system.advanced_drop.plan` and return the IDs of newly cr
 new_ids = system.advanced_drop.reservoir_extraction(
     reservoir_droplet_id=1,
     split_mode="1to2",
-    steps=(0, 5),
-    split_size={(0, 0)},
+    steps=(0, 10),
+    split_size={(2, 2), (2, 3), (3, 2), (3, 3)},
     new_droplet_id=10,
 )
 ```
@@ -32,21 +32,23 @@ Arguments:
 
 `steps` are `(row_delta, col_delta)`. Negative row moves upward. Positive column moves rightward.
 
+For `"1to2"`, pass `split_size` as an explicit set of reservoir-relative coordinates when you want to extract from a specific region. For example, `{(2, 2), (2, 3), (3, 2), (3, 3)}` extracts the central `2x2` area of a `6x6` reservoir.
+
 ## `1to2`
 
 Extract one droplet from the reservoir.
 
 <figure class="dl-plan-demo" markdown>
-  ![Simulator GIF showing reservoir_extraction(split_mode="1to2") creating one droplet from a reservoir](../../assets/advanced-drop/reservoir-extraction-1to2.gif)
-  <figcaption><code>reservoir_extraction(split_mode="1to2")</code> extracting one droplet</figcaption>
+  ![Executor-recorded simulator GIF showing reservoir_extraction(split_mode="1to2") creating a central 2x2 droplet from a 6x6 reservoir](../../assets/advanced-drop/reservoir-extraction-1to2.gif)
+  <figcaption><code>PlanExecutor</code> recording of <code>reservoir_extraction(split_mode="1to2")</code>: 6x6 reservoir, central 2x2 extracted droplet</figcaption>
 </figure>
 
 ```python
 new_ids = ad.reservoir_extraction(
     reservoir_droplet_id=1,
     split_mode="1to2",
-    steps=(-5, 0),
-    split_size={(0, 0), (0, 1)},
+    steps=(0, 10),
+    split_size={(2, 2), (2, 3), (3, 2), (3, 3)},
     halo_size=1,
 )
 ```
@@ -56,11 +58,6 @@ Use this when you want a reservoir to keep most of its footprint while producing
 ## `1to3`
 
 Extract a central droplet and separate the resulting pieces.
-
-<figure class="dl-plan-demo" markdown>
-  ![Simulator GIF showing reservoir_extraction(split_mode="1to3") extracting and separating droplets from a reservoir](../../assets/advanced-drop/reservoir-extraction-1to3.gif)
-  <figcaption><code>reservoir_extraction(split_mode="1to3")</code> extracting and separating pieces</figcaption>
-</figure>
 
 ```python
 new_ids = ad.reservoir_extraction(
@@ -77,11 +74,6 @@ For `"1to3"`, `split_size` is interpreted as `(height, width)`.
 ## `linear`
 
 Create multiple droplets in a linear sweep from a reservoir.
-
-<figure class="dl-plan-demo" markdown>
-  ![Simulator GIF showing reservoir_extraction(split_mode="linear") creating multiple droplets in a row](../../assets/advanced-drop/reservoir-extraction-linear.gif)
-  <figcaption><code>reservoir_extraction(split_mode="linear")</code> creating a row of droplets</figcaption>
-</figure>
 
 ```python
 new_ids = ad.reservoir_extraction(
@@ -101,11 +93,6 @@ Use `linear_direction=(0, 1)` for a horizontal sweep to the right, `(1, 0)` for 
 ## Isometric Split
 
 `isometric_split()` recursively splits a droplet into equal subdroplets and moves them symmetrically.
-
-<figure class="dl-plan-demo" markdown>
-  ![Simulator GIF showing isometric_split() dividing one droplet into symmetric droplets](../../assets/advanced-drop/isometric-split.gif)
-  <figcaption><code>isometric_split()</code> recursively splitting into symmetric subdroplets</figcaption>
-</figure>
 
 ```python
 new_ids = ad.isometric_split(

@@ -4,11 +4,6 @@ Vision helpers are optional. They only work when the system has the required cam
 
 Simulator and DMLite workflows can still use debug modes and logical correction utilities.
 
-<figure class="dl-plan-demo" markdown>
-  ![Simulator GIF showing correct_droplet_position() appending a correction frame](../../assets/advanced-drop/correction.gif)
-  <figcaption><code>correct_droplet_position()</code> appending a logical correction frame in simulation</figcaption>
-</figure>
-
 ## Verify Droplets
 
 `verify_droplets()` checks whether droplets are where the plan expects them to be.

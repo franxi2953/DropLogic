@@ -2,11 +2,6 @@
 
 `merge()` routes droplets into one merged footprint.
 
-<figure class="dl-plan-demo" markdown>
-  ![Simulator GIF showing merge() routing two droplets into one footprint](../../assets/advanced-drop/merge.gif)
-  <figcaption><code>merge()</code> routing two droplets into one merged footprint</figcaption>
-</figure>
-
 ```python
 merged_id = system.advanced_drop.merge(
     droplet_ids=[1, 2],
