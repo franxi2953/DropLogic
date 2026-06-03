@@ -97,8 +97,8 @@ For `"1to3"`, `split_size` is interpreted as `(height, width)`.
 Create multiple droplets in a linear sweep from a reservoir.
 
 <figure class="dl-plan-demo" markdown>
-  ![Executor-recorded simulator GIF showing reservoir_extraction(split_mode="linear") sweeping a wide reservoir to create five droplets](../../assets/advanced-drop/reservoir-extraction-linear.gif)
-  <figcaption><code>PlanExecutor</code> recording of <code>reservoir_extraction(split_mode="linear")</code>: wide reservoir, five 1x1 droplets produced in a horizontal sweep</figcaption>
+  ![Executor-recorded simulator GIF showing reservoir_extraction(split_mode="linear") sweeping a wide reservoir to create three complete lines of droplets](../../assets/advanced-drop/reservoir-extraction-linear.gif)
+  <figcaption><code>PlanExecutor</code> recording of <code>reservoir_extraction(split_mode="linear")</code>: wide reservoir, three complete lines of 1x1 droplets produced in a horizontal sweep</figcaption>
 </figure>
 
 ```python
@@ -106,15 +106,15 @@ ad.droplets.create_droplet(
     1,
     origin=(18, 18),
     target=(18, 18),
-    width=5,
+    width=10,
     height=14,
 )
 
 new_ids = ad.reservoir_extraction(
     reservoir_droplet_id=1,
     split_mode="linear",
-    linear_drops_number=5,
-    linear_offset=1,
+    linear_drops_number=21,
+    linear_offset=0,
     linear_space_per_col=3,
     linear_space_per_row=1,
     linear_drop_shape=(1, 1),

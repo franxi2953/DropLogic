@@ -123,7 +123,7 @@ def _build_reservoir_extraction_1to3(system):
 
 
 def _build_reservoir_extraction_linear(system):
-    """Create a tall reservoir and sweep it rightward to leave droplets behind."""
+    """Create a reservoir and sweep it rightward to leave three full droplet lines."""
     _prepare_visualizer(system)
     ad = system.advanced_drop
 
@@ -131,14 +131,14 @@ def _build_reservoir_extraction_linear(system):
         1,
         origin=(18, 18),
         target=(18, 18),
-        width=5,
+        width=10,
         height=14,
     )
     ad.reservoir_extraction(
         reservoir_droplet_id=1,
         split_mode="linear",
-        linear_drops_number=5,
-        linear_offset=1,
+        linear_drops_number=21,
+        linear_offset=0,
         linear_space_per_col=3,
         linear_space_per_row=1,
         linear_drop_shape=(1, 1),
