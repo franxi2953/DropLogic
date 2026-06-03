@@ -261,7 +261,7 @@ def demo_isometric_split():
         ad.droplets.create_droplet(1, (22, 22), (22, 22), width=4, height=4)
         ad.isometric_split(
             droplet_id=1,
-            steps=[(0, 6), (5, 0)],
+            steps=[(0, 4), (4, 0), (0, 3), (3, 0)],
             simultaneous=True,
             new_droplet_id=2,
         )
