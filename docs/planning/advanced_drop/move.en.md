@@ -2,6 +2,13 @@
 
 `move()` plans coordinated movement for droplets whose current position differs from their target.
 
+To move an existing droplet again, update its target first:
+
+```python
+system.advanced_drop.droplets.update_droplet_target(1, (60, 20))
+system.advanced_drop.move(mode="sipp")
+```
+
 ```python
 plan = system.advanced_drop.move(mode="sipp")
 ```

@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 150" fill="none">
+  <rect x="1" y="1" width="918" height="148" fill="#ffffff" stroke="#111111" stroke-width="2"/>
+  <text x="460" y="34" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="18" fill="#111111" letter-spacing="3">
+    PhD RESEARCH PROJECT
+  </text>
+  <line x1="40" y1="52" x2="880" y2="52" stroke="#111111" stroke-width="1"/>
+  <g transform="translate(45 75)">
+    <rect x="0" y="0" width="245" height="46" fill="#ffffff" stroke="#111111" stroke-width="1.5"/>
+    <text x="122.5" y="19" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="13" fill="#111111" letter-spacing="2">
+      UNIVERSITY OF
+    </text>
+    <text x="122.5" y="36" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="18" font-weight="700" fill="#111111">
+      CAMBRIDGE
+    </text>
+  </g>
+  <g transform="translate(337.5 75)">
+    <rect x="0" y="0" width="245" height="46" fill="#ffffff" stroke="#111111" stroke-width="1.5"/>
+    <text x="122.5" y="19" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="13" fill="#111111" letter-spacing="2">
+      OCCHIPINTI
+    </text>
+    <text x="122.5" y="36" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="18" font-weight="700" fill="#111111">
+      GROUP
+    </text>
+  </g>
+  <g transform="translate(630 75)">
+    <rect x="0" y="0" width="245" height="46" fill="#ffffff" stroke="#111111" stroke-width="1.5"/>
+    <text x="122.5" y="19" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="13" fill="#111111" letter-spacing="2">
+      DI MICHELE
+    </text>
+    <text x="122.5" y="36" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="18" font-weight="700" fill="#111111">
+      LAB
+    </text>
+  </g>
+</svg>

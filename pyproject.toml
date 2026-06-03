@@ -3,7 +3,7 @@ requires = ["setuptools", "wheel"]
 
 [project]
 name = "droplogic"
-version = "0.1.0"
+version = "1.0.0"
 description = "Digital microfluidics control platform with SIPP planning and real-time visualization"
 authors = [{ name = "Fran Quero", email = "fjq21@cam.ac.uk" }]
 license = { file = "LICENSE" }

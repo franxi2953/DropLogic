@@ -40,7 +40,7 @@ Arguments:
 - `target`: desired top-left `(row, col)` position.
 - `shape`: optional set of relative `(row, col)` offsets.
 - `width`, `height`: rectangular shape dimensions if `shape` is not provided.
-- `priority`: routing priority. The current planner sorts droplets by this value.
+- `priority`: routing order. The current SIPP planner sorts droplets from lowest to highest numeric value, so `priority=0` is planned before `priority=1`. Earlier-planned droplets reserve space first and often get the most direct route; later droplets route around those reservations.
 - `vital_space`: minimum halo used for collision avoidance.
 
 ## Bulk Creation
@@ -62,6 +62,8 @@ system.advanced_drop.droplets.add_droplets([
 system.advanced_drop.droplets.update_droplet_target(1, (70, 20))
 system.advanced_drop.move(mode="sipp")
 ```
+
+Reminder: `move()` only plans droplets whose current position differs from their target. If a droplet is already at target, call `update_droplet_target()` first.
 
 `update_droplet_position()` changes the logical current position. Prefer `system.advanced_drop.correct_droplet_position()` if you are correcting after a hardware mismatch, because that also appends a correction frame to the plan.
 

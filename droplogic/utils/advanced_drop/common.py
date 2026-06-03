@@ -20,7 +20,7 @@ class Droplet:
     shape: Set[Tuple[int, int]]      # Relative electrode positions from top-left
     origin_corner: Tuple[int, int]   # Current top-left position
     target_corner: Tuple[int, int]   # Desired top-left position
-    priority: int = 0                # For conflict resolution (higher = more priority)
+    priority: int = 0                # Lower values are planned first by the current SIPP planner
     vital_space: int = 1             # Minimum distance other droplets must maintain
     electrode_count: int = 0         # Total number of electrodes (for merged droplets with overlapping positions)
 
@@ -255,7 +255,7 @@ def create_droplet(droplet_id: int, origin: Tuple[int, int], target: Tuple[int, 
         shape: Custom shape as set of relative positions from top-left corner
         width: Width for rectangular droplet (used with height)
         height: Height for rectangular droplet (used with width)
-        priority: Priority for conflict resolution (higher = more priority)
+        priority: Routing order; lower numeric values are planned first
         vital_space: Minimum distance other droplets must maintain
         
     Returns:
@@ -742,5 +742,3 @@ def tag_frame_span(plan: DropletPlan, start_idx: int, count: int, event_id: int,
         event_type,
         {"event_id": event_id, "frame_span": (start_idx, end_frame), **data}
     ))
-
-
