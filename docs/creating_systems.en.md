@@ -1,6 +1,6 @@
-# Creating Hardware Systems
+# Creating New Systems
 
-This guide provides a complete starting point for implementing new DropLogic hardware systems. It captures all the best practices and patterns established in existing implementations like `BOXMini`, `Simulator`, and `DMLite`.
+This guide provides a complete starting point for implementing new DropLogic systems. It captures the main patterns established in existing implementations like `Simulator` and `DMLite`, and shows how to build a new machine by remixing modules around the shared `DropSystem` base.
 
 ## Quick Start
 

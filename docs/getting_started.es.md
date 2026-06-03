@@ -28,7 +28,7 @@ Para empezar a usar **DropLogic**, primero necesitas entender dos conceptos clav
 - **Sistema (System):** Un sistema representa toda la máquina de hardware o el entorno de simulación. DropLogic dispone de algunos sistemas preconstruidos como `box_mini1` y `DMLite` (plataformas de referencia basadas en la tecnología de Mojado Eléctrico de Matriz Activa sobre un Dieléctrico o AM-EWOD), y también el módulo computacional `simulator.py` (un entorno puramente computacional de prueba, totalmente agnóstico de su tecnología de hardware).
 - **Módulo (Module):** Un sistema es esencialmente una colección de módulos. Un módulo controla un componente de hardware específico, como la matriz de electrodos, la cámara o los controladores de temperatura. Los módulos pueden tener diferentes **versiones o implementaciones** (ej. `CameraV1` o `MicroscopeV2`), lo que te permite intercambiar componentes físicos de hardware manteniendo exactamente la misma sintaxis en tu código de DropLogic.
 
-*(Para más información acerca de arquitecturas y cómo crear tus propios sistemas personalizados usando combinaciones únicas de módulos listos para usar, consulta nuestra guía sobre cómo [Crear Sistemas de Hardware](creating_systems.md)).*
+*(Para una explicación más estructurada de sistemas, módulos y de cómo se ensamblan nuevas máquinas, consulta la sección **Systems** del menú de navegación, que termina con nuestra guía [Creating New Systems](creating_systems.md)).*
 
 A continuación se muestra un ejemplo rápido de cómo empezar a usar un sistema **Simulador** dentro de tus scripts:
 

@@ -6,6 +6,8 @@ theme:
   logo: assets/droplets-mark.svg
   favicon: assets/droplets-mark.svg
   font: false
+  features:
+    - navigation.indexes
   palette:
     scheme: default
 
@@ -36,8 +38,15 @@ plugins:
 nav:
   - Home: index.md
   - Getting Started: getting_started.md
+  - Systems:
+      - Overview: systems/index.md
+      - Simulator: systems/simulator.md
+      - DMLite:
+          - Overview: systems/dmlite/index.md
+          - Modules:
+              - Electrode Matrix: systems/dmlite/electrode_matrix.md
+      - Creating New Systems: creating_systems.md
   - Architecture Map: repository_structure.md
-  - Creating New Systems: creating_systems.md
 
 markdown_extensions:
   - admonition
