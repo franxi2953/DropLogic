@@ -46,12 +46,58 @@ system.visualizers.matrix.stop()
 
 The visualizer reads `system.state["electrode_matrix"]["matrix"]`, so it reflects whatever the system state currently contains.
 
+## Matrix Orientation
+
+The matrix visualizer receives logical matrix coordinates in AdvancedDrop's
+standard `(row, col)` order, then rotates the display for the window.
+
+Default:
+
+- `matrix_rotation_degrees=90`
+- the matrix is displayed 90 degrees clockwise
+- logical `(0, 0)` appears near the top-right of the visualizer
+- increasing `row` moves left on the default display
+- increasing `col` moves down on the default display
+
+This is the default because the Acxel DMLite/BOXMini-style electrode matrix
+setup is physically viewed rotated relative to the logical NumPy matrix.
+Planning code still uses `(row, col)` 0-indexed coordinates; the visualizer only
+changes how the matrix is drawn.
+
+Change the display rotation with:
+
+```python
+system.visualizers.matrix.set_matrix_rotation(0)    # unrotated display
+system.visualizers.matrix.set_matrix_rotation(90)   # default
+system.visualizers.matrix.set_matrix_rotation(180)
+system.visualizers.matrix.set_matrix_rotation(270)
+```
+
+Clicks are converted back into logical `(row, col)` before your callback runs:
+
+```python
+def on_click(electrode):
+    row, col = electrode
+    print(row, col)
+
+system.visualizers.matrix.set_electrode_click_callback(on_click)
+```
+
+Background image rotation is independent. `bg_rotation_deg` only rotates the
+optional camera/background frame behind the matrix; it does not rotate
+AdvancedDrop coordinates:
+
+```python
+system.visualizers.matrix.bg_rot = 0.0
+```
+
 ## Matrix Public Methods
 
 - `start(stop_condition=None)`: open the display window.
 - `stop()`: close the display loop.
 - `is_running()`: return whether the visualizer is active.
 - `set_background(frame)`: blend an image behind the electrode grid.
+- `set_matrix_rotation(degrees)`: rotate the displayed matrix by `0`, `90`, `180`, or `270` clockwise degrees.
 - `set_paths(paths)`: replace displayed droplet trajectories.
 - `add_path(path)`: append one trajectory.
 - `clear_paths()`: remove displayed trajectories.

@@ -820,19 +820,23 @@ class MatrixVisualizer:
                  box,                                   # ← BOXMini instance
                  window_name="Matrix Display",
                  matrix_size=(680, 600),
-                 margins=(18,80,15,57),             # top, left, bottom, right
+                 margins=(18,80,15,57),             # top, right, bottom, left
                  bg_rotation_deg=0.8,
                  exit_flag=None,
                  paths=None,                           # ← new parameter for droplet paths
                  record_movie=False,                   # ← recording metadata for executor
                  movie_filename=None,                  # ← output movie filename
-                 movie_fps=30):                        # ← movie frame rate metadata
+                 movie_fps=30,                         # ← movie frame rate metadata
+                 matrix_rotation_degrees=90):
 
         self.box         = box
         self.window_name = window_name
         self.matrix_size = matrix_size
         self.margins     = margins
         self.bg_rot      = bg_rotation_deg
+        self.matrix_rotation_degrees = self._normalize_matrix_rotation_degrees(
+            matrix_rotation_degrees
+        )
 
         self.background  = None                       # optional camera frame
         self.flag_exit   = exit_flag or threading.Event()
@@ -901,6 +905,11 @@ class MatrixVisualizer:
     def set_background(self, frame):
         with self.lock:
             self.background = frame.copy()
+
+    def set_matrix_rotation(self, degrees):
+        """Set display rotation for the electrode matrix in clockwise degrees."""
+        with self.lock:
+            self.matrix_rotation_degrees = self._normalize_matrix_rotation_degrees(degrees)
 
     def set_electrode_click_callback(self, callback):
         """Set callback receiving clicked electrode as (row, col)."""
@@ -1076,8 +1085,6 @@ class MatrixVisualizer:
 
         if paths_copy:
             rows_orig, cols_orig = matrix.shape
-            cell_w = region_w / rows_orig
-            cell_h = region_h / cols_orig
 
             for path_idx, path in enumerate(paths_copy):
                 if len(path) < 2:
@@ -1096,16 +1103,15 @@ class MatrixVisualizer:
                 for pos in path:
                     if pos is not None and len(pos) >= 2:
                         row_orig, col_orig = pos[0], pos[1]  # 0-indexed positions
+                        point = self._electrode_to_canvas_point(
+                            row_orig, col_orig,
+                            rows_orig, cols_orig,
+                            left, top, region_w, region_h,
+                        )
+                        if point is None:
+                            continue
 
-                        # Convert to rotated indices (same as microscope position logic)
-                        r_rot = col_orig
-                        c_rot = rows_orig - 1 - row_orig
-
-                        # Calculate canvas coordinates
-                        px = left + int((c_rot + 0.5) * cell_w)
-                        py = top + int((r_rot + 0.5) * cell_h)
-
-                        current_point = (px, py)
+                        current_point = point
                         path_points.append(current_point)
 
                         # Draw thin white line from previous point to current point
@@ -1177,46 +1183,32 @@ class MatrixVisualizer:
             row_orig, col_orig = rc
 
             rows_orig, cols_orig = matrix.shape        # before rotation
-
-            # ---- convert to rotated indices ----
-            r_rot = col_orig
-            c_rot = rows_orig - 1 - row_orig
-
-            # ---- pixel size of one electrode in the destination box ----
-            cell_w = region_w / rows_orig    # rotated image width = rows_orig
-            cell_h = region_h / cols_orig    # rotated image height = cols_orig
-
-            # ---- centre of that electrode in canvas coords ----
-            px = left + int((c_rot + 0.5) * cell_w)
-            py = top  + int((r_rot + 0.5) * cell_h)
+            point = self._electrode_to_canvas_point(
+                row_orig, col_orig,
+                rows_orig, cols_orig,
+                left, top, region_w, region_h,
+            )
 
             # draw a circle of 5-electrode radius
-            radius_px = int(15)
-            cv2.circle(canvas, (px, py), radius_px, (250, 250, 250), 1)
+            if point is not None:
+                radius_px = int(15)
+                cv2.circle(canvas, point, radius_px, (250, 250, 250), 1)
 
         # ───── draw a little circle at electrode (0,0) position ──────
         row_orig = 0
         col_orig = 0
 
         rows_orig, cols_orig = matrix.shape
+        point = self._electrode_to_canvas_point(
+            row_orig, col_orig,
+            rows_orig, cols_orig,
+            left, top, region_w, region_h,
+        )
 
-        # ---- convert to rotated indices ----
-        r_rot = col_orig
-        c_rot = rows_orig - 1 - row_orig
-
-        # ---- pixel size of one electrode in the destination box ----
-        cell_w = region_w / rows_orig
-        cell_h = region_h / cols_orig
-
-        # ---- centre of that electrode in canvas coords ----
-        px = left + int((c_rot + 0.5) * cell_w)
-        py = top + int((r_rot + 0.5) * cell_h)
-
-        # draw a small circle
-        cv2.circle(canvas, (px, py), 5, (255, 255, 255), 1)
-
-        # add "0,0" label
-        cv2.putText(canvas, "0,0", (px + 8, py - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        if point is not None:
+            px, py = point
+            cv2.circle(canvas, (px, py), 5, (255, 255, 255), 1)
+            cv2.putText(canvas, "0,0", (px + 8, py - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
         # ───── Draw ALL breakpoint indicators as dots ──────
         with self.lock:
@@ -1224,21 +1216,19 @@ class MatrixVisualizer:
 
         if all_breakpoint_positions:
             rows_orig, cols_orig = matrix.shape
-            cell_w = region_w / rows_orig
-            cell_h = region_h / cols_orig
 
             for frame_num, positions in all_breakpoint_positions.items():
                 for pos in positions:
                     if len(pos) >= 2:
                         row_orig, col_orig = pos[0], pos[1]
-
-                        # Convert to rotated indices (same as path drawing)
-                        r_rot = col_orig
-                        c_rot = rows_orig - 1 - row_orig
-
-                        # Calculate canvas coordinates
-                        px = left + int((c_rot + 0.5) * cell_w)
-                        py = top + int((r_rot + 0.5) * cell_h)
+                        point = self._electrode_to_canvas_point(
+                            row_orig, col_orig,
+                            rows_orig, cols_orig,
+                            left, top, region_w, region_h,
+                        )
+                        if point is None:
+                            continue
+                        px, py = point
 
                         # Draw dots - highlight current frame breakpoints more prominently
                         if frame_num == self.current_frame:
@@ -1259,12 +1249,15 @@ class MatrixVisualizer:
         region[mask] = mat_img[mask]
 
         # ───── add row and column labels centered in each axis ──────
-        # "Columns" label vertically on the right, centered, as rotated text
+        rotation = self.matrix_rotation_degrees
+        horizontal_label = "Rows" if rotation in (90, 270) else "Columns"
+        vertical_label = "Columns" if rotation in (90, 270) else "Rows"
+
+        # Vertical axis label on the right, centered as rotated text.
         x_cols = left + region_w + 20
         y_center = top + region_h // 2
-        # Create small image for text
         text_img = np.zeros((50, 150, 3), np.uint8)
-        cv2.putText(text_img, "Columns", (5, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(text_img, vertical_label, (5, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         # Rotate 90 degrees clockwise for vertical reading
         rotated_text = cv2.rotate(text_img, cv2.ROTATE_90_CLOCKWISE)
         # Paste onto canvas centered
@@ -1274,10 +1267,10 @@ class MatrixVisualizer:
         if y_paste >= 0 and y_paste + text_h <= canvas.shape[0] and x_paste >= 0 and x_paste + text_w <= canvas.shape[1]:
             canvas[y_paste:y_paste + text_h, x_paste:x_paste + text_w] = rotated_text
 
-        # "Rows" label horizontally on the top, centered
+        # Horizontal axis label on the top, centered.
         x_rows = left + region_w // 2 - 15
         y_rows = top - 5
-        cv2.putText(canvas, "Rows", (x_rows, y_rows), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(canvas, horizontal_label, (x_rows, y_rows), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
         return canvas
 
@@ -1311,6 +1304,7 @@ class MatrixVisualizer:
             canvas_shape = self.last_canvas_shape
             display_shape = self.last_display_shape
             matrix_shape = self.last_matrix_shape
+            matrix_rotation_degrees = self.matrix_rotation_degrees
 
         if canvas_shape is None or display_shape is None or matrix_shape is None:
             return None
@@ -1337,20 +1331,80 @@ class MatrixVisualizer:
         local_x = canvas_x - left
         local_y = canvas_y - top
 
-        cell_w = region_w / rows_orig
-        cell_h = region_h / cols_orig
+        rows_rot, cols_rot = self._rotated_matrix_shape(
+            rows_orig, cols_orig, matrix_rotation_degrees
+        )
+        cell_w = region_w / cols_rot
+        cell_h = region_h / rows_rot
 
         c_rot = int(local_x / cell_w)
         r_rot = int(local_y / cell_h)
 
-        c_rot = max(0, min(rows_orig - 1, c_rot))
-        r_rot = max(0, min(cols_orig - 1, r_rot))
+        c_rot = max(0, min(cols_rot - 1, c_rot))
+        r_rot = max(0, min(rows_rot - 1, r_rot))
 
-        row_orig = rows_orig - 1 - c_rot
-        col_orig = r_rot
-        return (row_orig, col_orig)
+        return self._rotated_cell_to_electrode(
+            r_rot, c_rot, rows_orig, cols_orig, matrix_rotation_degrees
+        )
 
     # ───────────────────────────── image utilities ───────────────────────────
+    @staticmethod
+    def _normalize_matrix_rotation_degrees(degrees):
+        try:
+            normalized = int(round(float(degrees))) % 360
+        except Exception as exc:
+            raise ValueError("matrix_rotation_degrees must be one of 0, 90, 180, or 270") from exc
+
+        if normalized not in (0, 90, 180, 270):
+            raise ValueError("matrix_rotation_degrees must be one of 0, 90, 180, or 270")
+        return normalized
+
+    @staticmethod
+    def _rotated_matrix_shape(rows_orig, cols_orig, rotation_degrees):
+        if rotation_degrees in (90, 270):
+            return cols_orig, rows_orig
+        return rows_orig, cols_orig
+
+    @staticmethod
+    def _electrode_to_rotated_cell(row_orig, col_orig, rows_orig, cols_orig, rotation_degrees):
+        if rotation_degrees == 0:
+            return row_orig, col_orig
+        if rotation_degrees == 90:
+            return col_orig, rows_orig - 1 - row_orig
+        if rotation_degrees == 180:
+            return rows_orig - 1 - row_orig, cols_orig - 1 - col_orig
+        return cols_orig - 1 - col_orig, row_orig
+
+    @staticmethod
+    def _rotated_cell_to_electrode(r_rot, c_rot, rows_orig, cols_orig, rotation_degrees):
+        if rotation_degrees == 0:
+            return (r_rot, c_rot)
+        if rotation_degrees == 90:
+            return (rows_orig - 1 - c_rot, r_rot)
+        if rotation_degrees == 180:
+            return (rows_orig - 1 - r_rot, cols_orig - 1 - c_rot)
+        return (c_rot, cols_orig - 1 - r_rot)
+
+    def _electrode_to_canvas_point(self, row_orig, col_orig, rows_orig, cols_orig,
+                                   left, top, region_w, region_h):
+        if not (0 <= row_orig < rows_orig and 0 <= col_orig < cols_orig):
+            return None
+
+        rotation = self.matrix_rotation_degrees
+        rows_rot, cols_rot = self._rotated_matrix_shape(rows_orig, cols_orig, rotation)
+        cell_w = region_w / cols_rot
+        cell_h = region_h / rows_rot
+        r_rot, c_rot = self._electrode_to_rotated_cell(
+            row_orig, col_orig, rows_orig, cols_orig, rotation
+        )
+        px = left + int((c_rot + 0.5) * cell_w)
+        py = top + int((r_rot + 0.5) * cell_h)
+        return (px, py)
+
+    @staticmethod
+    def _matrix_rotation_k(rotation_degrees):
+        return -(rotation_degrees // 90)
+
     @staticmethod
     def _rotate_image(image, angle_deg):
         (h, w) = image.shape[:2]
@@ -1366,9 +1420,11 @@ class MatrixVisualizer:
                               borderMode=cv2.BORDER_CONSTANT,
                               borderValue=(0,0,0))
 
-    @staticmethod
-    def _matrix_to_image(matrix, size):
-        rotated = np.rot90(matrix, k=-1)          # 90° clockwise
+    def _matrix_to_image(self, matrix, size):
+        rotated = np.rot90(
+            matrix,
+            k=self._matrix_rotation_k(self.matrix_rotation_degrees)
+        )
         h, w = rotated.shape
         img = np.zeros((h, w, 3), np.uint8)
         img[rotated == 1]  = [187,192,113]        # 71C0BB (droplet electrodes)

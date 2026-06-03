@@ -19,7 +19,19 @@ system.advanced_drop
 
 ## Coordinate Convention
 
-DropLogic uses matrix coordinates as `(row, col)` tuples.
+DropLogic uses 0-indexed matrix coordinates as `(row, col)` tuples.
+This is intentionally the same ordering used by NumPy arrays: `matrix[row, col]`.
+
+Do not read AdvancedDrop positions as Cartesian `(x, y)`. If you are thinking in
+image or stage coordinates, the closest mental mapping is:
+
+- `row` is the vertical matrix index, similar to `y`.
+- `col` is the horizontal matrix index, similar to `x`.
+- therefore a Cartesian-looking point `(x, y)` usually becomes `(row, col) = (y, x)`.
+
+In the logical matrix convention, `(0, 0)` is the top-left electrode of the
+unrotated matrix. Increasing `row` moves downward through the matrix. Increasing
+`col` moves rightward through the matrix.
 
 For droplets, `origin_corner` and `target_corner` are the top-left corner of the droplet footprint. The droplet `shape` is stored as relative offsets from that top-left corner.
 
@@ -34,6 +46,57 @@ ad.droplets.create_droplet(
 ```
 
 This creates a 2x2 droplet whose body starts at row `10`, column `10`, and whose target top-left corner is row `30`, column `40`.
+
+Examples:
+
+```python
+origin = (10, 20)  # row 10, column 20
+target = (10, 30)  # same row, 10 columns to the right
+
+shape = {(0, 0), (0, 1), (1, 0), (1, 1)}  # 2x2 footprint
+absolute_cells = {
+    (origin[0] + dr, origin[1] + dc)
+    for dr, dc in shape
+}
+```
+
+Low-level hardware helpers may expose their own indexing rules. For example,
+some simulator electrode setters are 1-indexed because they mimic hardware
+commands. AdvancedDrop plans, droplets, trajectories, breakpoints, and debugger
+positions are 0-indexed `(row, col)`.
+
+## Matrix Visualizer Orientation
+
+The planner and plan debugger use the logical matrix convention above. The
+interactive `MatrixVisualizer` displays that logical matrix rotated by default:
+
+- default display rotation: `90` degrees clockwise.
+- logical `(0, 0)` appears near the top-right of the matrix visualizer.
+- increasing `row` moves left on the default visualizer display.
+- increasing `col` moves down on the default visualizer display.
+
+This default matches the orientation used by the Acxel DMLite/BOXMini-style
+electrode matrix setup that originally drove the visualizer design. It is only a
+display transform: it does not change how you write plans, create droplets, or
+address electrodes in AdvancedDrop.
+
+To use an unrotated display where logical `(0, 0)` appears top-left:
+
+```python
+system.visualizers.matrix.set_matrix_rotation(0)
+```
+
+Supported display rotations are `0`, `90`, `180`, and `270` clockwise degrees.
+Clicks in the matrix visualizer are converted back to logical `(row, col)` before
+callbacks receive them, so `set_electrode_click_callback()` always receives the
+same coordinate convention used by AdvancedDrop.
+
+`bg_rotation_deg` is separate. It applies a small correction to a background
+camera image, not to the logical electrode matrix:
+
+```python
+system.visualizers.matrix.bg_rot = 0.0  # background image only
+```
 
 ## Public Surface
 
