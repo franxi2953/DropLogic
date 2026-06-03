@@ -13,7 +13,7 @@ Un **sistema** es la definición de máquina de nivel superior que usa el usuari
 Ejemplos:
 
 - `Simulator`: un entorno puramente software para desarrollo y pruebas.
-- `DMLite`: un sistema real centrado en la matriz de electrodos.
+- `DMLite`: un sistema real centrado en la matriz de electrodos. La plataforma hardware es de [Acxel](https://www.acxel.com/); DropLogic proporciona la capa de integración.
 
 Un sistema normalmente ofrece:
 
@@ -50,6 +50,13 @@ Ejemplos:
 
 Esto permite que DropLogic mantenga una API de alto nivel estable mientras intercambia el driver o la implementación específica del dispositivo.
 
+El nombre `DMLite` aparece en dos capas a propósito:
+
+- como **sistema**, `droplogic.hardware.DMLite`, que es la máquina de alto nivel que instancia el usuario
+- como **versión de módulo**, `droplogic.hardware.modules.electrode_matrix.versions.DMLite`, que es la implementación específica para la matriz de electrodos de Acxel usada dentro de ese sistema
+
+Por tanto, el sistema `DMLite` actual es simplemente un sistema real compuesto por un módulo hardware principal: el adaptador de matriz de electrodos `DMLite` de Acxel.
+
 ## Cómo se Construyen los Sistemas
 
 En la práctica, un sistema de DropLogic es una mezcla de:
@@ -78,7 +85,7 @@ Para los sistemas reales, la documentación incluye una subsección de **Módulo
 
 ### DMLite
 
-`DMLite` es un sistema real mínimo centrado en la matriz de electrodos. Expone una superficie hardware más pequeña que otras máquinas, pero mantiene la misma arquitectura de DropLogic.
+`DMLite` es un sistema real mínimo centrado en una matriz de electrodos de Acxel. Expone una superficie hardware más pequeña que otras máquinas porque actualmente consta de un módulo hardware principal, pero mantiene la misma arquitectura de DropLogic.
 
 ## Extender la Librería
 

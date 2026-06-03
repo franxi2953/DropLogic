@@ -2,9 +2,11 @@
 
 The `DMLite` system is currently built around a single real hardware module: the electrode matrix.
 
+`DMLite` is an Acxel hardware platform. This page documents the DropLogic adapter around that hardware, not a DropLogic-manufactured module. See [Acxel](https://www.acxel.com/) for the hardware provider.
+
 ## Role in the System
 
-This module is responsible for translating system-level electrode commands into the concrete low-level implementation used by the DMLite hardware.
+This module is responsible for translating system-level electrode commands into the concrete low-level implementation used by Acxel DMLite hardware.
 
 At the system level, `DMLite` uses the module to:
 

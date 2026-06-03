@@ -43,6 +43,7 @@ nav:
           - Overview: getting_started/examples/index.md
           - Simulator Example: getting_started/examples/simulator.md
           - DMLite Example: getting_started/examples/dmlite.md
+  - Architecture Map: repository_structure.md
   - Systems:
       - Overview: systems/index.md
       - Simulator: systems/simulator.md
@@ -51,7 +52,10 @@ nav:
           - Modules:
               - Electrode Matrix: systems/dmlite/electrode_matrix.md
       - Creating New Systems: creating_systems.md
-  - Architecture Map: repository_structure.md
+  - Reference:
+      - Examples: examples.md
+      - Hardware: hardware.md
+      - API Reference: api.md
 
 markdown_extensions:
   - admonition

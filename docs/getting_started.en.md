@@ -25,7 +25,7 @@ pip install -e .
 
 To start using **DropLogic**, you first need to understand two key concepts: **Systems** and **Modules**.
 
-- **System:** A system represents the entire hardware machine or simulation environment. DropLogic provides a few pre-built systems like `box_mini1` and `DMLite` (reference hardware platforms based on Active Matrix ElectroWetting On Dielectric, AM-EWOD), and `simulator.py` (a pure software simulation environment which is hardware/platform agnostic).
+- **System:** A system represents the entire hardware machine or simulation environment. DropLogic provides a pure software `simulator.py` system and adapter systems for Acxel hardware such as `box_mini1` / `BOXMini` and `DMLite`. `BOXMini` and `DMLite` are Acxel platforms; DropLogic only provides the Python integration layer. See [Acxel](https://www.acxel.com/) for the hardware provider.
 - **Module:** A system is essentially a collection of Modules. A module controls a specific hardware component, like the electrode matrix, the camera, or the temperature controllers. Modules can have different **versions/implementations** (e.g. `CameraV1` or `MicroscopeV2`), allowing you to swap physical hardware components while maintaining the same DropLogic syntax.
 
 *(For a more structured explanation of systems, modules, and how new machines are assembled, see the **Systems** section in the navigation menu, ending with our [Creating New Systems](creating_systems.md) guide).*
@@ -56,4 +56,4 @@ system.advanced_drop.executor.start(frame_delay=0.5, enable_visualizers=True)
 For more complex real-world continuous use cases, check out the scripts inside the `examples/` directory included in the repository, or open the new **Getting Started > Example Scripts** subsection in the navigation menu for the full code and direct GitHub links:
 
 - `examples/simulator_example.py`: A pure software demonstration of a 128x128 virtual matrix that spawns 20 droplets and sets them into an infinite continuous-routing loop.
-- `examples/DMLite_example.py`: Runs the exact same infinite routing loop but binding directly to the physical AM-EWOD hardware. It sets a higher `frame_delay` to accommodate hardware voltage actuation delays and fluid physics.
+- `examples/DMLite_example.py`: Runs the exact same infinite routing loop but binding directly to Acxel `DMLite` AM-EWOD hardware through DropLogic's adapter layer. It sets a higher `frame_delay` to accommodate hardware voltage actuation delays and fluid physics.

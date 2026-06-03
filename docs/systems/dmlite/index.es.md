@@ -1,6 +1,8 @@
 # DMLite
 
-`DMLite` es un sistema real mínimo de DropLogic centrado en una matriz de electrodos física.
+`DMLite` es un sistema real mínimo de DropLogic centrado en una matriz de electrodos física de [Acxel](https://www.acxel.com/). DropLogic no proporciona el hardware; proporciona el sistema Python y el adaptador de módulo usado para controlarlo.
+
+El nombre `DMLite` se usa tanto para el sistema de alto nivel de DropLogic como para la versión del módulo de matriz de electrodos dentro de ese sistema. En esta sección, **el sistema** significa `droplogic.hardware.DMLite`; **la versión de módulo** significa `droplogic.hardware.modules.electrode_matrix.versions.DMLite`.
 
 Comparado con máquinas más grandes, mantiene una superficie hardware intencionalmente pequeña. Eso lo convierte en un sistema de referencia útil para entender cómo se monta una máquina real de DropLogic a partir de módulos.
 
@@ -46,4 +48,4 @@ system = DMLite()
 
 ## Módulos
 
-Como `DMLite` es un sistema real respaldado por hardware, su composición modular se documenta explícitamente en las páginas anidadas dentro de esta sección.
+Como `DMLite` es un sistema real respaldado por hardware, su composición modular se documenta explícitamente en las páginas anidadas dentro de esta sección. Por ahora esa composición es intencionalmente simple: el sistema consta del módulo de matriz de electrodos `DMLite` de Acxel más las capas compartidas de planificación y visualización de DropLogic.

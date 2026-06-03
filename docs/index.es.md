@@ -14,7 +14,7 @@
   <div class="dl-home__actions">
     <a class="md-button dl-button" href="getting_started/">Empezando</a>
     <a class="md-button dl-button" href="repository_structure/">Mapa de Arquitectura</a>
-    <a class="md-button dl-button" href="creating_systems/">Crear Sistemas</a>
+    <a class="md-button dl-button" href="systems/">Sistemas</a>
   </div>
 </div>
 
@@ -27,5 +27,6 @@
 <ul class="dl-home__list">
   <li><strong><a href="getting_started/">Empezando</a></strong>: Instalación, uso básico y primeros pasos.</li>
   <li><strong><a href="repository_structure/">Mapa de Arquitectura</a></strong>: Una mirada detallada a la estructura de la librería y su organización de hardware.</li>
-  <li><strong><a href="creating_systems/">Crear Sistemas</a></strong>: Una guía que explica cómo enlazar varios módulos de hardware interconectados para construir tu máquina.</li>
+  <li><strong><a href="systems/">Sistemas</a></strong>: La estructura de sistemas, módulos, versiones y cómo crear máquinas nuevas.</li>
+  <li><strong><a href="hardware/">Referencia</a></strong>: Notas de hardware, ejemplos y documentación de API.</li>
 </ul>

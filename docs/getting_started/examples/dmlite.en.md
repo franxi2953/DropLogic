@@ -5,6 +5,8 @@ Source file:
 
 This script demonstrates the same continuous multi-droplet loop as the simulator example, but against the real `DMLite` system.
 
+`DMLite` is an Acxel hardware platform. DropLogic adapts it through a Python system and electrode-matrix module; it is not a DropLogic-owned hardware module. See [Acxel](https://www.acxel.com/) for the hardware provider.
+
 It:
 
 - initializes a real `DMLite` system

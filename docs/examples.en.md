@@ -21,7 +21,7 @@ python3 examples/simulator_example.py
 
 ## 2. Hardware System Example (`DMLite_example.py`)
 
-This script runs the exact same infinite routing loop as the simulator, but it binds directly to the physical hardware (`BOXMini` / `DMLite` AM-EWOD matrices). 
+This script runs the exact same infinite routing loop as the simulator, but it binds directly to Acxel physical hardware (`BOXMini` / `DMLite` AM-EWOD matrices) through DropLogic's adapter layer. `BOXMini` and `DMLite` are Acxel devices, not DropLogic-owned modules; see [Acxel](https://www.acxel.com/) for the hardware provider.
 
 - Connects to hardware using the DropLogic physical abstraction stack.
 - To accommodate fluid physics and hardware latency, the frame execution delay is set to a safer `1.0s`.

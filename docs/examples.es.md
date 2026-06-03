@@ -21,7 +21,7 @@ python3 examples/simulator_example.py
 
 ## 2. Ejemplo con Máquina Real (`DMLite_example.py`)
 
-Este script implementa exactamente el mismo bucle infinito de movimiento que el simulador, pero interconectándose directamente a tu equipo AM-EWOD físico (matrices de tecnología `DMLite` / `BOXMini`).
+Este script implementa exactamente el mismo bucle infinito de movimiento que el simulador, pero conectado a hardware físico de Acxel (matrices AM-EWOD `DMLite` / `BOXMini`) mediante la capa adaptadora de DropLogic. `BOXMini` y `DMLite` son dispositivos de Acxel, no módulos propios de DropLogic; consulta [Acxel](https://www.acxel.com/) para la información del proveedor.
 
 - Usa las capas hardware y abstrae la complejidad de la física física.
 - Para darle tiempo a los circuitos de alto voltaje de enrutar las gotas físicas entre electrodos, el retardo o _delay_ de ejecución por frame se ubica en un nivel seguro de `1.0s`.

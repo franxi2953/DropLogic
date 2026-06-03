@@ -14,7 +14,7 @@
   <div class="dl-home__actions">
     <a class="md-button dl-button" href="getting_started/">Getting Started</a>
     <a class="md-button dl-button" href="repository_structure/">Architecture Map</a>
-    <a class="md-button dl-button" href="creating_systems/">Create Systems</a>
+    <a class="md-button dl-button" href="systems/">Systems</a>
   </div>
 </div>
 
@@ -27,5 +27,6 @@ Welcome to the official documentation for **DropLogic**! We built this platform 
 <ul class="dl-home__list">
   <li><strong><a href="getting_started/">Getting Started</a></strong>: Installation, basic usage, and first steps.</li>
   <li><strong><a href="repository_structure/">Architecture Map</a></strong>: A detailed look into the structure of the repository and how modules are organized.</li>
-  <li><strong><a href="creating_systems/">Create Systems</a></strong>: A guide explaining how to combine multiple hardware modules together to build your own machine.</li>
+  <li><strong><a href="systems/">Systems</a></strong>: The structure of systems, modules, versions, and how to create new machines.</li>
+  <li><strong><a href="hardware/">Reference</a></strong>: Hardware notes, examples, and API documentation.</li>
 </ul>

@@ -1,6 +1,8 @@
 # Creating New Systems
 
-This guide provides a complete starting point for implementing new DropLogic systems. It captures the main patterns established in existing implementations like `Simulator` and `DMLite`, and shows how to build a new machine by remixing modules around the shared `DropSystem` base.
+This guide provides a complete starting point for implementing new DropLogic systems. It captures the main patterns established in existing implementations like `Simulator` and the Acxel-backed `DMLite` adapter, and shows how to build a new machine by remixing modules around the shared `DropSystem` base.
+
+`DMLite` and `BOXMini` are Acxel hardware platforms. DropLogic provides adapters and orchestration around those devices; it does not manufacture or own the hardware modules. See [Acxel](https://www.acxel.com/) for the hardware provider.
 
 ## Quick Start
 
@@ -135,5 +137,5 @@ def close(self):
 
 You can study the existing systems inside the `droplogic/hardware/` directory:
 
-- **BOXMini** (`box_mini1.py`): Full hardware system including camera, microscope, and XY stage.
+- **BOXMini** (`box_mini1.py`): Adapter for an Acxel hardware system including camera, microscope, and XY stage.
 - **Simulator** (`simulator.py`): Simulation-only environment mimicking the electrode matrix behavior.

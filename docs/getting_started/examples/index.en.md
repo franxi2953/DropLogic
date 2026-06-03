@@ -5,7 +5,7 @@ Runnable examples live in [`examples/`](https://github.com/franxi2953/DropLogic/
 Main scripts:
 
 - [`simulator_example.py`](https://github.com/franxi2953/DropLogic/blob/main/examples/simulator_example.py)
-- [`DMLite_example.py`](https://github.com/franxi2953/DropLogic/blob/main/examples/DMLite_example.py)
+- [`DMLite_example.py`](https://github.com/franxi2953/DropLogic/blob/main/examples/DMLite_example.py), for Acxel `DMLite` hardware through DropLogic's adapter layer
 
 The pages below include the full code, a short explanation, and a direct GitHub link.
 
