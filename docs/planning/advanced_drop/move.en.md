@@ -53,8 +53,8 @@ ad.clear()
 
 ad.droplets.create_droplet(
     1,
-    origin=(18, 18),
-    target=(34, 32),
+    origin=(30, 18),
+    target=(30, 48),
     width=2,
     height=2,
 )

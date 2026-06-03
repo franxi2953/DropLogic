@@ -294,8 +294,8 @@ def _build_move_basic(system):
     _seed_droplets_in_single_frame(ad, [
         {
             "id": 1,
-            "origin": (18, 18),
-            "target": (34, 32),
+            "origin": (30, 18),
+            "target": (30, 48),
             "width": 2,
             "height": 2,
         },
