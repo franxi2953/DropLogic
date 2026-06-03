@@ -77,7 +77,7 @@ Solo rellena estos bloques si el sistema que instancias realmente crea esos modu
 
 ## Bloque De Calibracion
 
-`calibration` contiene valores medidos para mapear entre pixeles de camara, coordenadas de platina y coordenadas de electrodo.
+`calibration` contiene los valores medidos que se usan en runtime para conversion de pixeles de camara, conversion electrodo/platina y compensacion opcional de backlash XY.
 
 Calibracion de pixeles actual:
 
@@ -94,16 +94,9 @@ Mapeo platina/electrodo:
 | `calibration.electrode_mapping.inter_row` | Delta de platina al avanzar una fila de electrodo |
 | `calibration.electrode_mapping.inter_column` | Delta de platina al avanzar una columna de electrodo |
 | `calibration.electrode_mapping.offset_x` / `offset_y` | Offsets extra aplicados antes de convertir |
-| `calibration.field_of_view` | Metadatos opcionales del campo de vision |
 | `calibration.backlash_steps` | Compensacion opcional de backlash XY por direccion |
 
 Mide y actualiza `chip_origin`, `inter_row` e `inter_column` para cada maquina fisica y alineacion de chip.
-
-## Campos Legacy Para Seguir La Platina
-
-`inter_row_distance` e `inter_column_distance` todavia los usa `PlanExecutor` cuando convierte un objetivo de electrodo en un objetivo de platina durante ejecucion con seguimiento de gotas.
-
-Mantenlos salvo que el executor se refactorice para usar solo `calibration.electrode_mapping`.
 
 ## Flujo Practico De Edicion
 

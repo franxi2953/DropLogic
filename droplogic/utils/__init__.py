@@ -1,2 +1,1 @@
-# Utilities module
-from .basic_drop import BasicDrop
+"""Shared utility modules for DropLogic."""

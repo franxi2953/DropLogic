@@ -73,7 +73,6 @@ nav:
   - Utilities:
       - Overview: utilities/index.md
       - Hardware Utilities: utilities/hardware_utilities.md
-      - Calibration: utilities/calibration.md
       - Drop Vision: utilities/drop_vision.md
       - Debugging and Diagnostics: utilities/debugging.md
 

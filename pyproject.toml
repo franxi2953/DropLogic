@@ -32,7 +32,6 @@ dependencies = [
     "pyserial",
     "asciichartpy",
     "ultralytics",
-    "scipy",
     "pygame",
     "pynput",
     "easyocr",

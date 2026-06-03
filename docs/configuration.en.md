@@ -77,7 +77,7 @@ Only fill these blocks if your selected system actually instantiates those modul
 
 ## Calibration Block
 
-`calibration` contains measured values for mapping between camera pixels, stage coordinates, and electrode coordinates.
+`calibration` contains the measured values used at runtime for camera pixel conversion, electrode/stage conversion, and optional XY backlash compensation.
 
 Current pixel calibration:
 
@@ -94,16 +94,9 @@ Stage/electrode mapping:
 | `calibration.electrode_mapping.inter_row` | Stage delta for moving one electrode row |
 | `calibration.electrode_mapping.inter_column` | Stage delta for moving one electrode column |
 | `calibration.electrode_mapping.offset_x` / `offset_y` | Extra offsets applied before conversion |
-| `calibration.field_of_view` | Optional imaging field-of-view metadata |
 | `calibration.backlash_steps` | Optional XY backlash compensation by direction |
 
 Measure and update `chip_origin`, `inter_row`, and `inter_column` for each physical machine/chip alignment.
-
-## Legacy Stage-Following Fields
-
-`inter_row_distance` and `inter_column_distance` are still used by `PlanExecutor` when it converts an electrode target into a stage target for stage-following execution.
-
-Keep them unless the executor is refactored to use only `calibration.electrode_mapping`.
 
 ## Practical Editing Workflow
 

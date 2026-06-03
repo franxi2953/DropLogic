@@ -29,14 +29,31 @@ PIXEL_CALIBRATIONS = {
 }
 
 
-def _get_pixel_calibration(camera_model="AM16k"):
+def _get_pixel_calibration(camera_model="AM16k", config_path=None):
     """Return pixel-to-micron calibration metadata for a camera model."""
-    if camera_model not in PIXEL_CALIBRATIONS:
+    config_calibrations = {}
+    try:
+        config = load_config(config_path)
+        config_calibrations = (
+            config.get("calibration", {})
+            .get("pixel_calibration", {})
+        )
+    except Exception:
+        config_calibrations = {}
+
+    calibration_source = {name: data.copy() for name, data in PIXEL_CALIBRATIONS.items()}
+    for name, data in config_calibrations.items():
+        calibration_source[name] = {
+            **calibration_source.get(name, {}),
+            **data,
+        }
+
+    if camera_model not in calibration_source:
         raise ValueError(
-            f"Unknown camera model: {camera_model}. Available: {list(PIXEL_CALIBRATIONS.keys())}"
+            f"Unknown camera model: {camera_model}. Available: {list(calibration_source.keys())}"
         )
 
-    calibration = PIXEL_CALIBRATIONS[camera_model].copy()
+    calibration = calibration_source[camera_model].copy()
     if "microns_per_pixel" not in calibration:
         calibration["microns_per_pixel"] = (
             calibration["reference_microns"] / calibration["reference_pixels"]
@@ -218,47 +235,50 @@ def stage_to_electrode_float(coords, *, config_path=None):
         # Return None if any error occurs during conversion
         return None
 
-def pixels_to_microns(pixels, camera_model="AM16k"):
+def pixels_to_microns(pixels, camera_model="AM16k", config_path=None):
     """
     Convert pixel measurements to microns based on camera calibration.
 
     Args:
         pixels: Number of pixels to convert
         camera_model: Camera model for calibration lookup (default: "AM16k")
+        config_path: Optional config file containing calibration.pixel_calibration
 
     Returns:
         Distance in microns
     """
-    calibration = _get_pixel_calibration(camera_model)
+    calibration = _get_pixel_calibration(camera_model, config_path=config_path)
     return pixels * calibration["microns_per_pixel"]
 
-def microns_to_pixels(microns, camera_model="AM16k"):
+def microns_to_pixels(microns, camera_model="AM16k", config_path=None):
     """
     Convert micron measurements to pixels based on camera calibration.
 
     Args:
         microns: Distance in microns to convert
         camera_model: Camera model for calibration lookup (default: "AM16k")
+        config_path: Optional config file containing calibration.pixel_calibration
 
     Returns:
         Number of pixels
     """
-    calibration = _get_pixel_calibration(camera_model)
+    calibration = _get_pixel_calibration(camera_model, config_path=config_path)
     return microns * calibration["pixels_per_micron"]
 
-def get_pixel_calibration_info(camera_model="AM16k"):
+def get_pixel_calibration_info(camera_model="AM16k", config_path=None):
     """
     Get calibration information for a camera model.
 
     Args:
         camera_model: Camera model name
+        config_path: Optional config file containing calibration.pixel_calibration
 
     Returns:
         Dictionary with calibration details
     """
-    return _get_pixel_calibration(camera_model)
+    return _get_pixel_calibration(camera_model, config_path=config_path)
 
-def pixels_to_volume_nl(pixel_area, height_microns=50, camera_model="AM16k"):
+def pixels_to_volume_nl(pixel_area, height_microns=50, camera_model="AM16k", config_path=None):
     """
     Convert pixel area to volume in nanoliters (nL) assuming cylindrical droplets.
 
@@ -266,6 +286,7 @@ def pixels_to_volume_nl(pixel_area, height_microns=50, camera_model="AM16k"):
         pixel_area: Area in pixels from bounding box
         height_microns: Height of the droplet in microns (default: 50)
         camera_model: Camera model for pixel calibration (default: "AM16k")
+        config_path: Optional config file containing calibration.pixel_calibration
 
     Returns:
         Volume in nanoliters (nL)
@@ -273,7 +294,10 @@ def pixels_to_volume_nl(pixel_area, height_microns=50, camera_model="AM16k"):
     import math
 
     # Convert pixel area to physical area in microns²
-    physical_area = pixels_to_microns(pixel_area, camera_model) * pixels_to_microns(1, camera_model)
+    physical_area = (
+        pixels_to_microns(pixel_area, camera_model, config_path=config_path)
+        * pixels_to_microns(1, camera_model, config_path=config_path)
+    )
 
     # Calculate radius from area (assuming circular cross-section)
     radius_microns = math.sqrt(physical_area / math.pi)
@@ -286,13 +310,14 @@ def pixels_to_volume_nl(pixel_area, height_microns=50, camera_model="AM16k"):
 
     return volume_nl
 
-def area_pixels_to_radius_microns(pixel_area, camera_model="AM16k"):
+def area_pixels_to_radius_microns(pixel_area, camera_model="AM16k", config_path=None):
     """
     Convert pixel area to radius in microns (useful for droplet size analysis).
 
     Args:
         pixel_area: Area in pixels
         camera_model: Camera model for calibration
+        config_path: Optional config file containing calibration.pixel_calibration
 
     Returns:
         Radius in microns
@@ -300,7 +325,10 @@ def area_pixels_to_radius_microns(pixel_area, camera_model="AM16k"):
     import math
 
     # Convert pixel area to physical area in microns²
-    physical_area = pixels_to_microns(pixel_area, camera_model) * pixels_to_microns(1, camera_model)
+    physical_area = (
+        pixels_to_microns(pixel_area, camera_model, config_path=config_path)
+        * pixels_to_microns(1, camera_model, config_path=config_path)
+    )
 
     # Calculate radius
     radius_microns = math.sqrt(physical_area / math.pi)

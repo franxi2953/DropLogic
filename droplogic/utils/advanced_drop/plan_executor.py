@@ -1211,26 +1211,32 @@ class PlanExecutor:
             state = self.system.state
             chip_origin = state.get('calibration', {}).get('chip_origin', {})
             electrode_mapping = state.get('calibration', {}).get('electrode_mapping', {})
-            
-            # Use inter_row_distance and inter_column_distance for X,Y (as before)
-            inter_row_distance = state.get('inter_row_distance', {})
-            inter_column_distance = state.get('inter_column_distance', {})
 
-            # Calculate X,Y stage position using distance objects
-            x_stage = chip_origin.get('X', 0) + row * inter_row_distance.get('X', 0) + col * inter_column_distance.get('X', 0)
-            y_stage = chip_origin.get('Y', 0) + row * inter_row_distance.get('Y', 0) + col * inter_column_distance.get('Y', 0)
-            
-            # Calculate Z stage position using electrode_mapping arrays for proper centering
             inter_row = electrode_mapping.get('inter_row', [0, 0, 0])
             inter_column = electrode_mapping.get('inter_column', [0, 0, 0])
             offset_x = electrode_mapping.get('offset_x', 0)
             offset_y = electrode_mapping.get('offset_y', 0)
-            
-            # Z offset calculation: row * inter_row[2] + col * inter_column[2] + offsets
-            z_offset = (row * inter_row[2] if len(inter_row) > 2 else 0) + \
-                      (col * inter_column[2] if len(inter_column) > 2 else 0)
-            
-            z_stage = chip_origin.get('Z', 0) + z_offset
+
+            def axis_delta(values, index):
+                return values[index] if len(values) > index else 0
+
+            x_stage = (
+                chip_origin.get('X', 0)
+                + offset_x
+                + row * axis_delta(inter_row, 0)
+                + col * axis_delta(inter_column, 0)
+            )
+            y_stage = (
+                chip_origin.get('Y', 0)
+                + offset_y
+                + row * axis_delta(inter_row, 1)
+                + col * axis_delta(inter_column, 1)
+            )
+            z_stage = (
+                chip_origin.get('Z', 0)
+                + row * axis_delta(inter_row, 2)
+                + col * axis_delta(inter_column, 2)
+            )
 
             return {'X': int(x_stage), 'Y': int(y_stage), 'Z': int(z_stage)}
         except Exception as e:

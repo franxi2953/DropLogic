@@ -5,7 +5,6 @@ Las utilidades son capas de soporte usadas por sistemas, planificacion, integrac
 No son el flujo principal de usuario, pero hacen que el flujo sea fiable:
 
 - conversiones de coordenadas y helpers de configuracion
-- gestion de calibracion
 - deteccion de gotas y condensados
 - helpers de captura de imagen
 - depuracion de planes

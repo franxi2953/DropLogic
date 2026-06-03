@@ -28,5 +28,5 @@ Bienvenido a la documentación de **DropLogic**, una librería Python para contr
   <li><strong><a href="systems/">Sistemas</a></strong>: La estructura de sistemas, módulos, versiones y cómo crear máquinas nuevas.</li>
   <li><strong><a href="planning/">Planificacion</a></strong>: AdvancedDrop, planes de gotas, movimiento SIPP y ejecucion en runtime.</li>
   <li><strong><a href="visualization/">Visualizacion</a></strong>: Visualizadores de matriz y streamer, snapshots y grabacion sincronizada.</li>
-  <li><strong><a href="utilities/">Utilidades</a></strong>: Calibracion, vision de gotas, helpers de hardware, depuracion y diagnosticos.</li>
+  <li><strong><a href="utilities/">Utilidades</a></strong>: Helpers de hardware, vision de gotas, depuracion y diagnosticos.</li>
 </ul>

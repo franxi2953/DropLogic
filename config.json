@@ -99,25 +99,11 @@
                 -4.094488188976378
             ]
         },
-        "field_of_view": {
-            "width": 0,
-            "height": 0
-        },
         "backlash_steps": {
             "left_to_right": 96,
             "right_to_left": 90,
             "up_to_down": null,
             "down_to_up": null
         }
-    },
-    "inter_row_distance": {
-        "X": -251.22834645669292,
-        "Y": -0.905511811023622,
-        "Z": 0.0
-    },
-    "inter_column_distance": {
-        "X": 1.2755905511811023,
-        "Y": -50.54330708661417,
-        "Z": 0.0
     }
 }

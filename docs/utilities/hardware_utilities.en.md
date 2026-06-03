@@ -85,11 +85,16 @@ volume_nl = pixels_to_volume_nl(pixel_area=3500, height_microns=50)
 radius_um = area_pixels_to_radius_microns(pixel_area=3500)
 ```
 
-The default calibration is currently defined for `AM16k`.
+The default calibration is currently defined for `AM16k` in the base `config.json`. If that block is not available, the utilities fall back to the same library defaults.
 
 Current AM16k pixel calibration:
 
 - `microns_per_pixel`: `0.51413882` um/px
 - `pixels_per_micron`: `1.94500000` px/um
 
-These values are mirrored in the library defaults and in the base `config.json` calibration block.
+Use `config_path` when you want the helpers to read a machine-specific config copy:
+
+```python
+diameter_um = pixels_to_microns(120, camera_model="AM16k", config_path="local_config.json")
+volume_nl = pixels_to_volume_nl(3500, height_microns=50, config_path="local_config.json")
+```

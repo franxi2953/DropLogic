@@ -28,5 +28,5 @@ Welcome to the documentation for **DropLogic**, a Python library for digital mic
   <li><strong><a href="systems/">Systems</a></strong>: The structure of systems, modules, versions, and how to create new machines.</li>
   <li><strong><a href="planning/">Planning</a></strong>: AdvancedDrop, droplet plans, SIPP movement, and executor-driven runtime.</li>
   <li><strong><a href="visualization/">Visualization</a></strong>: Matrix and streamer visualizers, snapshots, and synchronized recording.</li>
-  <li><strong><a href="utilities/">Utilities</a></strong>: Calibration, drop vision, hardware helpers, debugging, and diagnostics.</li>
+  <li><strong><a href="utilities/">Utilities</a></strong>: Hardware helpers, drop vision, debugging, and diagnostics.</li>
 </ul>

@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from typing import Dict, Any, Optional
 from abc import ABC, abstractmethod
 
-from .utils.basic_drop import BasicDrop
 from .utils.advanced_drop import AdvancedDrop
 from .utils.logging_config import setup_droplogic_logger, set_droplogic_logging_level
 
@@ -60,7 +59,6 @@ class DropSystem(ABC):
             self._state = {}
         
         self._state_lock = threading.Lock()
-        self.basic_drop = BasicDrop(parent=self)
         # AdvancedDrop will be initialized by child classes after hardware setup
         
         # Initialize queue system
@@ -254,8 +252,5 @@ class DropSystem(ABC):
             if worker.is_alive():
                 worker.join(timeout=1)
         
-        if hasattr(self, "basic_drop") and self.basic_drop:
-            self.basic_drop.close()
-
     def __del__(self):
         self.close()

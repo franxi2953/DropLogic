@@ -18,9 +18,14 @@ Estos helpers deberian mantenerse pequenos y deterministas. La logica especifica
 
 ## Calibracion de Pixeles
 
-La calibracion por defecto actual esta definida para `AM16k`.
+La calibracion por defecto actual esta definida para `AM16k` en el `config.json` base. Si ese bloque no esta disponible, las utilidades usan los mismos defaults internos como fallback.
 
 - `microns_per_pixel`: `0.51413882` um/px
 - `pixels_per_micron`: `1.94500000` px/um
 
-Estos valores estan reflejados en los defaults de la libreria y en el bloque de calibracion del `config.json` base.
+Usa `config_path` cuando quieras que los helpers lean una copia especifica de una maquina:
+
+```python
+diameter_um = pixels_to_microns(120, camera_model="AM16k", config_path="local_config.json")
+volume_nl = pixels_to_volume_nl(3500, height_microns=50, config_path="local_config.json")
+```
