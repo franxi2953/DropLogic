@@ -201,12 +201,12 @@ def demo_reservoir_extraction_1to2():
     system = _fresh_simulator()
     try:
         ad = system.advanced_drop
-        ad.droplets.create_droplet(1, (20, 16), (20, 16), width=6, height=3)
+        ad.droplets.create_droplet(1, (20, 16), (20, 16), width=5, height=5)
         ad.reservoir_extraction(
             reservoir_droplet_id=1,
             split_mode="1to2",
             steps=(0, 9),
-            split_size={(1, 4), (1, 5)},
+            split_size={(2, 3), (2, 4)},
             halo_size=1,
             new_droplet_id=2,
         )
@@ -219,7 +219,7 @@ def demo_reservoir_extraction_1to3():
     system = _fresh_simulator()
     try:
         ad = system.advanced_drop
-        ad.droplets.create_droplet(1, (20, 16), (20, 16), width=7, height=3)
+        ad.droplets.create_droplet(1, (20, 16), (20, 16), width=5, height=5)
         ad.reservoir_extraction(
             reservoir_droplet_id=1,
             split_mode="1to3",
@@ -237,14 +237,14 @@ def demo_reservoir_extraction_linear():
     system = _fresh_simulator()
     try:
         ad = system.advanced_drop
-        ad.droplets.create_droplet(1, (20, 10), (20, 10), width=8, height=3)
+        ad.droplets.create_droplet(1, (20, 10), (20, 10), width=5, height=5)
         ad.reservoir_extraction(
             reservoir_droplet_id=1,
             split_mode="linear",
             linear_drops_number=4,
             linear_offset=2,
             linear_space_per_col=4,
-            linear_space_per_row=0,
+            linear_space_per_row=1,
             linear_drop_shape=(1, 1),
             linear_direction=(0, 1),
             new_droplet_id=2,
