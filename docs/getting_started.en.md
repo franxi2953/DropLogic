@@ -53,7 +53,7 @@ system.advanced_drop.executor.start(frame_delay=0.5, enable_visualizers=True)
 
 ## Included Examples
 
-For more complex real-world continuous use cases, check out the scripts inside the `examples/` directory included in the repository:
+For more complex real-world continuous use cases, check out the scripts inside the `examples/` directory included in the repository, or open the new **Getting Started > Example Scripts** subsection in the navigation menu for the full code and direct GitHub links:
 
 - `examples/simulator_example.py`: A pure software demonstration of a 128x128 virtual matrix that spawns 20 droplets and sets them into an infinite continuous-routing loop.
 - `examples/DMLite_example.py`: Runs the exact same infinite routing loop but binding directly to the physical AM-EWOD hardware. It sets a higher `frame_delay` to accommodate hardware voltage actuation delays and fluid physics.

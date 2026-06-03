@@ -7,6 +7,7 @@ import numpy as np
 import threading
 import time
 import copy
+import logging
 
 class DMLite(DropSystem):
     """Represents a lightweight version of the DropSystem hardware system focused only on the electrode matrix."""
@@ -14,16 +15,24 @@ class DMLite(DropSystem):
     _instance = None
     _hardware_sync_stop = threading.Event()
     
-    def __new__(cls, config_file="config.json"):
+    def __new__(cls, config_file="config.json", log_level=logging.INFO):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, config_file="config.json"):
+    def __init__(self, config_file="config.json", log_level=logging.INFO):
+        if isinstance(log_level, str):
+            log_level = getattr(logging, log_level.upper(), logging.INFO)
+
         if hasattr(self, "_initialized") and self._initialized:
+            self.logger.setLevel(log_level)
+            for handler in self.logger.handlers:
+                handler.setLevel(log_level)
+            from ..utils.logging_config import set_droplogic_logging_level
+            set_droplogic_logging_level(log_level)
             return  # Already initialized
 
-        super().__init__("DMLite", state_file=config_file)
+        super().__init__("DMLite", state_file=config_file, log_level=log_level)
         self.logger.info("DMLite initialization started")
 
         # Initialize electrode matrix from state

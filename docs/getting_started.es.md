@@ -53,7 +53,7 @@ system.advanced_drop.executor.start(frame_delay=0.5, enable_visualizers=True)
 
 ## Ejemplos Incluidos
 
-Si deseas ver casos de uso continuo más complejos en escenarios puramente reales, puedes consultar la carpeta `examples/` que viene incluida de serie con la librería DropLogic:
+Si deseas ver casos de uso continuo más complejos, puedes consultar la carpeta `examples/` incluida en el repositorio, o abrir la nueva subsección **Getting Started > Example Scripts** del menú de navegación para ver el código completo y los enlaces directos a GitHub:
 
 - `examples/simulator_example.py`: Una demostración 100% de software donde una matriz virtual de 128x128 instancia 20 gotas gigantes y las comanda en un bucle infinito que se regenera automáticamente.
 - `examples/DMLite_example.py`: Se trata exactamente del mismo código de enrutamiento, pero interconectándose al hardware físico de AM-EWOD (como `BOXMini` o `DMLite`). Implementa un `frame_delay` mayor para que respete de forma segura las demoras introducidas al interconectar voltajes y esperar a la propia física de los fluidos.

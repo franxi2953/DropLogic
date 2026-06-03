@@ -1,3 +1,27 @@
+# DMLite Example
+
+Source file:
+[examples/DMLite_example.py](https://github.com/franxi2953/DropLogic/blob/main/examples/DMLite_example.py)
+
+This script demonstrates the same continuous multi-droplet loop as the simulator example, but against the real `DMLite` system.
+
+It:
+
+- initializes a real `DMLite` system
+- creates 20 droplets with random origins and targets
+- runs SIPP planning
+- executes the plan at a slower delay appropriate for hardware
+- assigns new random targets after each completed cycle
+
+Run it from the repository root with:
+
+```bash
+python3 examples/DMLite_example.py
+```
+
+## Source Code
+
+```python
 import random
 import time
 from droplogic.hardware.DMLite import DMLite
@@ -28,7 +52,7 @@ def main():
         
     try:
         while True:
-            print("\nPlanning SIPP multi-droplet routing to targets...")
+            print("\\nPlanning SIPP multi-droplet routing to targets...")
             system.advanced_drop.move(mode="sipp")
             
             print("Executing plan (delay 1.0s)...")
@@ -41,7 +65,7 @@ def main():
                     break
                 time.sleep(1.0)
 
-            print("Movement completed. Assigning new random targets...\n")
+            print("Movement completed. Assigning new random targets...\\n")
             # Assign new random targets to all droplets
             for i in range(1, 21):
                 target_r = random.randint(0, matrix_size - 3)
@@ -49,8 +73,9 @@ def main():
                 system.advanced_drop.droplets.update_droplet_target(i, (target_r, target_c))
                 
     except KeyboardInterrupt:
-        print("\nStopping system...")
+        print("\\nStopping system...")
         system.advanced_drop.executor.stop()
         
 if __name__ == "__main__":
     main()
+```

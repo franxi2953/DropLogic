@@ -37,7 +37,12 @@ plugins:
 
 nav:
   - Home: index.md
-  - Getting Started: getting_started.md
+  - Getting Started:
+      - Overview: getting_started.md
+      - Example Scripts:
+          - Overview: getting_started/examples/index.md
+          - Simulator Example: getting_started/examples/simulator.md
+          - DMLite Example: getting_started/examples/dmlite.md
   - Systems:
       - Overview: systems/index.md
       - Simulator: systems/simulator.md
