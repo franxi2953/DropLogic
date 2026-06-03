@@ -162,6 +162,61 @@ def _set_visualizer_paths_from_plan(system, droplet_ids=None):
     visualizer.set_paths(paths)
 
 
+def _hold_current_scene(ad, frame_count=2):
+    for _ in range(frame_count):
+        ad.push_frame(event_type="doc_hold", event_data={"reason": "documentation demo"})
+
+
+def _build_droplet_create(system):
+    """Create one rectangular droplet and one custom-shape droplet."""
+    _prepare_visualizer(system)
+    ad = system.advanced_drop
+
+    ad.droplets.create_droplet(
+        1,
+        origin=(24, 20),
+        target=(44, 40),
+        width=2,
+        height=2,
+        priority=0,
+        vital_space=1,
+    )
+
+    ad.droplets.create_droplet(
+        2,
+        origin=(24, 38),
+        target=(42, 54),
+        shape={(0, 0), (0, 1), (0, 2), (1, 0), (2, 0)},
+        priority=1,
+        vital_space=1,
+    )
+    _hold_current_scene(ad, frame_count=3)
+
+
+def _build_droplet_bulk_create(system):
+    """Create a small batch of droplets one definition at a time."""
+    _prepare_visualizer(system)
+    ad = system.advanced_drop
+
+    droplet_specs = []
+    droplet_id = 1
+    for row in (18, 30, 42):
+        for col in (18, 30, 42):
+            droplet_specs.append({
+                "id": droplet_id,
+                "origin": (row, col),
+                "target": (row + 24, col + 34),
+                "width": 2,
+                "height": 2,
+                "priority": droplet_id,
+                "vital_space": 1,
+            })
+            droplet_id += 1
+
+    ad.droplets.add_droplets(droplet_specs)
+    _hold_current_scene(ad, frame_count=3)
+
+
 def _build_reservoir_extraction_1to2(system):
     """Create a 6x6 reservoir and extract the central 2x2 droplet to the right."""
     _prepare_visualizer(system)
@@ -322,6 +377,8 @@ def _build_isometric_split_1x1(system):
 
 
 DEMOS = {
+    "droplet-create": _build_droplet_create,
+    "droplet-bulk-create": _build_droplet_bulk_create,
     "move-basic": _build_move_basic,
     "move-coordinated": _build_move_coordinated,
     "merge-two-droplets": _build_merge_two_droplets,
@@ -334,6 +391,12 @@ DEMOS = {
 }
 
 DEMO_GIF_OPTIONS = {
+    "droplet-create": {
+        "duration_ms": 520,
+    },
+    "droplet-bulk-create": {
+        "duration_ms": 300,
+    },
     "move-basic": {
         "duration_ms": 320,
     },
@@ -460,7 +523,12 @@ def _fit_frame_to_card(frame):
     return card
 
 
-def _convert_mp4_to_gif(mp4_path, gif_path, duration_ms=GIF_FRAME_DURATION_MS, frame_stride=DEFAULT_GIF_FRAME_STRIDE):
+def _convert_mp4_to_gif(
+    mp4_path,
+    gif_path,
+    duration_ms=GIF_FRAME_DURATION_MS,
+    frame_stride=DEFAULT_GIF_FRAME_STRIDE,
+):
     capture = cv2.VideoCapture(str(mp4_path))
     raw_frames = []
 

@@ -8,6 +8,11 @@ This object behaves like a list, but adds helper methods for creating, updating,
 
 Create one logical droplet and append a frame showing it at its origin.
 
+<figure class="dl-plan-demo" markdown>
+  ![Executor-recorded simulator GIF showing create_droplet adding rectangular and custom-shape droplets](../../assets/advanced-drop/droplet-create.gif)
+  <figcaption><code>PlanExecutor</code> recording of <code>create_droplet()</code>: a rectangular droplet and a custom footprint are added to the plan at their origins</figcaption>
+</figure>
+
 ```python
 droplet = system.advanced_drop.droplets.create_droplet(
     droplet_id=1,
@@ -47,11 +52,29 @@ Arguments:
 
 Use `add_droplets()` when a protocol starts from a list of droplet definitions.
 
+<figure class="dl-plan-demo" markdown>
+  ![Executor-recorded simulator GIF showing add_droplets adding a batch of droplets one by one](../../assets/advanced-drop/droplet-bulk-create.gif)
+  <figcaption><code>PlanExecutor</code> recording of <code>add_droplets()</code>: each droplet definition is inserted into the current plan, producing a progressive setup sequence</figcaption>
+</figure>
+
 ```python
-system.advanced_drop.droplets.add_droplets([
-    {"id": 1, "origin": (10, 10), "target": (30, 30), "width": 2, "height": 2},
-    {"id": 2, "origin": (12, 40), "target": (50, 55), "width": 2, "height": 2},
-])
+droplet_specs = []
+droplet_id = 1
+
+for row in (18, 30, 42):
+    for col in (18, 30, 42):
+        droplet_specs.append({
+            "id": droplet_id,
+            "origin": (row, col),
+            "target": (row + 24, col + 34),
+            "width": 2,
+            "height": 2,
+            "priority": droplet_id,
+            "vital_space": 1,
+        })
+        droplet_id += 1
+
+system.advanced_drop.droplets.add_droplets(droplet_specs)
 ```
 
 ## Update Targets
