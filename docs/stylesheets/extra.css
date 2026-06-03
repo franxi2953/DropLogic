@@ -450,7 +450,8 @@ body {
 }
 
 .md-sidebar--primary .md-nav__item--nested > .md-nav > .md-nav__list {
-  padding-top: 0.1rem;
+  padding-top: var(--dl-nav-row-gap);
+  padding-bottom: 0;
 }
 
 @media screen and (max-width: 76.2344em) {
