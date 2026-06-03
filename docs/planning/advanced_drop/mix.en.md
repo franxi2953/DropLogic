@@ -14,7 +14,7 @@ The function extends `system.advanced_drop.plan` and returns the IDs of any new 
 
 The two built-in modes follow classic digital-microfluidic mixing strategies:
 move the intact droplet through a 2D loop to reduce reversible flow, or split
-and recombine it when the droplet geometry makes splitting reliable.<sup class="dl-cite" data-preview="Paik, Pamula and Fair, Lab on a Chip 3, 253-259 (2003). Compares linear-array, 2D-array, and split-and-merge droplet mixers for digital microfluidics. DOI: 10.1039/B307628H"><a href="#ref-paik-2003">1</a></sup>
+and recombine it when the droplet geometry makes splitting reliable.<sup class="dl-cite dl-cite--left"><a href="#ref-paik-2003" aria-describedby="cite-paik-2003">1</a><span id="cite-paik-2003" class="dl-cite__preview" role="tooltip"><span class="dl-cite__label">Reference</span><span class="dl-cite__meta">LOC 2003</span><strong class="dl-cite__title">Rapid droplet mixers for digital microfluidic systems</strong><span class="dl-cite__authors">P. Paik, V. K. Pamula and R. B. Fair</span><span class="dl-cite__summary">Compares linear-array, 2D-array, and split-and-merge droplet mixers, motivating looped motion and split/recombine strategies for DMF mixing.</span></span></sup>
 
 ## Choosing a Mode
 
