@@ -305,15 +305,18 @@ body {
 }
 
 :root {
-  --dl-nav-toggle-size: 1.1em;
+  --dl-nav-toggle-size: 1em;
   --dl-nav-toggle-gap: 5px;
-  --dl-nav-toggle-arrow-size: 0.42em;
+  --dl-nav-toggle-arrow-size: 0.5em;
+  --dl-nav-toggle-arrow-shift: -0.06em;
+  --dl-nav-toggle-offset: calc(var(--dl-nav-toggle-size) + var(--dl-nav-toggle-gap));
 }
 
-.md-sidebar--primary .md-nav__item--nested > label.md-nav__link,
-.md-sidebar--primary .md-nav__item--nested > .md-nav__container {
+.md-sidebar--primary .md-nav__item > a.md-nav__link,
+.md-sidebar--primary .md-nav__item > label.md-nav__link,
+.md-sidebar--primary .md-nav__item > .md-nav__container {
   position: relative;
-  padding-left: calc(var(--dl-nav-toggle-size) + var(--dl-nav-toggle-gap));
+  padding-left: var(--dl-nav-toggle-offset);
 }
 
 .md-sidebar--primary .md-nav__item--nested > label.md-nav__link {
@@ -378,11 +381,12 @@ body {
   clip-path: polygon(0 0, 100% 50%, 0 100%, 0 76%, 48% 50%, 0 24%);
   transition: transform 180ms ease;
   transform-origin: center;
+  transform: translateX(var(--dl-nav-toggle-arrow-shift));
 }
 
 .md-sidebar--primary .md-nav__item--nested > .md-nav__toggle:checked + label.md-nav__link > .md-nav__icon::after,
 .md-sidebar--primary .md-nav__item--nested > .md-nav__toggle:checked ~ .md-nav__container > label.md-nav__link .md-nav__icon::after {
-  transform: rotate(90deg);
+  transform: translateX(var(--dl-nav-toggle-arrow-shift)) rotate(90deg);
 }
 
 .md-sidebar--primary .md-nav__item--nested > .md-nav {
