@@ -5,8 +5,8 @@
 As **DropLogic** is a standard library, users can easily install it directly using `pip`:
 
 ```bash
-git clone https://github.com/your-org/droplogic.git
-cd droplogic
+git clone https://github.com/franxi2953/DropLogic.git
+cd DropLogic
 pip install .
 ```
 
@@ -29,6 +29,8 @@ To start using **DropLogic**, you first need to understand two key concepts: **S
 - **Module:** A system is essentially a collection of Modules. A module controls a specific hardware component, like the electrode matrix, the camera, or the temperature controllers. Modules can have different **versions/implementations** (e.g. `CameraV1` or `MicroscopeV2`), allowing you to swap physical hardware components while maintaining the same DropLogic syntax.
 
 *(For a more structured explanation of systems, modules, and how new machines are assembled, see the **Systems** section in the navigation menu, ending with our [Creating New Systems](creating_systems.md) guide).*
+
+For details on the default state file, what each system needs, and how to keep machine-specific calibration local, see [Configuration](configuration.md).
 
 Here is a quick example of how to start using **DropLogic** with the **Simulator** system within your scripts:
 

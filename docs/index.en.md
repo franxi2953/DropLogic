@@ -27,6 +27,7 @@ Welcome to the documentation for **DropLogic**, a Python library for digital mic
 ## What will you find here?
 <ul class="dl-home__list">
   <li><strong><a href="getting_started/">Getting Started</a></strong>: Installation, basic usage, and first steps.</li>
+  <li><strong><a href="configuration/">Configuration</a></strong>: The repository `config.json`, required fields, and local machine-specific calibration.</li>
   <li><strong><a href="repository_structure/">Architecture Map</a></strong>: A detailed look into the structure of the repository and how modules are organized.</li>
   <li><strong><a href="systems/">Systems</a></strong>: The structure of systems, modules, versions, and how to create new machines.</li>
   <li><strong><a href="planning/">Planning</a></strong>: AdvancedDrop, droplet plans, SIPP movement, and executor-driven runtime.</li>

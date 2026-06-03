@@ -53,6 +53,7 @@ nav:
               - Electrode Matrix: systems/dmlite/electrode_matrix.md
       - Hardware Notes: hardware.md
       - Creating New Systems: creating_systems.md
+  - Configuration: configuration.md
   - Planning:
       - Overview: planning/index.md
       - AdvancedDrop:

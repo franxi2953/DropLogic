@@ -27,6 +27,7 @@ Bienvenido a la documentación de **DropLogic**, una librería Python para contr
 ## ¿Qué encontrarás aquí?
 <ul class="dl-home__list">
   <li><strong><a href="getting_started/">Empezando</a></strong>: Instalación, uso básico y primeros pasos.</li>
+  <li><strong><a href="configuration/">Configuracion</a></strong>: El `config.json` del repositorio, campos obligatorios y calibracion local especifica de maquina.</li>
   <li><strong><a href="repository_structure/">Mapa de Arquitectura</a></strong>: Una mirada detallada a la estructura de la librería y su organización de hardware.</li>
   <li><strong><a href="systems/">Sistemas</a></strong>: La estructura de sistemas, módulos, versiones y cómo crear máquinas nuevas.</li>
   <li><strong><a href="planning/">Planificacion</a></strong>: AdvancedDrop, planes de gotas, movimiento SIPP y ejecucion en runtime.</li>

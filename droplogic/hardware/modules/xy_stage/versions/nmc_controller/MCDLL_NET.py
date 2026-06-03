@@ -38,6 +38,11 @@ else:
 class SuppressConsole:
     """Context manager to suppress and restore Windows console output."""
     def __enter__(self):
+        if kernel32 is None:
+            self._windows_handles_available = False
+            return self
+
+        self._windows_handles_available = True
         self._stdout = os.dup(1)  # Save original stdout
         self._stderr = os.dup(2)  # Save original stderr
         self._null = os.open(os.devnull, os.O_WRONLY)  # Open null device
@@ -55,6 +60,9 @@ class SuppressConsole:
         kernel32.SetStdHandle(STD_ERROR_HANDLE, self._null)
 
     def __exit__(self, exc_type, exc_value, traceback):
+        if not getattr(self, "_windows_handles_available", False):
+            return
+
         # Restore stdout and stderr
         os.dup2(self._stdout, 1)
         os.dup2(self._stderr, 2)

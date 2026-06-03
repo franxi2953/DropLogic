@@ -55,11 +55,6 @@
         ],
         "current_channel": "Brightfield"
     },
-    "stage_position": [
-        0,
-        0,
-        0
-    ],
     "light_settings": {
         "light_on": false,
         "coaxial_intensity": 30,
@@ -79,14 +74,6 @@
         "version": "DMLite"
     },
     "calibration": {
-        "xy_pixel_step_ratio_camera": {
-            "X": 0.061661682128906256,
-            "Y": 0.3033271789550781
-        },
-        "xy_pixel_step_ratio_microscope": {
-            "X": 1.45234375,
-            "Y": 3.553125
-        },
         "pixel_calibration": {
             "AM16k": {
                 "microns_per_pixel": 0.51413882,
@@ -97,11 +84,6 @@
             "X": 61625.666666666664,
             "Y": 8584.333333333334,
             "Z": 11319.0
-        },
-        "camera_to_microscope_offset": {
-            "X": -44793,
-            "Y": 390,
-            "Z": 3910
         },
         "electrode_mapping": {
             "offset_x": 0,

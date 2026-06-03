@@ -35,6 +35,11 @@ fix_*.py
 # Logs locales
 *.log
 
+# Machine-specific local configuration/calibration copies
+local_config*.json
+config.local.json
+calibration_data.json
+
 # Archivos de MacOS
 .DS_Store
 
