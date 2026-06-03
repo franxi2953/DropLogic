@@ -37,6 +37,7 @@ MIN_ACTIVITY_PIXELS = 10
 MATRIX_CAPTURE_SIZE = (1400, 1000)
 MATRIX_CAPTURE_CELL_PX = 8
 MATRIX_CAPTURE_MARGIN_PX = 40
+DEFAULT_GIF_FRAME_STRIDE = 1
 
 
 if str(ROOT) not in sys.path:
@@ -208,14 +209,14 @@ def _build_mix_2d_loop(system):
 
 
 def _build_isometric_split_1x1(system):
-    """Split a 2x2 droplet into four evenly spaced 1x1 droplets."""
+    """Split a 4x4 droplet through 2x2 intermediates into sixteen 1x1 droplets."""
     _prepare_visualizer(system)
     ad = system.advanced_drop
 
-    ad.droplets.create_droplet(1, origin=(28, 28), target=(28, 28), width=2, height=2)
+    ad.droplets.create_droplet(1, origin=(28, 28), target=(28, 28), width=4, height=4)
     ad.isometric_split(
         1,
-        steps=[(0, 6), (6, 0)],
+        steps=[(0, 8), (8, 0), (0, 4), (4, 0)],
         simultaneous=True,
         new_droplet_id=2,
     )
@@ -231,6 +232,13 @@ DEMOS = {
     "reservoir-extraction-1to3": _build_reservoir_extraction_1to3,
     "reservoir-extraction-linear": _build_reservoir_extraction_linear,
     "isometric-split-1x1": _build_isometric_split_1x1,
+}
+
+DEMO_GIF_OPTIONS = {
+    "isometric-split-1x1": {
+        "duration_ms": 260,
+        "frame_stride": 2,
+    },
 }
 
 
@@ -317,6 +325,16 @@ def _trim_inactive_edges(frames):
     return frames[active_indices[0]:active_indices[-1] + 1]
 
 
+def _sample_frames(frames, frame_stride):
+    if frame_stride <= 1:
+        return frames
+
+    sampled = frames[::frame_stride]
+    if sampled[-1] is not frames[-1]:
+        sampled.append(frames[-1])
+    return sampled
+
+
 def _fit_frame_to_card(frame):
     card_w, card_h = GIF_CARD_SIZE
     max_w = card_w - GIF_CARD_INSET * 2
@@ -336,7 +354,7 @@ def _fit_frame_to_card(frame):
     return card
 
 
-def _convert_mp4_to_gif(mp4_path, gif_path):
+def _convert_mp4_to_gif(mp4_path, gif_path, duration_ms=GIF_FRAME_DURATION_MS, frame_stride=DEFAULT_GIF_FRAME_STRIDE):
     capture = cv2.VideoCapture(str(mp4_path))
     raw_frames = []
 
@@ -354,6 +372,7 @@ def _convert_mp4_to_gif(mp4_path, gif_path):
 
     raw_frames = _trim_inactive_edges(raw_frames)
     crop_box = _active_crop_box(raw_frames)
+    raw_frames = _sample_frames(raw_frames, frame_stride)
     gif_frames = []
     for frame in raw_frames:
         if crop_box is not None:
@@ -369,7 +388,7 @@ def _convert_mp4_to_gif(mp4_path, gif_path):
         gif_path,
         save_all=True,
         append_images=gif_frames[1:],
-        duration=GIF_FRAME_DURATION_MS,
+        duration=duration_ms,
         loop=0,
         optimize=True,
         disposal=2,
@@ -377,6 +396,7 @@ def _convert_mp4_to_gif(mp4_path, gif_path):
 
 
 def generate_demo(slug, builder):
+    gif_options = DEMO_GIF_OPTIONS.get(slug, {})
     system = _fresh_simulator()
     mp4_path = BUILD_DIR / f"{slug}.mp4"
     gif_path = OUTPUT_DIR / f"{slug}.gif"
@@ -384,14 +404,20 @@ def generate_demo(slug, builder):
     try:
         builder(system)
         _record_plan_to_mp4(system, mp4_path)
-        _convert_mp4_to_gif(mp4_path, gif_path)
+        _convert_mp4_to_gif(mp4_path, gif_path, **gif_options)
         print(f"Wrote {gif_path.relative_to(ROOT)} from {mp4_path.relative_to(ROOT)}")
     finally:
         _close_simulator(system)
 
 
 def main():
-    for slug, builder in DEMOS.items():
+    slugs = sys.argv[1:] or list(DEMOS.keys())
+    unknown_slugs = sorted(set(slugs) - set(DEMOS))
+    if unknown_slugs:
+        raise ValueError(f"Unknown demo slug(s): {', '.join(unknown_slugs)}")
+
+    for slug in slugs:
+        builder = DEMOS[slug]
         generate_demo(slug, builder)
 
 

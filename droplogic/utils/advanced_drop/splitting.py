@@ -2487,11 +2487,14 @@ def _generate_isometric_split_step(
     split_frame = _create_split_frame_at_positions(new_plan, source_droplet, sub_droplets, [sub_droplet.origin_corner for sub_droplet in sub_droplets], matrix_shape, logger)
     new_plan.frames.append(split_frame)
 
-    # Update active droplets: source droplet becomes inactive, subdroplets become active
-    # Keep source droplet in the list but not active in the plan
-    # Include other active droplets from previous frame, excluding the parent droplet
-    active_droplets = sub_droplet_ids.copy()
-    active_droplets.extend([id for id in new_plan.active_droplets_per_frame[-1] if id != source_droplet.id])
+    # Source droplet becomes inactive; new subdroplets stay active alongside
+    # any unrelated droplets that were already active in the previous frame.
+    other_active_droplets = [
+        active_id
+        for active_id in new_plan.active_droplets_per_frame[-1]
+        if active_id != source_droplet.id and active_id not in sub_droplet_ids
+    ]
+    active_droplets = sub_droplet_ids + other_active_droplets
     new_plan.active_droplets_per_frame.append(active_droplets)
 
     # Update trajectories for split frame (each at their origin position initially)
@@ -2516,9 +2519,7 @@ def _generate_isometric_split_step(
             )
             new_plan.frames.append(frame_matrix)
 
-            # Include other active droplets from previous frame, excluding the parent droplet
-            active_droplets.extend([id for id in new_plan.active_droplets_per_frame[-1] if id != source_droplet.id])
-            new_plan.active_droplets_per_frame.append(active_droplets)
+            new_plan.active_droplets_per_frame.append(list(active_droplets))
 
             # Update trajectories
             for droplet_id, pos in zip(sub_droplet_ids, positions):
@@ -2543,10 +2544,8 @@ def _generate_isometric_split_step(
                 )
                 new_plan.frames.append(frame_matrix)
 
-                # Update active droplets (same subdroplets remain active during movement)
-                # Include other active droplets if provided
-                active_droplets.extend([id for id in new_plan.active_droplets_per_frame[-1] if id != source_droplet.id])
-                new_plan.active_droplets_per_frame.append(active_droplets)
+                # Update active droplets; same subdroplets remain active during movement.
+                new_plan.active_droplets_per_frame.append(list(active_droplets))
 
                 # Update trajectories for all subdroplets
                 for j, pos in enumerate(current_positions):
@@ -2736,7 +2735,6 @@ def _create_split_droplet(
 
     logger.info(f"Created new droplet {new_id} from reservoir {reservoir_id}")
     return new_id
-
 
 
 

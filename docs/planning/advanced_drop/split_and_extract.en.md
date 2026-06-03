@@ -135,8 +135,8 @@ Use `linear_direction=(0, 1)` for a horizontal sweep to the right, `(1, 0)` for 
 `isometric_split()` recursively splits a droplet into equal subdroplets and moves them symmetrically.
 
 <figure class="dl-plan-demo" markdown>
-  ![Executor-recorded simulator GIF showing isometric_split() ending with four evenly spaced 1x1 droplets](../../assets/advanced-drop/isometric-split-1x1.gif)
-  <figcaption><code>PlanExecutor</code> recording of <code>isometric_split()</code>: one 2x2 droplet split until the final active droplets are four uniformly spaced 1x1 droplets</figcaption>
+  ![Executor-recorded simulator GIF showing isometric_split() splitting one 4x4 droplet into sixteen evenly spaced 1x1 droplets](../../assets/advanced-drop/isometric-split-1x1.gif)
+  <figcaption><code>PlanExecutor</code> recording of <code>isometric_split()</code>: one 4x4 droplet split through 2x2 intermediates until the final active droplets are sixteen uniformly spaced 1x1 droplets</figcaption>
 </figure>
 
 ```python
@@ -144,13 +144,13 @@ ad.droplets.create_droplet(
     1,
     origin=(28, 28),
     target=(28, 28),
-    width=2,
-    height=2,
+    width=4,
+    height=4,
 )
 
 new_ids = ad.isometric_split(
     droplet_id=1,
-    steps=[(0, 6), (6, 0)],
+    steps=[(0, 8), (8, 0), (0, 4), (4, 0)],
     simultaneous=True,
     new_droplet_id=2,
 )
@@ -158,9 +158,9 @@ new_ids = ad.isometric_split(
 
 The example above:
 
-- splits once horizontally and moves two 2-electrode subdroplets left/right.
-- splits each result vertically and moves the resulting 1-electrode droplets up/down.
-- ends with four active 1x1 droplets arranged as a uniformly spaced square.
+- splits once horizontally and once vertically to create four active 2x2 droplets.
+- splits each 2x2 droplet horizontally and vertically again.
+- ends with sixteen active 1x1 droplets arranged as a uniformly spaced 4x4 grid.
 
 Arguments:
 
