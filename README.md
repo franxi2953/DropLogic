@@ -13,7 +13,7 @@
   <img alt="Version" src="https://img.shields.io/badge/version-v1.0.0-111111?style=flat-square">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-111111?style=flat-square"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.8%2B-111111?style=flat-square">
-  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-111111?style=flat-square">
+  <img alt="OS" src="https://img.shields.io/badge/os-Windows-111111?style=flat-square">
 </p>
 
 <p align="center">
@@ -36,7 +36,7 @@ DropLogic is a Python library for digital microfluidics (DMF): systems, modules,
 
 The project began as **Fran Quero's PhD project at the University of Cambridge**, developed across the **Occhipinti Group** and the **Di Michele Lab**. It is designed to make DMF control scripts readable while keeping the hardware-specific details isolated inside systems and modules.
 
-> DMLite and BOXMini are hardware platforms from [Acxel](https://www.acxel.com/). DropLogic provides Python integration layers around supported hardware; it does not manufacture those devices.
+> DMLite and BOXMini are hardware platforms from [Acxel](https://www.acxel.com/). This repository contains Python integration layers for supported hardware; it does not include vendor hardware or SDK/DLL assets.
 
 ## Quick Start
 

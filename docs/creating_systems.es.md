@@ -2,7 +2,7 @@
 
 Esta guía proporciona un punto de partida completo para implementar nuevos sistemas en **DropLogic**. Resume los patrones principales presentes en implementaciones como `Simulator` y el adaptador `DMLite` para hardware de Acxel, y muestra cómo construir una nueva máquina recombinando módulos alrededor de la clase base `DropSystem`.
 
-`DMLite` y `BOXMini` son plataformas hardware de Acxel. DropLogic proporciona adaptadores y orquestación alrededor de esos dispositivos; no fabrica ni posee esos módulos hardware. Consulta [Acxel](https://www.acxel.com/) para la información del proveedor.
+`DMLite` y `BOXMini` son plataformas hardware de Acxel. Este repositorio contiene adaptadores Python y código de orquestación alrededor de dispositivos compatibles; no incluye hardware del proveedor ni SDK/DLL. Consulta [Acxel](https://www.acxel.com/) para la información del proveedor.
 
 ## Inicio Rápido
 

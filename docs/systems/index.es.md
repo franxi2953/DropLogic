@@ -13,7 +13,7 @@ Un **sistema** es la definición de máquina de nivel superior que usa el usuari
 Ejemplos:
 
 - `Simulator`: un entorno puramente software para desarrollo y pruebas.
-- `DMLite`: un sistema real centrado en la matriz de electrodos. La plataforma hardware es de [Acxel](https://www.acxel.com/); DropLogic proporciona la capa de integración.
+- `DMLite`: un sistema real centrado en la matriz de electrodos. La plataforma hardware es de [Acxel](https://www.acxel.com/); esta librería proporciona la capa de integración en Python.
 
 Un sistema normalmente ofrece:
 

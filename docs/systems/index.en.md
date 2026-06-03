@@ -13,7 +13,7 @@ A **system** is the top-level machine definition exposed to the user.
 Examples:
 
 - `Simulator`: a software-only environment for development and testing.
-- `DMLite`: a real hardware-backed system focused on the electrode matrix. The hardware platform is from [Acxel](https://www.acxel.com/); DropLogic provides the integration layer.
+- `DMLite`: a real hardware-backed system focused on the electrode matrix. The hardware platform is from [Acxel](https://www.acxel.com/); this library provides the Python integration layer.
 
 A system usually provides:
 

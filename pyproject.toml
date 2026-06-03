@@ -4,7 +4,7 @@ requires = ["setuptools", "wheel"]
 [project]
 name = "droplogic"
 version = "1.0.0"
-description = "Digital microfluidics control platform with SIPP planning and real-time visualization"
+description = "Python library for digital microfluidics control with SIPP planning and real-time visualization"
 authors = [{ name = "Fran Quero", email = "fjq21@cam.ac.uk" }]
 license = { file = "LICENSE" }
 readme = "README.md"

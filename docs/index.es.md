@@ -6,7 +6,7 @@
       <path d="M48 28.5A24 24 0 0 0 48 67.5A24 24 0 0 0 48 28.5Z" fill="#111111"/>
     </svg>
   </div>
-  <p class="dl-home__eyebrow">Plataforma de control para microfluídica digital</p>
+  <p class="dl-home__eyebrow">Librería Python para microfluídica digital</p>
   <h1 class="dl-home__title">DropLogic</h1>
   <p class="dl-home__copy">
     Control minimalista y listo para despliegue en microfluidica digital: sistemas, planificacion, ejecucion, visualizacion y utilidades dentro de una sola libreria.
@@ -20,9 +20,9 @@
 </div>
 
 !!! warning "Compatibilidad"
-    **Actualmente, DropLogic solo es compatible con Windows.** La librería utiliza controladores e interconexiones de hardware en forma de DLLs propietarios brindados por los fabricantes, los cuales son exclusivos de Windows. Usar la librería en macOS o Linux causará errores tanto a nivel de dependencias como de ejecución.
+    **El control nativo de hardware actualmente solo está soportado en Windows.** La librería utiliza controladores e interconexiones de hardware en forma de DLLs propietarias proporcionadas por los proveedores de hardware, que son exclusivas de Windows. En macOS o Linux, el uso queda limitado a simulación y flujos sin runtime nativo.
 
-¡Bienvenido a la documentación oficial de **DropLogic**! Hemos creado esta plataforma para hacer que el control de la microfluídica digital (DMF) sea lo más sencillo posible. En lugar de lidiar con diferentes interfaces de hardware, DropLogic abstrae los módulos de hardware (como matrices de electrodos, cámaras y sistemas de posicionamiento) en una única librería unificada, proporcionando clases comunes diseñadas específicamente para aplicaciones de microfluídica digital. Ya sea que estés moviendo unas pocas gotas o automatizando todo el flujo de trabajo de un laboratorio, esta herramienta te ofrece el control de alto nivel que necesitas para centrarte en tus experimentos.
+Bienvenido a la documentación de **DropLogic**, una librería Python para control de microfluídica digital (DMF). Mantiene los scripts legibles agrupando sistemas, módulos, planificación, ejecución y visualización detrás de una interfaz Python compartida. En lugar de lidiar con distintas interfaces de hardware, trabajas con clases comunes para matrices de electrodos, cámaras, sistemas de posicionamiento y planes de gotas.
 
 ## ¿Qué encontrarás aquí?
 <ul class="dl-home__list">

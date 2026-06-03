@@ -2,7 +2,7 @@
 
 The `DMLite` system is currently built around a single real hardware module: the electrode matrix.
 
-`DMLite` is an Acxel hardware platform. This page documents the DropLogic adapter around that hardware, not a DropLogic-manufactured module. See [Acxel](https://www.acxel.com/) for the hardware provider.
+`DMLite` is an Acxel hardware platform. This page documents the Python adapter around that hardware; the hardware itself is not part of this repository. See [Acxel](https://www.acxel.com/) for the hardware provider.
 
 ## Role in the System
 

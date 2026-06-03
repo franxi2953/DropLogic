@@ -6,7 +6,7 @@
       <path d="M48 28.5A24 24 0 0 0 48 67.5A24 24 0 0 0 48 28.5Z" fill="#111111"/>
     </svg>
   </div>
-  <p class="dl-home__eyebrow">Digital Microfluidics Control Platform</p>
+  <p class="dl-home__eyebrow">Python Library for Digital Microfluidics</p>
   <h1 class="dl-home__title">DropLogic</h1>
   <p class="dl-home__copy">
     Minimal, deployment-ready control for digital microfluidics: systems, planning, execution, visualization, and utilities in one library.
@@ -20,9 +20,9 @@
 </div>
 
 !!! warning "Platform Compatibility"
-    **Currently, DropLogic only supports Windows.** The library relies on proprietary hardware DLLs (Dynamic Link Libraries) provided by manufacturers, which are inherently Windows-exclusive. Usage on macOS or Linux is not supported at this time and will result in import and runtime errors.
+    **Native hardware control is currently Windows-only.** The library relies on proprietary hardware DLLs (Dynamic Link Libraries) provided by hardware vendors, which are inherently Windows-exclusive. Usage on macOS or Linux is limited to simulation and non-native workflows.
 
-Welcome to the official documentation for **DropLogic**! We built this platform to make digital microfluidics (DMF) control as straightforward as possible. Instead of wrestling with different hardware interfaces, DropLogic abstracts hardware modules—like electrode matrices, cameras, and positioning systems—into a single unified library, providing common classes specifically tailored to digital microfluidic applications. Whether you're moving a few droplets or automating an entire lab workflow, this tool gives you the high-level control you need to focus on your experiments.
+Welcome to the documentation for **DropLogic**, a Python library for digital microfluidics (DMF) control. It keeps scripts readable by wrapping systems, modules, planning, execution, and visualization behind a shared Python interface. Instead of wrestling with different hardware interfaces, you work with common classes for electrode matrices, cameras, positioning systems, and droplet plans.
 
 ## What will you find here?
 <ul class="dl-home__list">

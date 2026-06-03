@@ -1,5 +1,5 @@
 site_name: DropLogic
-site_description: A comprehensive digital microfluidics (DMF) control platform.
+site_description: A Python library for digital microfluidics (DMF) control.
 theme:
   name: material
   language: en

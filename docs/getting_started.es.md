@@ -25,7 +25,7 @@ pip install -e .
 
 Para empezar a usar **DropLogic**, primero necesitas entender dos conceptos clave: **Sistemas (Systems)** y **Módulos (Modules)**.
 
-- **Sistema (System):** Un sistema representa toda la máquina de hardware o el entorno de simulación. DropLogic proporciona el sistema puramente software `simulator.py` y sistemas adaptadores para hardware de Acxel como `box_mini1` / `BOXMini` y `DMLite`. `BOXMini` y `DMLite` son plataformas de Acxel; DropLogic solo aporta la capa de integración en Python. Consulta [Acxel](https://www.acxel.com/) para la información del proveedor de hardware.
+- **Sistema (System):** Un sistema representa toda la máquina de hardware o el entorno de simulación. La librería incluye el sistema puramente software `simulator.py` y sistemas adaptadores para hardware de Acxel como `box_mini1` / `BOXMini` y `DMLite`. `BOXMini` y `DMLite` son plataformas de Acxel; este repositorio solo contiene la capa de integración en Python. Consulta [Acxel](https://www.acxel.com/) para la información del proveedor de hardware.
 - **Módulo (Module):** Un sistema es esencialmente una colección de módulos. Un módulo controla un componente de hardware específico, como la matriz de electrodos, la cámara o los controladores de temperatura. Los módulos pueden tener diferentes **versiones o implementaciones** (ej. `CameraV1` o `MicroscopeV2`), lo que te permite intercambiar componentes físicos de hardware manteniendo exactamente la misma sintaxis en tu código de DropLogic.
 
 *(Para una explicación más estructurada de sistemas, módulos y de cómo se ensamblan nuevas máquinas, consulta la sección **Systems** del menú de navegación, que termina con nuestra guía [Creating New Systems](creating_systems.md)).*

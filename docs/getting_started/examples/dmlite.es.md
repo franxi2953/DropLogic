@@ -5,7 +5,7 @@ Archivo fuente:
 
 Este script demuestra el mismo bucle continuo multi-gota que el ejemplo del simulador, pero contra el sistema real `DMLite`.
 
-`DMLite` es una plataforma hardware de Acxel. DropLogic la adapta mediante un sistema Python y un módulo de matriz de electrodos; no es un módulo hardware propio de DropLogic. Consulta [Acxel](https://www.acxel.com/) para la información del proveedor.
+`DMLite` es una plataforma hardware de Acxel. Este repositorio la adapta mediante un sistema Python y un módulo de matriz de electrodos; el hardware en sí no forma parte de esta librería. Consulta [Acxel](https://www.acxel.com/) para la información del proveedor.
 
 Hace lo siguiente:
 
