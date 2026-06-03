@@ -1,0 +1,12 @@
+Logo sources
+============
+
+These assets are used only in the repository README affiliation panel. The logos remain the property of their respective organisations.
+
+- cambridge-university.svg: downloaded from the University of Cambridge website, https://www.cam.ac.uk/themes/custom/fresh/images/interface/cambridge_university2.svg
+- cambridge-university-white.svg: downloaded from the University of Cambridge website, https://www.cam.ac.uk/themes/custom/fresh/images/interface/university_logo_white-01.svg
+- di-michele-lab.png: downloaded from the Di Michele Lab website, https://www.dimichelelab.org/
+- epsrc-square.png: downloaded from UKRI, https://www.ukri.org/wp-content/uploads/2022/03/ukri-epsrc-square-logo.png
+- occhipinti-group.png: downloaded from the Occhipinti Group website, https://www.occhipintigroup.com/
+- sensor-cdt.png: downloaded from the Sensor CDT website, https://cdt.sensors.cam.ac.uk/
+- ukri-logo.svg: extracted from the inline UKRI website header logo at https://www.ukri.org/

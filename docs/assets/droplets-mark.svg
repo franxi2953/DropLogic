@@ -1,5 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" fill="none">
-  <circle cx="34" cy="48" r="24" fill="white" stroke="#111111" stroke-width="4"/>
-  <circle cx="62" cy="48" r="24" fill="white" stroke="#111111" stroke-width="4"/>
-  <path d="M48 28.5A24 24 0 0 0 48 67.5A24 24 0 0 0 48 28.5Z" fill="#111111"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">DropLogic mark</title>
+  <desc id="desc">Two circular droplets partially overlapping into a shared lens.</desc>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --drop-fill: #ffffff;
+      --drop-stroke: #111111;
+      --drop-mix: #111111;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --drop-fill: #111111;
+        --drop-stroke: #f6f6f6;
+        --drop-mix: #f6f6f6;
+      }
+    }
+  </style>
+  <circle cx="34" cy="48" r="24" fill="var(--drop-fill)" stroke="var(--drop-stroke)" stroke-width="4"/>
+  <circle cx="62" cy="48" r="24" fill="var(--drop-fill)" stroke="var(--drop-stroke)" stroke-width="4"/>
+  <path d="M48 28.5A24 24 0 0 0 48 67.5A24 24 0 0 0 48 28.5Z" fill="var(--drop-mix)"/>
 </svg>

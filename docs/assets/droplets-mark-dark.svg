@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">DropLogic mark for dark backgrounds</title>
+  <desc id="desc">Two dark circular droplets partially overlapping into a white shared lens.</desc>
+  <circle cx="34" cy="48" r="24" fill="#111111" stroke="#f6f6f6" stroke-width="4"/>
+  <circle cx="62" cy="48" r="24" fill="#111111" stroke="#f6f6f6" stroke-width="4"/>
+  <path d="M48 28.5A24 24 0 0 0 48 67.5A24 24 0 0 0 48 28.5Z" fill="#f6f6f6"/>
+</svg>

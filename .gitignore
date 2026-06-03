@@ -31,6 +31,7 @@ droplogic/hardware/modules/xy_stage/versions/nmc_controller/*.dll
 # Scripts temporales de parche/diagnostico
 patch_*.py
 fix_*.py
+merge_debug.json
 
 # Logs locales
 *.log

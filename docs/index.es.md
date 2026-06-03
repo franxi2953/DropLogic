@@ -1,10 +1,6 @@
 <div class="dl-home">
   <div class="dl-home__mark" aria-hidden="true">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" fill="none">
-      <circle cx="34" cy="48" r="24" fill="white" stroke="#111111" stroke-width="4"/>
-      <circle cx="62" cy="48" r="24" fill="white" stroke="#111111" stroke-width="4"/>
-      <path d="M48 28.5A24 24 0 0 0 48 67.5A24 24 0 0 0 48 28.5Z" fill="#111111"/>
-    </svg>
+    <img src="../assets/droplets-mark.svg" alt="">
   </div>
   <p class="dl-home__eyebrow">Librería Python para microfluídica digital</p>
   <h1 class="dl-home__title">DropLogic</h1>

@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="docs/assets/droplets-mark.svg" alt="DropLogic logo" width="120" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/droplets-mark-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/droplets-mark-light.svg">
+    <img src="docs/assets/droplets-mark-light.svg" alt="DropLogic logo" width="120">
+  </picture>
 </p>
 
 <h1 align="center">DropLogic</h1>
@@ -9,11 +13,11 @@
 </p>
 
 <p align="center">
-  <a href="https://franxi2953.github.io/DropLogic/"><img alt="Docs" src="https://img.shields.io/badge/docs-online-111111?style=flat-square"></a>
-  <img alt="Version" src="https://img.shields.io/badge/version-v1.0.0-111111?style=flat-square">
-  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-111111?style=flat-square"></a>
-  <img alt="Python" src="https://img.shields.io/badge/python-3.8%2B-111111?style=flat-square">
-  <img alt="OS" src="https://img.shields.io/badge/os-Windows-111111?style=flat-square">
+  <a href="https://franxi2953.github.io/DropLogic/"><img alt="Docs" src="https://img.shields.io/badge/docs-online-0969da?style=flat-square&amp;labelColor=111111"></a>
+  <img alt="Version" src="https://img.shields.io/badge/version-v1.0.0-2da44e?style=flat-square&amp;labelColor=111111">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-d29922?style=flat-square&amp;labelColor=111111"></a>
+  <img alt="Python" src="https://img.shields.io/badge/python-3.8%2B-3776ab?style=flat-square&amp;labelColor=111111">
+  <img alt="OS" src="https://img.shields.io/badge/os-Windows-0078d4?style=flat-square&amp;labelColor=111111">
 </p>
 
 <p align="center">
@@ -29,12 +33,16 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/readme-affiliations.svg" alt="PhD project at the University of Cambridge with the Occhipinti Group, Di Michele Lab, UKRI, EPSRC, and Sensor CDT" width="840" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-affiliations-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/readme-affiliations-light.svg">
+    <img src="docs/assets/readme-affiliations-light.svg" alt="PhD project at the University of Cambridge with the Occhipinti Group, Di Michele Lab, UKRI, EPSRC, and Sensor CDT" width="840">
+  </picture>
 </p>
 
 DropLogic is a Python library for digital microfluidics (DMF): systems, modules, SIPP-based droplet planning, synchronized execution, visualization, and hardware-facing utilities in one library.
 
-The project began as **Fran Quero's PhD project at the [University of Cambridge](https://www.cam.ac.uk/)**, developed across the **[Occhipinti Group](https://www.occhipintigroup.com/)** and the **[Di Michele Lab](https://www.engbio.cam.ac.uk/directory/ld389)** with support from **[UKRI](https://www.ukri.org/)**, **[EPSRC](https://www.ukri.org/councils/epsrc/)**, and the **[Sensor CDT](https://cdt.sensors.cam.ac.uk/)**. It is designed to make DMF control scripts readable while keeping the hardware-specific details isolated inside systems and modules.
+The project began as **Fran Quero's PhD project at the [University of Cambridge](https://www.cam.ac.uk/)**, developed across the **[Occhipinti Group](https://www.occhipintigroup.com/)** and the **[Di Michele Lab](https://www.dimichelelab.org/)** with support from **[UKRI](https://www.ukri.org/)**, **[EPSRC](https://www.ukri.org/councils/epsrc/)**, and the **[Sensor CDT](https://cdt.sensors.cam.ac.uk/)**. It is designed to make DMF control scripts readable while keeping the hardware-specific details isolated inside systems and modules.
 
 > DMLite and BOXMini are hardware platforms from [Acxel](https://www.acxel.com/). This repository contains Python integration layers for supported hardware; it does not include vendor hardware or SDK/DLL assets.
 
