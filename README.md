@@ -29,12 +29,12 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/readme-affiliations.svg" alt="PhD project at the University of Cambridge, Occhipinti Group, and Di Michele Lab" width="760" />
+  <img src="docs/assets/readme-affiliations.svg" alt="PhD project at the University of Cambridge with the Occhipinti Group, Di Michele Lab, UKRI, EPSRC, and Sensor CDT" width="840" />
 </p>
 
 DropLogic is a Python library for digital microfluidics (DMF): systems, modules, SIPP-based droplet planning, synchronized execution, visualization, and hardware-facing utilities in one library.
 
-The project began as **Fran Quero's PhD project at the University of Cambridge**, developed across the **Occhipinti Group** and the **Di Michele Lab**. It is designed to make DMF control scripts readable while keeping the hardware-specific details isolated inside systems and modules.
+The project began as **Fran Quero's PhD project at the [University of Cambridge](https://www.cam.ac.uk/)**, developed across the **[Occhipinti Group](https://www.occhipintigroup.com/)** and the **[Di Michele Lab](https://www.engbio.cam.ac.uk/directory/ld389)** with support from **[UKRI](https://www.ukri.org/)**, **[EPSRC](https://www.ukri.org/councils/epsrc/)**, and the **[Sensor CDT](https://cdt.sensors.cam.ac.uk/)**. It is designed to make DMF control scripts readable while keeping the hardware-specific details isolated inside systems and modules.
 
 > DMLite and BOXMini are hardware platforms from [Acxel](https://www.acxel.com/). This repository contains Python integration layers for supported hardware; it does not include vendor hardware or SDK/DLL assets.
 
