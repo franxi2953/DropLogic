@@ -87,6 +87,12 @@
             "X": 1.45234375,
             "Y": 3.553125
         },
+        "pixel_calibration": {
+            "AM16k": {
+                "microns_per_pixel": 0.51413882,
+                "pixels_per_micron": 1.94500000
+            }
+        },
         "chip_origin": {
             "X": 61625.666666666664,
             "Y": 8584.333333333334,

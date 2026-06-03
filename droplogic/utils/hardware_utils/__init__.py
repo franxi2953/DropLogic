@@ -10,7 +10,12 @@ from .utils import (
     save_config,
     electrode_to_stage,
     stage_to_electrode,
-    stage_to_electrode_float
+    stage_to_electrode_float,
+    pixels_to_microns,
+    microns_to_pixels,
+    get_pixel_calibration_info,
+    pixels_to_volume_nl,
+    area_pixels_to_radius_microns,
 )
 
 __all__ = [
@@ -18,5 +23,10 @@ __all__ = [
     'save_config',
     'electrode_to_stage',
     'stage_to_electrode',
-    'stage_to_electrode_float'
+    'stage_to_electrode_float',
+    'pixels_to_microns',
+    'microns_to_pixels',
+    'get_pixel_calibration_info',
+    'pixels_to_volume_nl',
+    'area_pixels_to_radius_microns',
 ]

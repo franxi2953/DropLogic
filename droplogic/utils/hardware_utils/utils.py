@@ -12,16 +12,19 @@ import os
 
 
 DEFAULT_MICRONS_PER_PIXEL = 0.51413882
-DEFAULT_PIXELS_PER_MICRON = 1.0 / DEFAULT_MICRONS_PER_PIXEL
+DEFAULT_PIXELS_PER_MICRON = 1.94500000
 
 
 PIXEL_CALIBRATIONS = {
     "AM16k": {
         "microns_per_pixel": DEFAULT_MICRONS_PER_PIXEL,
         "pixels_per_micron": DEFAULT_PIXELS_PER_MICRON,
-        "reference_pixels": 200.0 / DEFAULT_MICRONS_PER_PIXEL,
+        "reference_pixels": 200.0 * DEFAULT_PIXELS_PER_MICRON,
         "reference_microns": 200.0,
-        "description": f"AM16k camera calibration ({DEFAULT_MICRONS_PER_PIXEL:.8f} um/px)",
+        "description": (
+            f"AM16k camera calibration ({DEFAULT_MICRONS_PER_PIXEL:.8f} um/px, "
+            f"{DEFAULT_PIXELS_PER_MICRON:.8f} px/um)"
+        ),
     }
 }
 

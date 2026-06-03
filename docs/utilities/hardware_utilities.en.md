@@ -86,3 +86,10 @@ radius_um = area_pixels_to_radius_microns(pixel_area=3500)
 ```
 
 The default calibration is currently defined for `AM16k`.
+
+Current AM16k pixel calibration:
+
+- `microns_per_pixel`: `0.51413882` um/px
+- `pixels_per_micron`: `1.94500000` px/um
+
+These values are mirrored in the library defaults and in the base `config.json` calibration block.
