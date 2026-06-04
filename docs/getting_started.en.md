@@ -15,6 +15,10 @@ For development (editable mode):
 pip install -e .
 ```
 
+### DMLite on macOS
+
+`DMLite` native hardware control is currently Windows-only because the Acxel SDK is distributed as Windows DLLs. On macOS, `DMLite()` raises a clear runtime error. Use `Simulator` on macOS while DMLite support remains a placeholder.
+
 !!! warning "Hardware Drivers Requirement"
     To control physical devices (like the Electrode Matrix, XY Stage, or Camera), you must install the **DropLogic Runtime Installer** for your target hardware. This runtime package is distributed separately from the Python library by the hardware provider or platform maintainer.
     

@@ -25,6 +25,24 @@ La pila de electrodos está dividida intencionalmente en capas:
 
 Esta separación es importante porque mantiene limpia la definición del sistema y permite cambiar la implementación hardware subyacente más adelante.
 
+## Backends
+
+El sistema `DMLite` usa actualmente un backend de matriz de electrodos:
+
+| Backend | Dónde corre | Caso de uso |
+| --- | --- | --- |
+| `DMLite` | Windows | Control nativo mediante la DLL/SDK del proveedor. |
+
+En Windows, el sistema usa el backend nativo `DMLite`:
+
+```python
+from droplogic.hardware.DMLite import DMLite
+
+system = DMLite()
+```
+
+En macOS, `DMLite()` actualmente lanza un error claro. El soporte de hardware en macOS queda intencionalmente como placeholder hasta que exista un backend macOS soportado.
+
 ## Por Qué Existe un Wrapper de Módulo
 
 El wrapper no es solo estructura extra. Permite:

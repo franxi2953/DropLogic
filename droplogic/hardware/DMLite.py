@@ -5,9 +5,8 @@ from ..utils.advanced_drop import AdvancedDrop
 from ..utils.visualizer import MatrixVisualizer
 import numpy as np
 import threading
-import time
-import copy
 import logging
+import platform
 
 class DMLite(DropSystem):
     """Represents a lightweight version of the DropSystem hardware system focused only on the electrode matrix."""
@@ -23,6 +22,14 @@ class DMLite(DropSystem):
     def __init__(self, config_file="config.json", log_level=logging.INFO):
         if isinstance(log_level, str):
             log_level = getattr(logging, log_level.upper(), logging.INFO)
+
+        if platform.system() == "Darwin":
+            type(self)._instance = None
+            raise RuntimeError(
+                "DMLite native hardware control is currently Windows-only because "
+                "the Acxel SDK is distributed as Windows DLLs. macOS support is a "
+                "placeholder for now; use Simulator on macOS or run DMLite from Windows."
+            )
 
         if hasattr(self, "_initialized") and self._initialized:
             self.logger.setLevel(log_level)
@@ -48,7 +55,7 @@ class DMLite(DropSystem):
         # Initialize electrode matrix module
         self.electrode_matrix = ElectrodeMatrixModule(
             self,
-            None,  # Deprecated argument
+            None,
             rows, columns,
             version=version,
             debug=False
@@ -158,13 +165,18 @@ class DMLite(DropSystem):
             return
 
         self._closed = True
-        
-        self.logger.info("Closing hardware modules")
-        if self.electrode_matrix:
+
+        logger = getattr(self, "logger", None)
+        if logger:
+            logger.info("Closing hardware modules")
+
+        electrode_matrix = getattr(self, "electrode_matrix", None)
+        if electrode_matrix:
             try:
-                self.electrode_matrix.close()
+                electrode_matrix.close()
             except Exception as e:
-                self.logger.error(f"Error closing electrode matrix module: {e}")
+                if logger:
+                    logger.error(f"Error closing electrode matrix module: {e}")
 
         # Close visualizers
         if hasattr(self, 'visualizers') and self.visualizers:
@@ -172,10 +184,15 @@ class DMLite(DropSystem):
                 try:
                     self.visualizers.matrix.stop()
                 except Exception as e:
-                    self.logger.error(f"Error closing MatrixVisualizer: {e}")
+                    if logger:
+                        logger.error(f"Error closing MatrixVisualizer: {e}")
 
         # Parent class handles queue cleanup
-        super().close()
+        if hasattr(self, "_queue_stop_event"):
+            super().close()
 
     def __del__(self):
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            pass

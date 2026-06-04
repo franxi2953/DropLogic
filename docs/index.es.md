@@ -12,11 +12,12 @@
     <a class="md-button dl-button" href="systems/">Sistemas</a>
     <a class="md-button dl-button" href="planning/">Planificacion</a>
     <a class="md-button dl-button" href="visualization/">Visualizacion</a>
+    <a class="md-button dl-button" href="mcp/">Control por Agentes</a>
   </div>
 </div>
 
 !!! warning "Compatibilidad"
-    **El control nativo de hardware actualmente solo está soportado en Windows.** La librería utiliza controladores e interconexiones de hardware en forma de DLLs propietarias proporcionadas por los proveedores de hardware, que son exclusivas de Windows. En macOS o Linux, el uso queda limitado a simulación y flujos sin runtime nativo.
+    **El control nativo de DMLite actualmente solo esta soportado en Windows.** La libreria utiliza DLLs propietarias proporcionadas por proveedores de hardware. En macOS, `DMLite()` lanza intencionadamente un error claro por ahora; usa el `Simulator` alli hasta que exista un backend macOS soportado.
 
 Bienvenido a la documentación de **DropLogic**, una librería Python para control de microfluídica digital (DMF). Mantiene los scripts legibles agrupando sistemas, módulos, planificación, ejecución y visualización detrás de una interfaz Python compartida. En lugar de lidiar con distintas interfaces de hardware, trabajas con clases comunes para matrices de electrodos, cámaras, sistemas de posicionamiento y planes de gotas.
 
@@ -28,5 +29,6 @@ Bienvenido a la documentación de **DropLogic**, una librería Python para contr
   <li><strong><a href="systems/">Sistemas</a></strong>: La estructura de sistemas, módulos, versiones y cómo crear máquinas nuevas.</li>
   <li><strong><a href="planning/">Planificacion</a></strong>: AdvancedDrop, planes de gotas, movimiento SIPP y ejecucion en runtime.</li>
   <li><strong><a href="visualization/">Visualizacion</a></strong>: Visualizadores de matriz y streamer, snapshots y grabacion sincronizada.</li>
+  <li><strong><a href="mcp/">Control por Agentes</a></strong>: Servidor MCP para que agentes planifiquen, ejecuten, inspeccionen frames y lancen vision.</li>
   <li><strong><a href="utilities/">Utilidades</a></strong>: Helpers de hardware, vision de gotas, depuracion y diagnosticos.</li>
 </ul>

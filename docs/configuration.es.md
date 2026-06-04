@@ -48,6 +48,8 @@ Campos obligatorios:
 
 Para el setup actual de DMLite, los defaults del repositorio son adecuados. El sistema reinicia `electrode_matrix.matrix` al arrancar, asi que normalmente no hay que editar ese campo a mano.
 
+En Windows, `electrode_matrix.version: "DMLite"` usa el adaptador nativo basado en DLL. En macOS, `DMLite()` actualmente lanza un error claro porque el control nativo de hardware aun no esta implementado alli.
+
 ## Que Necesita El Simulator
 
 `Simulator` usa:

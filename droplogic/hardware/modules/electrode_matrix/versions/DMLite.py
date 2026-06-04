@@ -1,28 +1,104 @@
+import ctypes
 import os
 import platform
-import ctypes
-from typing import List
-from droplogic.utils.logging_config import setup_droplogic_logger
+import time
+from pathlib import Path
 
+from droplogic.utils.logging_config import setup_droplogic_logger
 from droplogic.utils.native_runtime import resolve_dll
 
+
 logger = setup_droplogic_logger("droplogic.electrode_matrix.dmlite")
+_dll_directory_handles = []
 
-# Define the absolute path to the DLL
-dll_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sdk', 'bin')
-local_dll_path = os.path.join(dll_folder, 'sdk.dll')
 
-# Solo intentar cargar la DLL si estamos en Windows
-microfluidics = None
-if platform.system() == 'Windows':
+class Drop(ctypes.Structure):
+    _fields_ = [
+        ("height", ctypes.c_int),
+        ("width", ctypes.c_int),
+        ("row", ctypes.c_int),
+        ("col", ctypes.c_int),
+    ]
+
+
+def _candidate_local_dlls():
+    current_dir = Path(__file__).resolve().parent
+    candidates = [
+        current_dir / "sdk" / "bin" / "sdk.dll",
+    ]
+
     try:
-        dll_path = resolve_dll('electrode_matrix/dmlite/sdk.dll', local_dll_path)
-        microfluidics = ctypes.CDLL(dll_path)
-    except Exception as e:
-        logger.error(f"Failed to load DMLite DLL: {e}")
-        microfluidics = None
-else:
-    logger.warning("DMLite hardware is conceptually disabled on non-Windows OS (no DLL support)")
+        repo_root = Path(__file__).resolve().parents[5]
+        candidates.append(repo_root / "vendor_bin" / "electrode_matrix" / "dmlite" / "sdk.dll")
+    except IndexError:
+        pass
+
+    return candidates
+
+
+def _resolve_sdk_dll():
+    last_error = None
+    for fallback in _candidate_local_dlls():
+        try:
+            dll_path = resolve_dll("electrode_matrix/dmlite/sdk.dll", str(fallback))
+            if os.path.exists(dll_path):
+                return dll_path
+        except FileNotFoundError as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    raise FileNotFoundError("DMLite SDK DLL could not be resolved.")
+
+
+def _load_sdk():
+    if platform.system() != "Windows":
+        logger.warning("DMLite native SDK is only loaded on Windows.")
+        return None
+
+    try:
+        dll_path = _resolve_sdk_dll()
+        dll_dir = os.path.dirname(os.path.abspath(dll_path))
+        if hasattr(os, "add_dll_directory"):
+            _dll_directory_handles.append(os.add_dll_directory(dll_dir))
+        sdk = ctypes.CDLL(dll_path)
+        _bind_sdk_signatures(sdk)
+        return sdk
+    except Exception as exc:
+        logger.error("Failed to load DMLite SDK: %s", exc)
+        return None
+
+
+def _bind_sdk_signatures(sdk):
+    sdk.InitUSB.restype = ctypes.c_int
+    sdk.InitUSB.argtypes = []
+
+    sdk.OpenUSB.restype = ctypes.c_int
+    sdk.OpenUSB.argtypes = []
+
+    sdk.CloseUSB.restype = ctypes.c_int
+    sdk.CloseUSB.argtypes = []
+
+    sdk.SetPower.restype = ctypes.c_int
+    sdk.SetPower.argtypes = [ctypes.c_bool]
+
+    sdk.SetVolt.restype = ctypes.c_int
+    sdk.SetVolt.argtypes = [ctypes.c_int] * 9
+
+    sdk.InquireVolt.restype = ctypes.c_int
+    sdk.InquireVolt.argtypes = [ctypes.POINTER(ctypes.c_int)] * 9
+
+    sdk.ActivateElec.restype = ctypes.c_bool
+    sdk.ActivateElec.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.POINTER(Drop),
+    ]
+
+
+microfluidics = _load_sdk()
+
 
 class DMLite:
     def __init__(
@@ -39,99 +115,242 @@ class DMLite:
         self.device = device
         self.rows = int(rows)
         self.columns = int(columns)
+        self.cols = self.columns
         self.port = port
         self.baud_rate = baud_rate
-        self.voltage = initial_voltage
         self.debug = debug
-        self.status = 1  
-        self.error_count = 0  
-        self.connected = False  
-        self.matrix = [[0 for _ in range(self.columns)] for _ in range(self.rows)]
-        
+        self.initialized = False
+        self.connected = False
+        self.electrode_states = [[0] * self.columns for _ in range(self.rows)]
+        self.matrix = self.electrode_states
         self.logger = logger
-        
-        if microfluidics:
-            self.logger.info("Initializing communication with DMLite...")
-        else:
-            self.logger.warning("DMLite runs in mock/simulation mode natively because DLL is missing or OS is not Windows.")
 
-    def close(self):
-        if microfluidics:
-            microfluidics.close_port()
-        self.logger.info("Connection with DMLite closed safely")
+        try:
+            startup_voltage = int(initial_voltage)
+        except (TypeError, ValueError):
+            startup_voltage = 55
+        startup_voltage = max(0, min(255, startup_voltage))
+        self.voltage = startup_voltage
+        self.initialized_voltages = [startup_voltage] * 9
+
+        if platform.system() != "Windows":
+            raise RuntimeError(
+                "DMLite native hardware control is currently Windows-only because "
+                "the Acxel SDK is distributed as Windows DLLs."
+            )
+
+        if microfluidics is None:
+            raise RuntimeError(
+                "DMLite native SDK could not be loaded. Install the Acxel/DropLogic "
+                "runtime assets on Windows before using DMLite hardware control."
+            )
+
+        self.init_board()
 
     def init_board(self, baud_rate=None, port_number=None):
-        if not microfluidics:
-            return 1
-        baud_rate = baud_rate or self.baud_rate
-        port_number = port_number or self.port
-        ans = microfluidics.SetParam(baud_rate, port_number - 1, 0, 0, 0)
-        return ans
-
-    def update_board(self, flat_matrix: List[int], port_number=None):
-        if not microfluidics:
+        if microfluidics is None:
+            self.initialized = True
+            self.connected = False
             return True
-        port_number = port_number or self.port
-        c_matrix = (ctypes.c_int * len(flat_matrix))(*flat_matrix)
-        result = microfluidics.send_electrode(c_matrix, port_number - 1)
-        if result == 1:
-            self.error_count += 1
-            if self.error_count > 5:
-                self.error_count = 0
-                return False
-        else:
-            self.status = 1
+
+        if self.initialized:
+            return True
+
+        if self.debug:
+            self.logger.info(
+                "Initializing DMLite matrix (rows=%s, columns=%s)",
+                self.rows,
+                self.columns,
+            )
+
+        self._helper_initialize()
+        self.initialized = True
+        self.connected = True
         return True
 
     def set_voltage(self, voltage):
-        self.voltage = voltage
+        voltage_values = self._normalize_voltage(voltage)
+        self.voltage = voltage_values[0]
+        self.initialized_voltages = voltage_values
+
+        if microfluidics is None:
+            return True
+
+        result = microfluidics.SetVolt(*voltage_values)
+        if result != 0:
+            raise RuntimeError(f"SetVolt failed with code {result}")
+        if self.debug:
+            self.logger.info("DMLite voltage set to %s", voltage_values)
         return True
-
-    def _flatten_matrix(self, matrix):
-        return [int(value) for row in matrix for value in row]
-
-    def set_chip(self, matrix):
-        self.matrix = [[int(value) for value in row] for row in matrix]
-        return self.update_board(self._flatten_matrix(self.matrix))
 
     def set_electrode(self, row, col, state):
         row = int(row)
         col = int(col)
         if row < 0 or row >= self.rows or col < 0 or col >= self.columns:
-            return False
-        self.matrix[row][col] = 1 if state else 0
-        return self.set_chip(self.matrix)
+            raise ValueError("Invalid row or column index")
 
-    def deactivate_all(self):
-        self.matrix = [[0 for _ in range(self.columns)] for _ in range(self.rows)]
-        return self.set_chip(self.matrix)
+        self.electrode_states[row][col] = 1 if state else 0
+        if state:
+            return self.set_droplets(
+                [{"row": row, "col": col, "width": 1, "height": 1, "state": 1}]
+            )
+
+        return self._update_device_state()
+
+    def set_chip(self, matrix):
+        if len(matrix) != self.rows or any(len(row) != self.columns for row in matrix):
+            raise ValueError("Matrix dimensions do not match configured grid")
+
+        self.electrode_states = [
+            [1 if int(value) else 0 for value in row]
+            for row in matrix
+        ]
+        self.matrix = self.electrode_states
+        return self._update_device_state()
 
     def set_droplet(self, row, col, width=1, height=1, state=1):
-        row = int(row)
-        col = int(col)
-        width = int(width)
-        height = int(height)
-        value = 1 if state else 0
-        for r in range(row, row + height):
-            for c in range(col, col + width):
-                if 0 <= r < self.rows and 0 <= c < self.columns:
-                    self.matrix[r][c] = value
-        return self.set_chip(self.matrix)
+        return self.set_droplets(
+            [{"row": row, "col": col, "width": width, "height": height, "state": state}]
+        )
 
     def set_droplets(self, droplets):
+        active_drops = []
+
         for droplet in droplets:
-            self.set_droplet(
-                droplet.get("row", 0),
-                droplet.get("col", 0),
-                droplet.get("width", 1),
-                droplet.get("height", 1),
-                droplet.get("state", 1),
-            )
-        return self.set_chip(self.matrix)
+            row = int(droplet.get("row", 0))
+            col = int(droplet.get("col", 0))
+            width = int(droplet.get("width", 1))
+            height = int(droplet.get("height", 1))
+            state = 1 if droplet.get("state", 1) else 0
+
+            if row < 0 or col < 0 or row + height > self.rows or col + width > self.columns:
+                if self.debug:
+                    self.logger.warning("Droplet at (%s, %s) out of bounds", row, col)
+                continue
+
+            for r in range(row, row + height):
+                for c in range(col, col + width):
+                    self.electrode_states[r][c] = state
+
+            if state:
+                active_drops.append(Drop(height, width, row, col))
+
+        self.matrix = self.electrode_states
+        if active_drops:
+            return self._activate_drops(active_drops)
+
+        return self._update_device_state()
+
+    def deactivate_all(self):
+        self.electrode_states = [[0] * self.columns for _ in range(self.rows)]
+        self.matrix = self.electrode_states
+        return self._activate_drops([])
+
+    def close(self):
+        if not self.initialized and microfluidics is None:
+            return True
+
+        if microfluidics is not None and self.initialized:
+            try:
+                self.deactivate_all()
+                microfluidics.SetPower(False)
+                microfluidics.CloseUSB()
+            finally:
+                self.initialized = False
+                self.connected = False
+        else:
+            self.initialized = False
+            self.connected = False
+        return True
 
     def send_ascii_command(self, hex_command):
         self.logger.warning("Raw ASCII commands are not supported by the DMLite SDK adapter")
         return None
 
     def _query_voltage(self):
-        return self.voltage
+        if microfluidics is None:
+            return tuple(self.initialized_voltages)
+
+        values = [ctypes.c_int(index + 1) for index in range(9)]
+        result = microfluidics.InquireVolt(*[ctypes.byref(value) for value in values])
+        if result != 0:
+            raise RuntimeError(f"InquireVolt failed with code {result}")
+        return tuple(value.value for value in values)
+
+    def _helper_initialize(self):
+        init_result = microfluidics.InitUSB()
+        open_result = microfluidics.OpenUSB()
+
+        while open_result == -255:
+            microfluidics.SetPower(False)
+            microfluidics.CloseUSB()
+            time.sleep(0.5)
+            init_result = microfluidics.InitUSB()
+            open_result = microfluidics.OpenUSB()
+
+        if init_result != 0 and self.debug:
+            self.logger.warning("DMLite InitUSB returned %s", init_result)
+        if open_result != 0 and self.debug:
+            self.logger.warning("DMLite OpenUSB returned %s", open_result)
+
+        power_result = microfluidics.SetPower(True)
+        if power_result != 0 and self.debug:
+            self.logger.warning("DMLite SetPower(True) returned %s", power_result)
+
+        self.set_voltage(self.initialized_voltages)
+        time.sleep(1)
+
+        try:
+            queried = self._query_voltage()
+        except Exception as exc:
+            raise RuntimeError(f"DMLite voltage query failed after initialization: {exc}") from exc
+
+        if abs(queried[0] - self.initialized_voltages[0]) < 2:
+            return
+
+        microfluidics.SetPower(False)
+        microfluidics.CloseUSB()
+        self._helper_initialize()
+
+    def _activate_drops(self, active_drops):
+        if microfluidics is None:
+            return True
+
+        if active_drops:
+            drops_array = (Drop * len(active_drops))(*active_drops)
+        else:
+            drops_array = (Drop * 1)()
+
+        result = microfluidics.ActivateElec(
+            self.rows,
+            self.columns,
+            len(active_drops),
+            drops_array,
+        )
+        if active_drops and not result:
+            raise RuntimeError("ActivateElec failed")
+        return True
+
+    def _update_device_state(self):
+        active_drops = []
+        for row in range(self.rows):
+            for col in range(self.columns):
+                if self.electrode_states[row][col]:
+                    active_drops.append(Drop(1, 1, row, col))
+        return self._activate_drops(active_drops)
+
+    def _normalize_voltage(self, voltage):
+        if isinstance(voltage, int):
+            values = [voltage] * 9
+        elif isinstance(voltage, (list, tuple)) and len(voltage) == 9:
+            values = list(voltage)
+        else:
+            raise ValueError("Voltage must be an int or a list/tuple of 9 values")
+
+        return [max(0, min(255, int(value))) for value in values]
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass

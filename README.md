@@ -17,7 +17,7 @@
   <img alt="Version" src="https://img.shields.io/badge/version-v1.0.0-2da44e?style=flat-square&amp;labelColor=111111">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-d29922?style=flat-square&amp;labelColor=111111"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.8%2B-3776ab?style=flat-square&amp;labelColor=111111">
-  <img alt="OS" src="https://img.shields.io/badge/os-Windows-0078d4?style=flat-square&amp;labelColor=111111">
+  <img alt="OS" src="https://img.shields.io/badge/os-Windows%20hardware%20%7C%20cross--platform%20simulator-0078d4?style=flat-square&amp;labelColor=111111">
 </p>
 
 <p align="center">
@@ -70,6 +70,8 @@ Start with the [Getting Started Guide](https://franxi2953.github.io/DropLogic/ge
 ## Runtime Note
 
 For native control of physical hardware devices, an additional DropLogic Runtime Installer may be required. The runtime installer is distributed separately from the Python library so that vendor SDKs and native DLLs do not live in the public source repository.
+
+`DMLite` native hardware control is currently Windows-only because it depends on vendor DLLs. On macOS, `DMLite()` raises a clear runtime error for now; use the `Simulator` there until a supported macOS backend is added.
 
 ## License
 

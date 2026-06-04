@@ -18,7 +18,7 @@ class ElectrodeMatrixModule:
     def __init__(self, parent, device, rows, columns, version="DMLite", initial_voltage=55, debug=False):
         """
         :param parent: A reference to a higher-level system or controller.
-        :param device: An already-initialized device (e.g. USB or serial object) or DLL path.
+        :param device: Optional backend-specific device/configuration object.
         :param rows: Number of rows in the electrode matrix.
         :param columns: Number of columns in the electrode matrix.
         :param version: The electrode matrix version to use.

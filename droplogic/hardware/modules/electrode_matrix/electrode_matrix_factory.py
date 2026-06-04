@@ -1,5 +1,3 @@
-import os
-
 class ElectrodeMatrixFactory:
     """Factory class for creating electrode matrix controller instances."""
 

@@ -7,6 +7,8 @@ Este script demuestra el mismo bucle continuo multi-gota que el ejemplo del simu
 
 `DMLite` es una plataforma hardware de Acxel. Este repositorio la adapta mediante un sistema Python y un módulo de matriz de electrodos; el hardware en sí no forma parte de esta librería. Consulta [Acxel](https://www.acxel.com/) para la información del proveedor.
 
+Este ejemplo es para control de hardware en Windows. En macOS, `DMLite()` actualmente lanza un error claro; usa el ejemplo de simulador alli mientras el soporte de DMLite siga siendo un placeholder.
+
 Hace lo siguiente:
 
 - inicializa un sistema real `DMLite`

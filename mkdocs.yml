@@ -70,6 +70,8 @@ nav:
       - Overview: visualization/index.md
       - Visualizers: visualization/visualizers.md
       - Recording: visualization/recording.md
+  - Agent Control:
+      - MCP Server: mcp/index.md
   - Utilities:
       - Overview: utilities/index.md
       - Hardware Utilities: utilities/hardware_utilities.md

@@ -25,6 +25,24 @@ The electrode stack is intentionally split in layers:
 
 This separation is important because it keeps the system definition clean while allowing the underlying hardware implementation to change later.
 
+## Backends
+
+The `DMLite` system currently uses one electrode-matrix backend:
+
+| Backend | Where it runs | Use case |
+| --- | --- | --- |
+| `DMLite` | Windows | Native control through the vendor DLL/SDK. |
+
+On Windows, the system uses the native `DMLite` backend:
+
+```python
+from droplogic.hardware.DMLite import DMLite
+
+system = DMLite()
+```
+
+On macOS, `DMLite()` currently raises a clear runtime error. macOS hardware support is intentionally left as a placeholder until a supported macOS backend exists.
+
 ## Why a Module Wrapper Exists
 
 The wrapper is not just extra structure. It makes it possible to:

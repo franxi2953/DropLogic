@@ -7,6 +7,8 @@ This script demonstrates the same continuous multi-droplet loop as the simulator
 
 `DMLite` is an Acxel hardware platform. This repository adapts it through a Python system and electrode-matrix module; the hardware itself is not part of this library. See [Acxel](https://www.acxel.com/) for the hardware provider.
 
+This example is for Windows hardware control. On macOS, `DMLite()` currently raises a clear runtime error; use the simulator example there while DMLite support remains a placeholder.
+
 It:
 
 - initializes a real `DMLite` system

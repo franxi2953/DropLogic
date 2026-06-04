@@ -12,11 +12,12 @@
     <a class="md-button dl-button" href="systems/">Systems</a>
     <a class="md-button dl-button" href="planning/">Planning</a>
     <a class="md-button dl-button" href="visualization/">Visualization</a>
+    <a class="md-button dl-button" href="mcp/">Agent Control</a>
   </div>
 </div>
 
 !!! warning "Platform Compatibility"
-    **Native hardware control is currently Windows-only.** The library relies on proprietary hardware DLLs (Dynamic Link Libraries) provided by hardware vendors, which are inherently Windows-exclusive. Usage on macOS or Linux is limited to simulation and non-native workflows.
+    **Native DMLite hardware control is currently Windows-only.** The library relies on proprietary hardware DLLs provided by hardware vendors. On macOS, `DMLite()` intentionally raises a clear runtime error for now; use the `Simulator` there until a supported macOS backend exists.
 
 Welcome to the documentation for **DropLogic**, a Python library for digital microfluidics (DMF) control. It keeps scripts readable by wrapping systems, modules, planning, execution, and visualization behind a shared Python interface. Instead of wrestling with different hardware interfaces, you work with common classes for electrode matrices, cameras, positioning systems, and droplet plans.
 
@@ -28,5 +29,6 @@ Welcome to the documentation for **DropLogic**, a Python library for digital mic
   <li><strong><a href="systems/">Systems</a></strong>: The structure of systems, modules, versions, and how to create new machines.</li>
   <li><strong><a href="planning/">Planning</a></strong>: AdvancedDrop, droplet plans, SIPP movement, and executor-driven runtime.</li>
   <li><strong><a href="visualization/">Visualization</a></strong>: Matrix and streamer visualizers, snapshots, and synchronized recording.</li>
+  <li><strong><a href="mcp/">Agent Control</a></strong>: MCP server tools for agents to plan, execute, inspect frames, and run vision checks.</li>
   <li><strong><a href="utilities/">Utilities</a></strong>: Hardware helpers, drop vision, debugging, and diagnostics.</li>
 </ul>

@@ -1,2 +1,3 @@
-# Leave it empty or explicitly expose versions
-from .DMLite import DMLite
+# Backends are imported lazily by the electrode matrix factory.
+
+__all__ = ["DMLite"]
