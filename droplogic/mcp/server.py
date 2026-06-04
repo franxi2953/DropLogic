@@ -61,9 +61,27 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         return runtime.close_system()
 
     @mcp.tool()
+    def restart_system(
+        system: Optional[str] = None,
+        config_file: Optional[str] = None,
+        log_level: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Close and reload the current or requested DropLogic system."""
+        return runtime.restart_system(
+            system=system,
+            config_file=config_file,
+            log_level=log_level,
+        )
+
+    @mcp.tool()
     def runtime_status() -> Dict[str, Any]:
         """Return server, system, executor, plan and droplet status."""
         return runtime.status()
+
+    @mcp.tool()
+    def health_check() -> Dict[str, Any]:
+        """Return MCP runtime, worker, executor and module health information."""
+        return runtime.health_check()
 
     @mcp.tool()
     def capabilities() -> Dict[str, Any]:
@@ -258,9 +276,18 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
     def system_call(
         method: str,
         arguments: Optional[Dict[str, Any]] = None,
+        wait_if_busy: bool = False,
+        timeout_seconds: float = 30.0,
+        poll_interval: float = 0.1,
     ) -> Dict[str, Any]:
         """Call a whitelisted loaded-system method."""
-        return runtime.system_call(method, arguments or {})
+        return runtime.system_call(
+            method,
+            arguments or {},
+            wait_if_busy=wait_if_busy,
+            timeout_seconds=timeout_seconds,
+            poll_interval=poll_interval,
+        )
 
     @mcp.tool()
     def list_system_modules() -> Dict[str, Any]:
@@ -268,13 +295,41 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         return runtime.list_system_modules()
 
     @mcp.tool()
+    def module_busy_status(module: Optional[str] = None) -> Dict[str, Any]:
+        """Return busy/free status for one module or all known modules."""
+        return runtime.module_busy_status(module)
+
+    @mcp.tool()
+    def wait_for_module_free(
+        module: str,
+        timeout_seconds: float = 30.0,
+        poll_interval: float = 0.1,
+    ) -> Dict[str, Any]:
+        """Wait until a hardware module appears free, or return timeout status."""
+        return runtime.wait_for_module_free(
+            module,
+            timeout_seconds=timeout_seconds,
+            poll_interval=poll_interval,
+        )
+
+    @mcp.tool()
     def module_call(
         module: str,
         method: str,
         arguments: Optional[Dict[str, Any]] = None,
+        wait_if_busy: bool = False,
+        timeout_seconds: float = 30.0,
+        poll_interval: float = 0.1,
     ) -> Dict[str, Any]:
         """Call a whitelisted method on a loaded hardware module."""
-        return runtime.module_call(module, method, arguments or {})
+        return runtime.module_call(
+            module,
+            method,
+            arguments or {},
+            wait_if_busy=wait_if_busy,
+            timeout_seconds=timeout_seconds,
+            poll_interval=poll_interval,
+        )
 
     @mcp.tool()
     def plan_summary() -> Dict[str, Any]:

@@ -93,6 +93,8 @@ Use these to load systems and inspect the server:
 | `load_system` | Load `simulator`, `dmlite`, or `boxmini` |
 | `close_system` | Close the current system |
 | `runtime_status` | Return system, executor, plan, and droplet status |
+| `health_check` | Check queue workers, executor state, module busy state, and last error |
+| `restart_system` | Close and reload the current or requested system after a failure |
 | `capabilities` | List the currently available agent-facing functions |
 | `read_state` | Read all state or a dotted path such as `electrode_matrix.voltage` |
 | `emergency_stop` | Stop execution, clear queues, and optionally deactivate electrodes |
@@ -228,11 +230,53 @@ Use module tools for system-specific hardware modules:
 | --- | --- |
 | `list_system_modules` | Show loaded modules and whitelisted methods |
 | `module_call` | Call a whitelisted module method |
+| `module_busy_status` | Check whether one module, or all modules, appear busy |
+| `wait_for_module_free` | Wait until a module is free, or return timeout status |
 | `system_call` | Call a whitelisted loaded-system method |
 
 Examples of exposed module surfaces include light intensity, camera exposure, microscope channel, temperature setpoints, XY stage positions, and capacitive feedback.
 
 Raw electrode matrix methods such as `set_chip` are considered unsafe and require `--allow-unsafe-tools`. The private vendor command path, including `send_ascii_command`, is not exposed.
+
+## Busy Modules And Recovery
+
+Hardware modules can be temporarily busy even when the MCP server is healthy. For example, the electrode matrix is busy while `PlanExecutor` is actively executing frames, and the XY stage is busy while stage motion is not complete.
+
+Agents should prefer this pattern before direct module calls:
+
+```text
+1. module_busy_status(module="electrode_matrix")
+2. If busy, wait_for_module_free(module="electrode_matrix", timeout_seconds=30)
+3. module_call(module="electrode_matrix", method="deactivate_all")
+```
+
+`module_call` and `system_call` also accept `wait_if_busy`, `timeout_seconds`, and `poll_interval`:
+
+```json
+{
+  "module": "xy_stage",
+  "method": "get_position",
+  "arguments": {"axis": "X"},
+  "wait_if_busy": true,
+  "timeout_seconds": 10
+}
+```
+
+If a module is busy and the agent did not ask to wait, the tool returns a structured busy response instead of trying to run over the executor:
+
+```json
+{
+  "ok": false,
+  "busy": true,
+  "module": "electrode_matrix",
+  "status": {
+    "busy": true,
+    "reasons": ["PlanExecutor is actively executing frames"]
+  }
+}
+```
+
+Tool errors are not meant to kill the MCP server. Runtime call errors are recorded in `last_error`, and `health_check()` reports whether hardware queue workers are still alive. If the system becomes unhealthy, call `restart_system()` rather than relying on automatic recovery. Automatic restart is intentionally not performed because reinitializing real hardware without supervision can have physical consequences.
 
 ## Example Agent Workflow
 

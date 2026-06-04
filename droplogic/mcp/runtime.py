@@ -133,6 +133,28 @@ class DropLogicMCPRuntime:
         ("xy_stage", "start_continuous_movement"),
     }
 
+    EXECUTOR_OWNED_MODULES = {
+        "electrode_matrix",
+        "xy_stage",
+        "camera",
+        "microscope",
+    }
+
+    SYSTEM_METHOD_MODULES = {
+        "get_simulated_matrix": "electrode_matrix",
+        "get_simulated_voltage": "electrode_matrix",
+        "get_active_electrode_count": "electrode_matrix",
+        "get_electrode_state": "electrode_matrix",
+        "set_electrode_state": "electrode_matrix",
+        "activate_electrode_pattern": "electrode_matrix",
+        "print_matrix_summary": "electrode_matrix",
+    }
+
+    SYSTEM_BUSY_GATED_METHODS = {
+        "set_electrode_state",
+        "activate_electrode_pattern",
+    }
+
     VISUALIZER_METHODS = {
         "matrix": {
             "is_running",
@@ -177,6 +199,7 @@ class DropLogicMCPRuntime:
         self.system = None
         self.system_name = None
         self.loaded_at = None
+        self.last_error = None
 
     # ---------------------------------------------------------------------
     # System lifecycle
@@ -299,11 +322,63 @@ class DropLogicMCPRuntime:
                 "allow_real_hardware": self.allow_real_hardware,
                 "allow_unsafe_tools": self.allow_unsafe_tools,
                 "config_file": self.config_file,
+                "last_error": self.to_jsonable(self.last_error),
                 "system": system_status,
                 "executor": executor_status,
                 "plan": plan_summary,
                 "droplets": droplet_summary,
             }
+
+    def health_check(self) -> Dict[str, Any]:
+        """Return a health snapshot for agent supervision."""
+        system = self.system
+        queue_workers = {}
+        if system is not None:
+            workers = getattr(system, "_queue_workers", {}) or {}
+            for priority, worker in workers.items():
+                queue_workers[getattr(priority, "name", str(priority))] = {
+                    "alive": bool(worker and worker.is_alive()),
+                }
+
+        workers_ok = all(item["alive"] for item in queue_workers.values()) if queue_workers else True
+        return {
+            "ok": system is not None and workers_ok,
+            "session_id": self.session_id,
+            "system": self.system_name,
+            "system_loaded": system is not None,
+            "queue_workers": queue_workers,
+            "executor": self.to_jsonable(
+                getattr(getattr(system, "advanced_drop", None), "executor", None).status()
+                if system is not None
+                and hasattr(system, "advanced_drop")
+                and getattr(system.advanced_drop, "executor", None) is not None
+                else None
+            ),
+            "modules": self.module_busy_status() if system is not None else {},
+            "last_error": self.to_jsonable(self.last_error),
+            "recommended_action": None
+            if system is not None and workers_ok
+            else "restart_system",
+        }
+
+    def restart_system(
+        self,
+        system: Optional[str] = None,
+        config_file: Optional[str] = None,
+        log_level: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Close and re-load a system after an agent-observed failure."""
+        target_system = system or self.system_name
+        if not target_system:
+            raise DropLogicMCPError("No system is loaded. Pass system='simulator', 'dmlite', or 'boxmini'.")
+
+        with self._lock:
+            self.close_system()
+            return self.load_system(
+                target_system,
+                config_file=config_file or self.config_file,
+                log_level=log_level or self.log_level,
+            )
 
     def read_state(self, path: Optional[str] = None) -> Dict[str, Any]:
         """Read the DropSystem state or a dotted state path."""
@@ -777,7 +852,12 @@ class DropLogicMCPRuntime:
         }
 
     def system_call(
-        self, method: str, arguments: Optional[Dict[str, Any]] = None
+        self,
+        method: str,
+        arguments: Optional[Dict[str, Any]] = None,
+        wait_if_busy: bool = False,
+        timeout_seconds: float = 30.0,
+        poll_interval: float = 0.1,
     ) -> Dict[str, Any]:
         """Call a whitelisted DropSystem method."""
         if method not in self.SYSTEM_METHODS:
@@ -789,11 +869,42 @@ class DropLogicMCPRuntime:
         func = getattr(system, method, None)
         if func is None:
             raise DropLogicMCPError(f"Loaded system has no method '{method}'.")
-        result = func(**(arguments or {}))
-        return {
-            "method": method,
-            "result": self.to_jsonable(result),
-        }
+
+        module_key = self.SYSTEM_METHOD_MODULES.get(method)
+        if module_key is not None and method in self.SYSTEM_BUSY_GATED_METHODS:
+            wait_result = self._wait_or_report_busy(
+                module_key,
+                wait_if_busy=wait_if_busy,
+                timeout_seconds=timeout_seconds,
+                poll_interval=poll_interval,
+            )
+            if wait_result is not None:
+                return {
+                    "ok": False,
+                    "busy": True,
+                    "method": method,
+                    "module": module_key,
+                    **wait_result,
+                }
+
+        try:
+            result = func(**(arguments or {}))
+            return {
+                "ok": True,
+                "busy": False,
+                "method": method,
+                "module": module_key,
+                "result": self.to_jsonable(result),
+            }
+        except Exception as exc:
+            self._record_error(f"system_call:{method}", exc)
+            return {
+                "ok": False,
+                "busy": False,
+                "method": method,
+                "module": module_key,
+                "error": self.to_jsonable(self.last_error),
+            }
 
     def list_system_modules(self) -> Dict[str, Any]:
         """List loaded hardware modules and whitelisted methods."""
@@ -816,11 +927,57 @@ class DropLogicMCPRuntime:
             }
         return modules
 
+    def module_busy_status(self, module: Optional[str] = None) -> Dict[str, Any]:
+        """Return busy/free state for one module or all known modules."""
+        self.require_system()
+        if module is not None:
+            module_key = module.lower()
+            return {module_key: self._module_busy_status(module_key)}
+
+        statuses = {}
+        for module_name in sorted(self.MODULE_METHODS):
+            statuses[module_name] = self._module_busy_status(module_name)
+        return statuses
+
+    def wait_for_module_free(
+        self,
+        module: str,
+        timeout_seconds: float = 30.0,
+        poll_interval: float = 0.1,
+    ) -> Dict[str, Any]:
+        """Wait until a module appears free, or return a timeout status."""
+        module_key = module.lower()
+        deadline = time.time() + max(0.0, float(timeout_seconds))
+        poll_interval = max(0.02, float(poll_interval))
+
+        while True:
+            status = self._module_busy_status(module_key)
+            if not status["busy"]:
+                return {
+                    "ok": True,
+                    "module": module_key,
+                    "timed_out": False,
+                    "status": status,
+                }
+
+            if time.time() >= deadline:
+                return {
+                    "ok": False,
+                    "module": module_key,
+                    "timed_out": True,
+                    "status": status,
+                }
+
+            time.sleep(poll_interval)
+
     def module_call(
         self,
         module: str,
         method: str,
         arguments: Optional[Dict[str, Any]] = None,
+        wait_if_busy: bool = False,
+        timeout_seconds: float = 30.0,
+        poll_interval: float = 0.1,
     ) -> Dict[str, Any]:
         """Call a whitelisted method on a loaded hardware module."""
         module_key = module.lower()
@@ -846,12 +1003,40 @@ class DropLogicMCPRuntime:
         func = getattr(module_instance, method, None)
         if func is None:
             raise DropLogicMCPError(f"Module '{module}' has no method '{method}'.")
-        result = func(**(arguments or {}))
-        return {
-            "module": module_key,
-            "method": method,
-            "result": self.to_jsonable(result),
-        }
+
+        wait_result = self._wait_or_report_busy(
+            module_key,
+            wait_if_busy=wait_if_busy,
+            timeout_seconds=timeout_seconds,
+            poll_interval=poll_interval,
+        )
+        if wait_result is not None:
+            return {
+                "ok": False,
+                "busy": True,
+                "module": module_key,
+                "method": method,
+                **wait_result,
+            }
+
+        try:
+            result = func(**(arguments or {}))
+            return {
+                "ok": True,
+                "busy": False,
+                "module": module_key,
+                "method": method,
+                "result": self.to_jsonable(result),
+            }
+        except Exception as exc:
+            self._record_error(f"module_call:{module_key}.{method}", exc)
+            return {
+                "ok": False,
+                "busy": False,
+                "module": module_key,
+                "method": method,
+                "error": self.to_jsonable(self.last_error),
+            }
 
     # ---------------------------------------------------------------------
     # PlanExecutor API
@@ -1036,6 +1221,192 @@ class DropLogicMCPRuntime:
 
     # ---------------------------------------------------------------------
     # Internals and serialization
+
+    def _record_error(self, context: str, exc: Exception) -> None:
+        self.last_error = {
+            "timestamp": time.time(),
+            "context": context,
+            "type": type(exc).__name__,
+            "message": str(exc),
+        }
+
+    def _wait_or_report_busy(
+        self,
+        module_key: str,
+        wait_if_busy: bool = False,
+        timeout_seconds: float = 0.0,
+        poll_interval: float = 0.1,
+    ) -> Optional[Dict[str, Any]]:
+        status = self._module_busy_status(module_key)
+        if not status["busy"]:
+            return None
+
+        if wait_if_busy:
+            wait_result = self.wait_for_module_free(
+                module_key,
+                timeout_seconds=timeout_seconds,
+                poll_interval=poll_interval,
+            )
+            if wait_result.get("ok"):
+                return None
+            return {
+                "timed_out": True,
+                "status": wait_result.get("status", status),
+            }
+
+        return {
+            "timed_out": False,
+            "status": status,
+        }
+
+    def _module_busy_status(self, module_key: str) -> Dict[str, Any]:
+        system = self.require_system()
+        module_instance = getattr(system, module_key, None)
+        reasons = []
+
+        if module_instance is None and not self._module_logically_available(module_key):
+            return {
+                "available": False,
+                "busy": False,
+                "reasons": ["module is not available on the loaded system"],
+                "queue": self._hardware_queue_summary(),
+                "executor_active": self._executor_active(),
+            }
+
+        if module_key in self.EXECUTOR_OWNED_MODULES and self._executor_active():
+            reasons.append("PlanExecutor is actively executing frames")
+
+        queue_summary = self._hardware_queue_summary()
+        if queue_summary["pending_commands"] > 0:
+            reasons.append(
+                f"hardware command queue has {queue_summary['pending_commands']} pending command(s)"
+            )
+
+        if module_key == "xy_stage":
+            stage_reason = self._stage_motion_busy(module_instance)
+            if stage_reason:
+                reasons.append(stage_reason)
+
+        if module_key in {"camera", "microscope"} and self._streamer_running():
+            reasons.append("StreamerVisualizer is running and may be reading live frames")
+
+        lock_reason = self._probe_lock_busy(module_key)
+        if lock_reason:
+            reasons.append(lock_reason)
+
+        return {
+            "available": module_instance is not None or self._module_logically_available(module_key),
+            "busy": bool(reasons),
+            "reasons": reasons,
+            "queue": queue_summary,
+            "executor_active": self._executor_active(),
+        }
+
+    def _module_logically_available(self, module_key: str) -> bool:
+        system = self.system
+        if system is None:
+            return False
+
+        if module_key == "electrode_matrix":
+            state = getattr(system, "state", {})
+            return (
+                isinstance(state, dict)
+                and "electrode_matrix" in state
+            ) or hasattr(system, "_electrode_lock") or hasattr(system, "_electrode_matrix_lock")
+
+        if module_key == "xy_stage":
+            return hasattr(system, "xy_stage") and getattr(system, "xy_stage") is not None
+
+        return False
+
+    def _executor_active(self) -> bool:
+        system = self.system
+        if system is None or not hasattr(system, "advanced_drop"):
+            return False
+        executor = getattr(system.advanced_drop, "executor", None)
+        if executor is None:
+            return False
+        try:
+            status = executor.status()
+            return bool(status.get("is_executing"))
+        except Exception:
+            return False
+
+    def _hardware_queue_summary(self) -> Dict[str, Any]:
+        system = self.system
+        if system is None or not hasattr(system, "get_queue_status"):
+            return {"pending_commands": 0, "queues": {}}
+
+        try:
+            queues = system.get_queue_status()
+        except Exception:
+            return {"pending_commands": 0, "queues": {}}
+
+        pending = 0
+        for item in queues.values():
+            try:
+                pending += int(item.get("queue_size", 0))
+            except Exception:
+                pass
+        return {
+            "pending_commands": pending,
+            "queues": self.to_jsonable(queues),
+        }
+
+    def _stage_motion_busy(self, module_instance) -> Optional[str]:
+        if module_instance is None or not hasattr(module_instance, "is_motion_complete"):
+            return None
+
+        busy_axes = []
+        for axis in ("X", "Y", "Z"):
+            try:
+                if not bool(module_instance.is_motion_complete(axis)):
+                    busy_axes.append(axis)
+            except Exception:
+                continue
+        if busy_axes:
+            return f"XY stage motion is not complete on axis/axes: {', '.join(busy_axes)}"
+        return None
+
+    def _streamer_running(self) -> bool:
+        system = self.system
+        if system is None:
+            return False
+        try:
+            streamer = self._get_visualizer_instance(system, "streamer")
+        except Exception:
+            return False
+        if streamer is None or not hasattr(streamer, "is_running"):
+            return False
+        try:
+            return bool(streamer.is_running())
+        except Exception:
+            return False
+
+    def _probe_lock_busy(self, module_key: str) -> Optional[str]:
+        system = self.system
+        if system is None:
+            return None
+
+        lock_names_by_module = {
+            "electrode_matrix": ("_electrode_matrix_lock", "_electrode_lock"),
+            "xy_stage": ("_xy_stage_lock",),
+        }
+        for lock_name in lock_names_by_module.get(module_key, ()):
+            lock = getattr(system, lock_name, None)
+            if lock is None or not hasattr(lock, "acquire"):
+                continue
+
+            acquired = lock.acquire(blocking=False)
+            if acquired:
+                try:
+                    lock.release()
+                except Exception:
+                    pass
+            else:
+                return f"internal {lock_name} is currently held"
+
+        return None
 
     def _describe_methods(
         self,

@@ -2,6 +2,10 @@
 
 `Simulator` es el sistema puramente software por defecto en DropLogic. Es el mejor punto de partida cuando quieres validar protocolos, probar la lógica de planificación o inspeccionar el comportamiento de la matriz sin conectar hardware físico.
 
+![GIF del simulador grabado por el executor mostrando routing SIPP coordinado de multiples gotas](../assets/systems/simulator-executor-demo.gif)
+
+Este demo se genera desde un plan real del `Simulator` ejecutado por `PlanExecutor` con grabacion de matriz activada. Los puntos son gotas, y las lineas grises finas muestran las rutas planificadas.
+
 ## Qué Proporciona
 
 Actualmente el simulador agrupa:

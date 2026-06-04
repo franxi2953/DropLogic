@@ -91,6 +91,8 @@ El servidor expone varios grupos de tools.
 | `load_system` | Carga `simulator`, `dmlite` o `boxmini` |
 | `close_system` | Cierra el sistema actual |
 | `runtime_status` | Devuelve estado de sistema, executor, plan y gotas |
+| `health_check` | Comprueba workers de cola, executor, modulos ocupados y ultimo error |
+| `restart_system` | Cierra y recarga el sistema actual o solicitado tras un fallo |
 | `capabilities` | Lista las funciones disponibles para agentes |
 | `read_state` | Lee todo el estado o una ruta como `electrode_matrix.voltage` |
 | `emergency_stop` | Para ejecucion, limpia colas y opcionalmente apaga electrodos |
@@ -216,11 +218,53 @@ Para workflows reales de vision, el sistema cargado debe tener camara, microscop
 | --- | --- |
 | `list_system_modules` | Lista modulos cargados y metodos permitidos |
 | `module_call` | Llama un metodo permitido de modulo |
+| `module_busy_status` | Comprueba si un modulo, o todos, parecen ocupados |
+| `wait_for_module_free` | Espera a que un modulo quede libre, o devuelve timeout |
 | `system_call` | Llama un metodo permitido del sistema cargado |
 
 Las superficies expuestas incluyen luces, exposicion de camara, canal de microscopio, temperaturas, posicion de XY stage y feedback capacitivo.
 
 Metodos crudos de matriz como `set_chip` se consideran inseguros y requieren `--allow-unsafe-tools`. La ruta privada de comandos del proveedor, incluido `send_ascii_command`, no se expone.
+
+## Modulos Ocupados Y Recuperacion
+
+Los modulos de hardware pueden estar temporalmente ocupados aunque el servidor MCP este sano. Por ejemplo, la matriz de electrodos esta ocupada mientras `PlanExecutor` ejecuta frames, y el XY stage esta ocupado mientras el movimiento no haya terminado.
+
+Los agentes deberian usar este patron antes de llamadas directas a modulos:
+
+```text
+1. module_busy_status(module="electrode_matrix")
+2. Si esta ocupado, wait_for_module_free(module="electrode_matrix", timeout_seconds=30)
+3. module_call(module="electrode_matrix", method="deactivate_all")
+```
+
+`module_call` y `system_call` tambien aceptan `wait_if_busy`, `timeout_seconds` y `poll_interval`:
+
+```json
+{
+  "module": "xy_stage",
+  "method": "get_position",
+  "arguments": {"axis": "X"},
+  "wait_if_busy": true,
+  "timeout_seconds": 10
+}
+```
+
+Si un modulo esta ocupado y el agente no ha pedido esperar, la tool devuelve una respuesta estructurada de busy en vez de pisar al executor:
+
+```json
+{
+  "ok": false,
+  "busy": true,
+  "module": "electrode_matrix",
+  "status": {
+    "busy": true,
+    "reasons": ["PlanExecutor is actively executing frames"]
+  }
+}
+```
+
+Los errores de tools no deberian matar el servidor MCP. Los errores de llamadas runtime se guardan en `last_error`, y `health_check()` informa de si los workers de cola siguen vivos. Si el sistema queda unhealthy, llama a `restart_system()` en vez de depender de recuperacion automatica. El reinicio automatico no se hace a proposito porque reinicializar hardware real sin supervision puede tener consecuencias fisicas.
 
 ## Workflow De Ejemplo
 
