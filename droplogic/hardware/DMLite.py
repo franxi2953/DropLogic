@@ -6,7 +6,6 @@ from ..utils.visualizer import MatrixVisualizer
 import numpy as np
 import threading
 import logging
-import platform
 
 class DMLite(DropSystem):
     """Represents a lightweight version of the DropSystem hardware system focused only on the electrode matrix."""
@@ -22,14 +21,6 @@ class DMLite(DropSystem):
     def __init__(self, config_file="config.json", log_level=logging.INFO):
         if isinstance(log_level, str):
             log_level = getattr(logging, log_level.upper(), logging.INFO)
-
-        if platform.system() == "Darwin":
-            type(self)._instance = None
-            raise RuntimeError(
-                "DMLite native hardware control is currently Windows-only because "
-                "the Acxel SDK is distributed as Windows DLLs. macOS support is a "
-                "placeholder for now; use Simulator on macOS or run DMLite from Windows."
-            )
 
         if hasattr(self, "_initialized") and self._initialized:
             self.logger.setLevel(log_level)

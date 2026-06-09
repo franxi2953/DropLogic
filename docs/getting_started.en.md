@@ -2,7 +2,7 @@
 
 ## Installation
 
-As **DropLogic** is a standard library, users can easily install it directly using `pip`:
+As **DropLogic** is a standard Python library, users can install it directly using `pip`:
 
 ```bash
 git clone https://github.com/franxi2953/DropLogic.git
@@ -15,12 +15,10 @@ For development (editable mode):
 pip install -e .
 ```
 
-### DMLite on macOS
-
-`DMLite` native hardware control is currently Windows-only because the Acxel SDK is distributed as Windows DLLs. On macOS, `DMLite()` raises a clear runtime error. Use `Simulator` on macOS while DMLite support remains a placeholder.
+For platform-specific native hardware setup, including the DMLite runtime files and Linux/Raspberry Pi `libusb` dependency, see [Installation](installation.md).
 
 !!! warning "Hardware Drivers Requirement"
-    To control physical devices (like the Electrode Matrix, XY Stage, or Camera), you must install the **DropLogic Runtime Installer** for your target hardware. This runtime package is distributed separately from the Python library by the hardware provider or platform maintainer.
+    To control physical devices (like the Electrode Matrix, XY Stage, or Camera), install the **DropLogic Runtime Installer** or native runtime assets for your target platform. These runtime packages are distributed separately from the Python library by the hardware provider or platform maintainer.
     
     Additionally, for camera support (MVS modules), you must download and install the official Hikrobot Machine Vision Software from their website:
     [https://www.hikrobotics.com/en/machinevision/service/download/](https://www.hikrobotics.com/en/machinevision/service/download/)

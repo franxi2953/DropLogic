@@ -16,14 +16,15 @@
   </div>
 </div>
 
-!!! warning "Compatibilidad"
-    **El control nativo de DMLite actualmente solo esta soportado en Windows.** La libreria utiliza DLLs propietarias proporcionadas por proveedores de hardware. En macOS, `DMLite()` lanza intencionadamente un error claro por ahora; usa el `Simulator` alli hasta que exista un backend macOS soportado.
+!!! info "Compatibilidad"
+    El control nativo de `DMLite` esta soportado en Windows x86_64, macOS Apple Silicon, Linux x86_64, Raspberry Pi OS 64-bit y Raspberry Pi OS 32-bit cuando esta instalado el runtime nativo correspondiente de DropLogic. El `Simulator` sigue siendo Python puro y funciona sin assets nativos de hardware.
 
 Bienvenido a la documentación de **DropLogic**, una librería Python para control de microfluídica digital (DMF). Mantiene los scripts legibles agrupando sistemas, módulos, planificación, ejecución y visualización detrás de una interfaz Python compartida. En lugar de lidiar con distintas interfaces de hardware, trabajas con clases comunes para matrices de electrodos, cámaras, sistemas de posicionamiento y planes de gotas.
 
 ## ¿Qué encontrarás aquí?
 <ul class="dl-home__list">
-  <li><strong><a href="getting_started/">Empezando</a></strong>: Instalación, uso básico y primeros pasos.</li>
+  <li><strong><a href="installation/">Instalacion</a></strong>: Setup Python, layout del runtime nativo y notas de `libusb` en Linux/Raspberry Pi.</li>
+  <li><strong><a href="getting_started/">Empezando</a></strong>: Uso básico y primeros pasos.</li>
   <li><strong><a href="configuration/">Configuracion</a></strong>: El `config.json` del repositorio, campos obligatorios y calibracion local especifica de maquina.</li>
   <li><strong><a href="repository_structure/">Mapa de Arquitectura</a></strong>: Una mirada detallada a la estructura de la librería y su organización de hardware.</li>
   <li><strong><a href="systems/">Sistemas</a></strong>: La estructura de sistemas, módulos, versiones y cómo crear máquinas nuevas.</li>

@@ -23,17 +23,21 @@ The electrode stack is intentionally split in layers:
 2. **Module wrapper**: `droplogic.hardware.modules.electrode_matrix.ElectrodeMatrixModule`
 3. **Version implementation**: `droplogic.hardware.modules.electrode_matrix.versions.DMLite`
 
-This separation is important because it keeps the system definition clean while allowing the underlying hardware implementation to change later.
+This separation is important because it keeps the system definition clean while allowing the underlying hardware implementation to vary by host platform.
 
 ## Backends
 
-The `DMLite` system currently uses one electrode-matrix backend:
+The `DMLite` system uses one Python backend that selects the matching native runtime for the current host:
 
-| Backend | Where it runs | Use case |
+| Host | Runtime file | Use case |
 | --- | --- | --- |
-| `DMLite` | Windows | Native control through the vendor DLL/SDK. |
+| Windows x86_64 | `sdk.dll` | Native hardware control. |
+| macOS Apple Silicon | `sdk.dylib` | Native hardware control. |
+| Linux x86_64 | `linux-x86_64/sdk.so` | Native hardware control with `libusb`. |
+| Raspberry Pi OS 64-bit | `linux-aarch64/sdk.so` | Native hardware control with `libusb`. |
+| Raspberry Pi OS 32-bit | `linux-armv7l/sdk.so` | Native hardware control with `libusb`. |
 
-On Windows, the system uses the native `DMLite` backend:
+Use the same Python API on every supported platform:
 
 ```python
 from droplogic.hardware.DMLite import DMLite
@@ -41,7 +45,9 @@ from droplogic.hardware.DMLite import DMLite
 system = DMLite()
 ```
 
-On macOS, `DMLite()` currently raises a clear runtime error. macOS hardware support is intentionally left as a placeholder until a supported macOS backend exists.
+The native runtime is resolved from the installed DropLogic runtime folder, `DROPLOGIC_RUNTIME_DIR`, or the local `vendor_bin/electrode_matrix/dmlite/` folder in a development checkout. Unsupported hosts or missing runtime files raise a clear runtime error.
+
+On Linux and Raspberry Pi OS, install `libusb-1.0-0` before running hardware control. macOS Apple Silicon uses Homebrew `libusb` unless your runtime package bundles it.
 
 ## Why a Module Wrapper Exists
 

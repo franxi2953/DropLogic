@@ -24,13 +24,13 @@ system = DMLite(config_file="local_config.json")
 
 `local_config*.json`, `config.local.json` y `calibration_data.json` estan ignorados por Git para que la calibracion privada de una maquina se quede local.
 
-`DMLite` y `BOXMini` son plataformas hardware de [Acxel](https://www.acxel.com/). Este repositorio contiene adaptadores Python y logica de control compartida alrededor de hardware compatible; el hardware del proveedor y los SDK/DLL no forman parte de la libreria.
+`DMLite` y `BOXMini` son plataformas hardware de [Acxel](https://www.acxel.com/). Este repositorio contiene adaptadores Python y logica de control compartida alrededor de hardware compatible; el hardware del proveedor y los archivos nativos de runtime no forman parte de la libreria.
 
 ## Se Sube Al Repositorio?
 
 Si. El `config.json` base forma parte del repositorio publico porque define el esquema por defecto y sirve como punto de partida.
 
-No pongas secretos, rutas privadas de SDK, DLLs, API keys ni credenciales personales dentro de este archivo. Los DLLs y SDKs de proveedores quedan excluidos del repositorio.
+No pongas secretos, rutas privadas de SDK, librerias nativas, API keys ni credenciales personales dentro de este archivo. Los SDKs de proveedores y assets nativos de runtime quedan excluidos del repositorio.
 
 ## Que Necesita DMLite
 
@@ -48,7 +48,7 @@ Campos obligatorios:
 
 Para el setup actual de DMLite, los defaults del repositorio son adecuados. El sistema reinicia `electrode_matrix.matrix` al arrancar, asi que normalmente no hay que editar ese campo a mano.
 
-En Windows, `electrode_matrix.version: "DMLite"` usa el adaptador nativo basado en DLL. En macOS, `DMLite()` actualmente lanza un error claro porque el control nativo de hardware aun no esta implementado alli.
+`electrode_matrix.version: "DMLite"` carga el runtime nativo correspondiente al sistema operativo y arquitectura de CPU actual. Los runtimes DMLite soportados son Windows x86_64, macOS Apple Silicon, Linux x86_64, Raspberry Pi OS 64-bit y Raspberry Pi OS 32-bit. Si el archivo de runtime correspondiente no esta instalado, `DMLite()` lanza un error claro.
 
 ## Que Necesita El Simulator
 

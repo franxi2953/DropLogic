@@ -17,6 +17,7 @@ env/
 runs/
 test_images/
 melting_results/
+sdk_reverse/
 
 # Binarios e integraciones pesadas de hardware
 *.dll

@@ -86,7 +86,7 @@ def inject_vendor_python_path(relative_dir: str, local_fallback: str):
 
 def resolve_dll(relative_path: str, local_fallback: str) -> str:
     """
-    Resolve a native DLL path.
+    Resolve a native library path.
     1. DROPLOGIC_RUNTIME_DIR
     2. Runtime installed next to the DropLogic package
     3. Installer-provided Windows registry path
@@ -105,5 +105,5 @@ def resolve_dll(relative_path: str, local_fallback: str) -> str:
         
     raise FileNotFoundError(
         f"Required native library '{relative_path}' could not be found. "
-        f"Please install the DropLogic Windows Runtime next to the library, use the installer-provided path, or set DROPLOGIC_RUNTIME_DIR."
+        f"Please install the DropLogic runtime next to the library, use the installer-provided path, or set DROPLOGIC_RUNTIME_DIR."
     )

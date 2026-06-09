@@ -7,7 +7,7 @@ Este script demuestra el mismo bucle continuo multi-gota que el ejemplo del simu
 
 `DMLite` es una plataforma hardware de Acxel. Este repositorio la adapta mediante un sistema Python y un módulo de matriz de electrodos; el hardware en sí no forma parte de esta librería. Consulta [Acxel](https://www.acxel.com/) para la información del proveedor.
 
-Este ejemplo es para control de hardware en Windows. En macOS, `DMLite()` actualmente lanza un error claro; usa el ejemplo de simulador alli mientras el soporte de DMLite siga siendo un placeholder.
+Este ejemplo corre contra hardware DMLite real en cualquier host nativo soportado: Windows x86_64, macOS Apple Silicon, Linux x86_64, Raspberry Pi OS 64-bit o Raspberry Pi OS 32-bit. Instala primero el runtime correspondiente de DropLogic; en Linux y Raspberry Pi OS, instala tambien `libusb`.
 
 Hace lo siguiente:
 
@@ -18,6 +18,12 @@ Hace lo siguiente:
 - reasigna nuevos objetivos aleatorios al final de cada ciclo
 
 Ejecuta el script desde la raíz del repositorio con:
+
+```bash
+PYTHONPATH=. python3 examples/DMLite_example.py
+```
+
+Si DropLogic esta instalado con `pip install .`, ejecuta:
 
 ```bash
 python3 examples/DMLite_example.py

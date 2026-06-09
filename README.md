@@ -17,7 +17,7 @@
   <img alt="Version" src="https://img.shields.io/badge/version-v1.0.0-2da44e?style=flat-square&amp;labelColor=111111">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-d29922?style=flat-square&amp;labelColor=111111"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.8%2B-3776ab?style=flat-square&amp;labelColor=111111">
-  <img alt="OS" src="https://img.shields.io/badge/os-Windows%20hardware%20%7C%20cross--platform%20simulator-0078d4?style=flat-square&amp;labelColor=111111">
+  <img alt="OS" src="https://img.shields.io/badge/os-DMLite%3A%20Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Raspberry%20Pi-0078d4?style=flat-square&amp;labelColor=111111">
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@ DropLogic is a Python library for digital microfluidics (DMF): systems, modules,
 
 The project began as **Fran Quero's PhD project at the [University of Cambridge](https://www.cam.ac.uk/)**, developed across the **[Occhipinti Group](https://www.occhipintigroup.com/)** and the **[Di Michele Lab](https://www.dimichelelab.org/)** with support from **[UKRI](https://www.ukri.org/)**, **[EPSRC](https://www.ukri.org/councils/epsrc/)**, and the **[Sensor CDT](https://cdt.sensors.cam.ac.uk/)**. It is designed to make DMF control scripts readable while keeping the hardware-specific details isolated inside systems and modules.
 
-> DMLite and BOXMini are hardware platforms from [Acxel](https://www.acxel.com/). This repository contains Python integration layers for supported hardware; it does not include vendor hardware or SDK/DLL assets.
+> DMLite and BOXMini are hardware platforms from [Acxel](https://www.acxel.com/). This repository contains Python integration layers for supported hardware; it does not include vendor hardware or native runtime assets.
 
 ## Quick Start
 
@@ -67,11 +67,26 @@ Full documentation is available at:
 
 Start with the [Getting Started Guide](https://franxi2953.github.io/DropLogic/getting_started/), then move to [Systems](https://franxi2953.github.io/DropLogic/systems/) and [Planning](https://franxi2953.github.io/DropLogic/planning/).
 
-## Runtime Note
+## Native Runtime Support
 
-For native control of physical hardware devices, an additional DropLogic Runtime Installer may be required. The runtime installer is distributed separately from the Python library so that vendor SDKs and native DLLs do not live in the public source repository.
+For native control of physical hardware devices, an additional DropLogic Runtime Installer may be required. The runtime installer is distributed separately from the Python library so that vendor SDKs and native binaries do not live in the public source repository.
 
-`DMLite` native hardware control is currently Windows-only because it depends on vendor DLLs. On macOS, `DMLite()` raises a clear runtime error for now; use the `Simulator` there until a supported macOS backend is added.
+`DMLite` native hardware control is supported on Windows x86_64, macOS Apple Silicon, Linux x86_64, Raspberry Pi OS 64-bit, and Raspberry Pi OS 32-bit when the matching DropLogic native runtime is installed.
+
+On Linux and Raspberry Pi OS, install the `libusb` runtime dependency before using DMLite hardware:
+
+```bash
+sudo apt update
+sudo apt install -y libusb-1.0-0
+```
+
+On macOS Apple Silicon, install `libusb` with Homebrew unless it is bundled by your runtime package:
+
+```bash
+brew install libusb
+```
+
+See the installation guide in the documentation for the full runtime layout and setup notes.
 
 ## License
 

@@ -21,52 +21,94 @@ class Drop(ctypes.Structure):
     ]
 
 
-def _candidate_local_dlls():
+def _platform_sdk_name():
+    system = platform.system()
+    if system == "Windows":
+        return "sdk.dll"
+    if system == "Darwin":
+        return "sdk.dylib"
+    if system == "Linux":
+        return "sdk.so"
+    raise RuntimeError(
+        f"DMLite native hardware control is not supported on {system or 'this OS'}."
+    )
+
+
+def _platform_sdk_subdir():
+    if platform.system() != "Linux":
+        return None
+
+    machine = platform.machine().lower()
+    if machine in {"x86_64", "amd64"}:
+        return "linux-x86_64"
+    if machine in {"aarch64", "arm64"}:
+        return "linux-aarch64"
+    if machine in {"armv7l", "armv7", "armhf"}:
+        return "linux-armv7l"
+
+    raise RuntimeError(
+        "DMLite Linux native hardware control is not supported on "
+        f"{machine or 'this architecture'}."
+    )
+
+
+def _runtime_relative_sdk_path():
+    sdk_name = _platform_sdk_name()
+    sdk_subdir = _platform_sdk_subdir()
+    if sdk_subdir:
+        return f"electrode_matrix/dmlite/{sdk_subdir}/{sdk_name}"
+    return f"electrode_matrix/dmlite/{sdk_name}"
+
+
+def _candidate_local_sdks():
+    sdk_name = _platform_sdk_name()
+    sdk_subdir = _platform_sdk_subdir()
     current_dir = Path(__file__).resolve().parent
     candidates = [
-        current_dir / "sdk" / "bin" / "sdk.dll",
+        current_dir / "sdk" / "bin" / sdk_subdir / sdk_name
+        if sdk_subdir
+        else current_dir / "sdk" / "bin" / sdk_name,
     ]
 
     try:
         repo_root = Path(__file__).resolve().parents[5]
-        candidates.append(repo_root / "vendor_bin" / "electrode_matrix" / "dmlite" / "sdk.dll")
+        vendor_dir = repo_root / "vendor_bin" / "electrode_matrix" / "dmlite"
+        if sdk_subdir:
+            candidates.append(vendor_dir / sdk_subdir / sdk_name)
+        candidates.append(vendor_dir / sdk_name)
     except IndexError:
         pass
 
     return candidates
 
 
-def _resolve_sdk_dll():
+def _resolve_sdk_library():
     last_error = None
-    for fallback in _candidate_local_dlls():
+    relative_path = _runtime_relative_sdk_path()
+    for fallback in _candidate_local_sdks():
         try:
-            dll_path = resolve_dll("electrode_matrix/dmlite/sdk.dll", str(fallback))
-            if os.path.exists(dll_path):
-                return dll_path
+            sdk_path = resolve_dll(relative_path, str(fallback))
+            if os.path.exists(sdk_path):
+                return sdk_path
         except FileNotFoundError as exc:
             last_error = exc
 
     if last_error is not None:
         raise last_error
-    raise FileNotFoundError("DMLite SDK DLL could not be resolved.")
+    raise FileNotFoundError(f"DMLite SDK library could not be resolved: {relative_path}")
 
 
 def _load_sdk():
-    if platform.system() != "Windows":
-        logger.warning("DMLite native SDK is only loaded on Windows.")
-        return None
-
     try:
-        dll_path = _resolve_sdk_dll()
-        dll_dir = os.path.dirname(os.path.abspath(dll_path))
-        if hasattr(os, "add_dll_directory"):
-            _dll_directory_handles.append(os.add_dll_directory(dll_dir))
-        sdk = ctypes.CDLL(dll_path)
+        sdk_path = _resolve_sdk_library()
+        sdk_dir = os.path.dirname(os.path.abspath(sdk_path))
+        if platform.system() == "Windows" and hasattr(os, "add_dll_directory"):
+            _dll_directory_handles.append(os.add_dll_directory(sdk_dir))
+        sdk = ctypes.CDLL(sdk_path)
         _bind_sdk_signatures(sdk)
         return sdk
     except Exception as exc:
-        logger.error("Failed to load DMLite SDK: %s", exc)
-        return None
+        raise RuntimeError(f"Failed to load DMLite SDK for {platform.system()}: {exc}") from exc
 
 
 def _bind_sdk_signatures(sdk):
@@ -133,16 +175,10 @@ class DMLite:
         self.voltage = startup_voltage
         self.initialized_voltages = [startup_voltage] * 9
 
-        if platform.system() != "Windows":
-            raise RuntimeError(
-                "DMLite native hardware control is currently Windows-only because "
-                "the Acxel SDK is distributed as Windows DLLs."
-            )
-
         if microfluidics is None:
             raise RuntimeError(
-                "DMLite native SDK could not be loaded. Install the Acxel/DropLogic "
-                "runtime assets on Windows before using DMLite hardware control."
+                "DMLite native SDK could not be loaded. Install the DropLogic runtime "
+                "assets for this OS before using DMLite hardware control."
             )
 
         self.init_board()
@@ -273,7 +309,7 @@ class DMLite:
 
         values = [ctypes.c_int(index + 1) for index in range(9)]
         result = microfluidics.InquireVolt(*[ctypes.byref(value) for value in values])
-        if result != 0:
+        if result < 0:
             raise RuntimeError(f"InquireVolt failed with code {result}")
         return tuple(value.value for value in values)
 

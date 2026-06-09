@@ -7,7 +7,7 @@ This script demonstrates the same continuous multi-droplet loop as the simulator
 
 `DMLite` is an Acxel hardware platform. This repository adapts it through a Python system and electrode-matrix module; the hardware itself is not part of this library. See [Acxel](https://www.acxel.com/) for the hardware provider.
 
-This example is for Windows hardware control. On macOS, `DMLite()` currently raises a clear runtime error; use the simulator example there while DMLite support remains a placeholder.
+This example runs against real DMLite hardware on any supported native host: Windows x86_64, macOS Apple Silicon, Linux x86_64, Raspberry Pi OS 64-bit, or Raspberry Pi OS 32-bit. Install the matching DropLogic runtime first; on Linux and Raspberry Pi OS, also install `libusb`.
 
 It:
 
@@ -18,6 +18,12 @@ It:
 - assigns new random targets after each completed cycle
 
 Run it from the repository root with:
+
+```bash
+PYTHONPATH=. python3 examples/DMLite_example.py
+```
+
+If DropLogic is installed with `pip install .`, run:
 
 ```bash
 python3 examples/DMLite_example.py

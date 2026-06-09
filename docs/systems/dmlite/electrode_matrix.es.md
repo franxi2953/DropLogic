@@ -23,17 +23,21 @@ La pila de electrodos está dividida intencionalmente en capas:
 2. **Wrapper de módulo**: `droplogic.hardware.modules.electrode_matrix.ElectrodeMatrixModule`
 3. **Implementación de versión**: `droplogic.hardware.modules.electrode_matrix.versions.DMLite`
 
-Esta separación es importante porque mantiene limpia la definición del sistema y permite cambiar la implementación hardware subyacente más adelante.
+Esta separación es importante porque mantiene limpia la definición del sistema y permite que la implementación hardware subyacente cambie según la plataforma host.
 
 ## Backends
 
-El sistema `DMLite` usa actualmente un backend de matriz de electrodos:
+El sistema `DMLite` usa un backend Python que selecciona el runtime nativo correspondiente al host actual:
 
-| Backend | Dónde corre | Caso de uso |
+| Host | Archivo de runtime | Caso de uso |
 | --- | --- | --- |
-| `DMLite` | Windows | Control nativo mediante la DLL/SDK del proveedor. |
+| Windows x86_64 | `sdk.dll` | Control nativo de hardware. |
+| macOS Apple Silicon | `sdk.dylib` | Control nativo de hardware. |
+| Linux x86_64 | `linux-x86_64/sdk.so` | Control nativo de hardware con `libusb`. |
+| Raspberry Pi OS 64-bit | `linux-aarch64/sdk.so` | Control nativo de hardware con `libusb`. |
+| Raspberry Pi OS 32-bit | `linux-armv7l/sdk.so` | Control nativo de hardware con `libusb`. |
 
-En Windows, el sistema usa el backend nativo `DMLite`:
+Usa la misma API Python en todas las plataformas soportadas:
 
 ```python
 from droplogic.hardware.DMLite import DMLite
@@ -41,7 +45,9 @@ from droplogic.hardware.DMLite import DMLite
 system = DMLite()
 ```
 
-En macOS, `DMLite()` actualmente lanza un error claro. El soporte de hardware en macOS queda intencionalmente como placeholder hasta que exista un backend macOS soportado.
+El runtime nativo se resuelve desde la carpeta de runtime instalada de DropLogic, `DROPLOGIC_RUNTIME_DIR`, o la carpeta local `vendor_bin/electrode_matrix/dmlite/` en un checkout de desarrollo. Hosts no soportados o archivos de runtime ausentes lanzan un error claro.
+
+En Linux y Raspberry Pi OS, instala `libusb-1.0-0` antes de usar control de hardware. macOS Apple Silicon usa `libusb` de Homebrew salvo que tu paquete de runtime ya lo incluya.
 
 ## Por Qué Existe un Wrapper de Módulo
 

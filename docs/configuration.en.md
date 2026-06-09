@@ -24,13 +24,13 @@ system = DMLite(config_file="local_config.json")
 
 `local_config*.json`, `config.local.json`, and `calibration_data.json` are ignored by Git so private machine calibration can stay local.
 
-`DMLite` and `BOXMini` are hardware platforms from [Acxel](https://www.acxel.com/). This repository contains Python adapters and shared control logic around supported hardware; vendor hardware and SDK/DLL files are not part of the library.
+`DMLite` and `BOXMini` are hardware platforms from [Acxel](https://www.acxel.com/). This repository contains Python adapters and shared control logic around supported hardware; vendor hardware and native runtime files are not part of the library.
 
 ## Should It Be In The Repository?
 
 Yes. The base `config.json` is part of the public repository because it is the default schema and starting point for the library.
 
-Do not put secrets, private SDK paths, DLLs, API keys, or personal credentials in it. Vendor DLLs and SDK files are intentionally excluded from the repository.
+Do not put secrets, private SDK paths, native libraries, API keys, or personal credentials in it. Vendor SDK files and native runtime assets are intentionally excluded from the repository.
 
 ## What DMLite Needs
 
@@ -48,7 +48,7 @@ Required fields:
 
 For the current DMLite setup, the repository defaults are suitable. The system resets `electrode_matrix.matrix` on startup, so users normally do not edit that field manually.
 
-On Windows, `electrode_matrix.version: "DMLite"` uses the native DLL-backed adapter. On macOS, `DMLite()` currently raises a clear runtime error because native hardware control is not implemented there yet.
+`electrode_matrix.version: "DMLite"` loads the native runtime for the current OS and CPU architecture. The supported DMLite runtimes are Windows x86_64, macOS Apple Silicon, Linux x86_64, Raspberry Pi OS 64-bit, and Raspberry Pi OS 32-bit. If the matching runtime file is not installed, `DMLite()` raises a clear error.
 
 ## What The Simulator Needs
 

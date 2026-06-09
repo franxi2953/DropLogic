@@ -14,11 +14,17 @@ theme:
 extra:
   alternate:
     - name: English
-      link: /en/
+      link: /
       lang: en
     - name: Español
       link: /es/
       lang: es
+    - name: 中文（普通话）
+      link: /zh-CN/
+      lang: zh-CN
+    - name: 粵語
+      link: /zh-HK/
+      lang: zh-HK
 
 plugins:
   - search
@@ -34,10 +40,125 @@ plugins:
         - locale: es
           name: Español
           build: true
+          nav_translations:
+            Home: Inicio
+            Getting Started: Empezando
+            Installation: Instalacion
+            Overview: Resumen
+            Example Scripts: Scripts de ejemplo
+            Simulator Example: Ejemplo de simulador
+            DMLite Example: Ejemplo DMLite
+            Architecture Map: Mapa de arquitectura
+            Systems: Sistemas
+            Simulator: Simulador
+            Modules: Modulos
+            Electrode Matrix: Matriz de electrodos
+            Hardware Notes: Notas de hardware
+            Creating New Systems: Crear sistemas nuevos
+            Configuration: Configuracion
+            Planning: Planificacion
+            Droplet Management: Gestion de gotas
+            Move: Movimiento
+            Split and Extract: Division y extraccion
+            Merge: Fusion
+            Mix: Mezcla
+            Vision and Correction: Vision y correccion
+            Plan Objects: Objetos de plan
+            Plan Executor: Ejecutor de plan
+            Visualization: Visualizacion
+            Visualizers: Visualizadores
+            Recording: Grabacion
+            Agent Control: Control por agentes
+            MCP Server: Servidor MCP
+            Utilities: Utilidades
+            Hardware Utilities: Utilidades de hardware
+            Drop Vision: Vision de gotas
+            Debugging and Diagnostics: Depuracion y diagnostico
+        - locale: zh-CN
+          name: 中文（普通话）
+          build: true
+          site_description: 用于数字微流控控制的 Python 库。
+          theme:
+            language: zh
+          nav_translations:
+            Home: 首页
+            Getting Started: 入门
+            Installation: 安装
+            Overview: 概览
+            Example Scripts: 示例脚本
+            Simulator Example: 模拟器示例
+            DMLite Example: DMLite 示例
+            Architecture Map: 架构图
+            Systems: 系统
+            Simulator: 模拟器
+            Modules: 模块
+            Electrode Matrix: 电极矩阵
+            Hardware Notes: 硬件说明
+            Creating New Systems: 创建新系统
+            Configuration: 配置
+            Planning: 规划
+            Droplet Management: 液滴管理
+            Move: 移动
+            Split and Extract: 分裂与提取
+            Merge: 合并
+            Mix: 混合
+            Vision and Correction: 视觉与校正
+            Plan Objects: 计划对象
+            Plan Executor: 计划执行器
+            Visualization: 可视化
+            Visualizers: 可视化工具
+            Recording: 录制
+            Agent Control: 智能体控制
+            MCP Server: MCP 服务器
+            Utilities: 实用工具
+            Hardware Utilities: 硬件工具
+            Drop Vision: 液滴视觉
+            Debugging and Diagnostics: 调试与诊断
+        - locale: zh-HK
+          name: 粵語
+          build: true
+          site_description: 用於數碼微流控控制嘅 Python 函式庫。
+          theme:
+            language: zh-Hant
+          nav_translations:
+            Home: 首頁
+            Getting Started: 入門
+            Installation: 安裝
+            Overview: 總覽
+            Example Scripts: 範例腳本
+            Simulator Example: 模擬器範例
+            DMLite Example: DMLite 範例
+            Architecture Map: 架構圖
+            Systems: 系統
+            Simulator: 模擬器
+            Modules: 模組
+            Electrode Matrix: 電極矩陣
+            Hardware Notes: 硬件註記
+            Creating New Systems: 建立新系統
+            Configuration: 設定
+            Planning: 規劃
+            Droplet Management: 液滴管理
+            Move: 移動
+            Split and Extract: 分割與抽取
+            Merge: 合併
+            Mix: 混合
+            Vision and Correction: 視覺與修正
+            Plan Objects: 計劃物件
+            Plan Executor: 計劃執行器
+            Visualization: 視覺化
+            Visualizers: 視覺化工具
+            Recording: 錄影
+            Agent Control: 代理控制
+            MCP Server: MCP 伺服器
+            Utilities: 工具
+            Hardware Utilities: 硬件工具
+            Drop Vision: 液滴視覺
+            Debugging and Diagnostics: 除錯與診斷
 
 nav:
   - Home: index.md
   - Getting Started:
+      - Installation: installation.md
       - Overview: getting_started.md
       - Example Scripts:
           - Overview: getting_started/examples/index.md
