@@ -1,5 +1,6 @@
 site_name: DropLogic
 site_description: A Python library for digital microfluidics (DMF) control.
+site_url: https://franxi2953.github.io/DropLogic/
 theme:
   name: material
   language: en
@@ -10,21 +11,6 @@ theme:
     - navigation.indexes
   palette:
     scheme: default
-
-extra:
-  alternate:
-    - name: English
-      link: /
-      lang: en
-    - name: Español
-      link: /es/
-      lang: es
-    - name: 中文（普通话）
-      link: /zh-CN/
-      lang: zh-CN
-    - name: 粵語
-      link: /zh-HK/
-      lang: zh-HK
 
 plugins:
   - search
