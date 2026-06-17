@@ -146,6 +146,15 @@ def plot_temperature_trend():
     chart = asciichartpy.plot(list(temperature_history), {"height": 5})
     return f"Trend:\n{chart}"
 
+def get_chip_origin_position():
+    """Return the current configured chip origin as stage coordinates."""
+    origin = box.state.get("calibration", {}).get("chip_origin", {})
+    return {
+        "X": int(round(float(origin["X"]))),
+        "Y": int(round(float(origin["Y"]))),
+        "Z": int(round(float(origin["Z"]))),
+    }
+
 def get_status_panel():
     global speed
     """Generates the status panel displaying current settings."""
@@ -893,7 +902,7 @@ def control_stage():
                     console.print(f"[bold red]Error toggling electrode overlay: {e}[/]")
             
             if is_key_just_pressed(ord('M')) and not adjusting_light and not adjusting_temperature and not adjusting_exposure and not adjusting_gain and not adjusting_electrode_position:
-                queue_hardware_command("update_state", ("xy_stage.position", {"X": 95206, "Y": 5120, "Z": 10899}))
+                queue_hardware_command("update_state", ("xy_stage.position", get_chip_origin_position()))
             
             if is_key_just_pressed(ord('L')) and not adjusting_exposure and not adjusting_light and not adjusting_temperature and not adjusting_gain and not adjusting_electrode_position:
                 adjusting_exposure = True
