@@ -1065,12 +1065,17 @@ def control_stage():
     def temperature_reader():
         while not exit_flag.is_set():
             try:
-                temperature = box.temperature.get_temperature()
+                temperature_lock = getattr(box, "_temperature_lock", None)
+                if temperature_lock is None:
+                    temperature = box.temperature.get_temperature()
+                else:
+                    with temperature_lock:
+                        temperature = box.temperature.get_temperature()
                 if temperature is not None:
                     temperature_history.append(temperature)
             except Exception:
                 pass
-            time.sleep(0.1)  # Read temperature every 100ms
+            time.sleep(1.0)  # Read temperature every second; UART replies take ~300 ms
     
     # Separate position reading to its own thread to avoid blocking key input
     def position_reader():

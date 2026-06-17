@@ -1,3 +1,5 @@
+from typing import Optional
+
 from .temperature_factory import TemperatureFactory
 
 
@@ -25,7 +27,7 @@ class TemperatureModule:
         """Sets the target temperature in degC."""
         return self.temperature_controller.set_temperature(temp)
 
-    def get_temperature(self) -> float:
+    def get_temperature(self) -> Optional[float]:
         """Reads the current temperature."""
         return self.temperature_controller.get_temperature()
 

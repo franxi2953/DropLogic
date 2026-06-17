@@ -520,7 +520,8 @@ class BOXMini(DropSystem):
                 # Update temperature feedback (non-blocking)
                 if self.temperature:
                     try:
-                        current_temp = self.temperature.get_temperature()
+                        with self._temperature_lock:
+                            current_temp = self.temperature.get_temperature()
                         if current_temp is not None:
                             self._state["temperature"]["current"] = current_temp
                     except TemperatureSafetyError:
@@ -684,7 +685,8 @@ class BOXMini(DropSystem):
         while not self._temperature_update_stop.is_set():
             try:
                 if self.temperature:
-                    temp = self.temperature.get_temperature()
+                    with self._temperature_lock:
+                        temp = self.temperature.get_temperature()
                     if temp is not None:
                         self.update_state("temperature.current", temp)
             except TemperatureSafetyError:

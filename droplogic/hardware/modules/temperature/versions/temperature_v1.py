@@ -16,7 +16,9 @@ class TemperatureV1:
     Safety policy for the current BOXMini build:
     - Only command targets in the 20-80 degC range.
     - Treat sensor readings outside 20-80 degC, malformed responses, and
-      strong warming while commanded to cool as fatal faults.
+      strong warming while commanded to cool as bad readings.
+    - Bad readings must happen repeatedly before becoming fatal, so a single
+      UART hiccup does not stop unrelated BOXMini movement.
     - On every fatal fault, send SEN0 before raising.
     """
 
@@ -32,6 +34,7 @@ class TemperatureV1:
     COOLING_MARGIN_C = 0.25
     COOLING_RISE_TOLERANCE_C = 0.35
     READ_ATTEMPTS = 3
+    BAD_READING_LIMIT = 10
 
     def __init__(
         self,
@@ -48,6 +51,7 @@ class TemperatureV1:
         self.serial = serial
         self.target_temp = None
         self._last_temperature = None
+        self._bad_reading_count = 0
         self._closed = False
 
         self.logger.info("Initializing temperature module V1")
@@ -115,27 +119,51 @@ class TemperatureV1:
             return None
         return float(match.group(1))
 
-    def _validate_sensor_temperature(self, temp: float, response: str):
+    def _sensor_temperature_fault(self, temp: float, response: str):
         if not math.isfinite(temp):
-            self.emergency_stop(f"Non-finite temperature reading from {response!r}")
+            return f"Non-finite temperature reading from {response!r}"
         if not self.MIN_SENSOR_TEMP_C <= temp <= self.MAX_SENSOR_TEMP_C:
-            self.emergency_stop(
+            return (
                 f"Sensor reading {temp:.2f} degC is outside "
                 f"{self.MIN_SENSOR_TEMP_C:g}-{self.MAX_SENSOR_TEMP_C:g} degC"
             )
+        return None
 
-    def _check_cooling_direction(self, temp: float):
+    def _cooling_direction_fault(self, temp: float):
         if self.target_temp is None or self._last_temperature is None:
-            return
+            return None
 
         cooling = self.target_temp < self._last_temperature - self.COOLING_MARGIN_C
         rising = temp > self._last_temperature + self.COOLING_RISE_TOLERANCE_C
         if cooling and rising:
-            self.emergency_stop(
+            return (
                 "Temperature increased while cooling: "
                 f"target={self.target_temp:.2f} degC, "
                 f"previous={self._last_temperature:.2f} degC, current={temp:.2f} degC"
             )
+        return None
+
+    def _note_bad_reading(self, reason: str):
+        self._bad_reading_count += 1
+        if self._bad_reading_count >= self.BAD_READING_LIMIT:
+            self.emergency_stop(
+                f"{reason}; {self._bad_reading_count} consecutive bad temperature readings"
+            )
+
+        self.logger.warning(
+            "Ignoring bad temperature reading (%s/%s): %s",
+            self._bad_reading_count,
+            self.BAD_READING_LIMIT,
+            reason,
+        )
+
+    def _reset_bad_readings(self):
+        if self._bad_reading_count:
+            self.logger.info(
+                "Temperature readings recovered after %s bad reading(s)",
+                self._bad_reading_count,
+            )
+        self._bad_reading_count = 0
 
     def set_temperature(self, temp: float):
         """Set the target temperature in degC."""
@@ -155,22 +183,35 @@ class TemperatureV1:
         self.send_command("SEN1")
         return self.send_command(f"S1 {target:.2f}")
 
-    def get_temperature(self) -> float:
+    def get_temperature(self) -> Optional[float]:
         """Read the current temperature and enforce safety checks."""
-        last_response = ""
+        last_fault = None
         for _ in range(self.READ_ATTEMPTS):
-            last_response = self.send_command("RP1")
-            temp = self._parse_temperature_response(last_response)
+            response = self.send_command("RP1")
+            temp = self._parse_temperature_response(response)
             if temp is None:
+                last_fault = f"Invalid temperature response: {response!r}"
                 time.sleep(0.1)
                 continue
 
-            self._validate_sensor_temperature(temp, last_response)
-            self._check_cooling_direction(temp)
+            sensor_fault = self._sensor_temperature_fault(temp, response)
+            if sensor_fault:
+                last_fault = sensor_fault
+                time.sleep(0.1)
+                continue
+
+            cooling_fault = self._cooling_direction_fault(temp)
+            if cooling_fault:
+                last_fault = cooling_fault
+                time.sleep(0.1)
+                continue
+
+            self._reset_bad_readings()
             self._last_temperature = temp
             return temp
 
-        self.emergency_stop(f"Invalid temperature response: {last_response!r}")
+        self._note_bad_reading(last_fault or "No valid temperature response")
+        return None
 
     def get_target_temperature(self) -> Optional[float]:
         """Read the target temperature."""
