@@ -1,8 +1,15 @@
 from ctypes import *
 
+from droplogic.utils.native_runtime import resolve_dll
+
 
 class UPLEDController:
-    def __init__(self, dllPath=r"C:\Program Files\IVI Foundation\VISA\Win64\Bin\TLUP_64.dll"):
+    def __init__(self, dllPath=None):
+        if dllPath is None:
+            dllPath = resolve_dll(
+                "light/upled/TLUP_64.dll",
+                r"C:\Program Files\IVI Foundation\VISA\Win64\Bin\TLUP_64.dll",
+            )
         self.lib = cdll.LoadLibrary(dllPath)
         self.device_count = c_uint32()
         self.upHandle = c_int(0)

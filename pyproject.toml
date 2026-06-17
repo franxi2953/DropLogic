@@ -53,3 +53,9 @@ agent = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["droplogic*"]
+
+[tool.setuptools.package-data]
+droplogic = [
+    "vendors_bin/**/*",
+    "utils/drop_vision/models/*.pt",
+]

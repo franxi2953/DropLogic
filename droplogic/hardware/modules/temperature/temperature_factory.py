@@ -6,7 +6,7 @@ class TemperatureFactory:
         """Creates a temperature controller instance based on the requested version."""
         if version == "TemperatureV1":
             from .versions.temperature_v1 import TemperatureV1
-            return TemperatureV1(serial)
+            return TemperatureV1(serial, parent)
         elif version == "TemperatureV2":
             from .versions.temperature_v2 import TemperatureV2
             return TemperatureV2(serial, parent)

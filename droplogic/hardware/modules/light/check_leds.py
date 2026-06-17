@@ -1,12 +1,17 @@
 
-
 from ctypes import *
 import time
 
+from droplogic.utils.native_runtime import resolve_dll
 
 
 class UPLEDController:
-    def __init__(self, dllPath=r"C:\Program Files\IVI Foundation\VISA\Win64\Bin\TLUP_64.dll"):
+    def __init__(self, dllPath=None):
+        if dllPath is None:
+            dllPath = resolve_dll(
+                "light/upled/TLUP_64.dll",
+                r"C:\Program Files\IVI Foundation\VISA\Win64\Bin\TLUP_64.dll",
+            )
         self.lib = cdll.LoadLibrary(dllPath)
         self.device_count = c_uint32()
         self.upHandle = c_int(0)
@@ -47,6 +52,11 @@ class UPLEDController:
     def set_led_output_state(self, enableLEDOutput):
         status = self.lib.TLUP_switchLedOutput(self.upHandle, enableLEDOutput)
         return status
+
+    def close(self):
+        if self.upHandle.value != 0:
+            self.lib.TLUP_close(self.upHandle)
+            self.upHandle = c_int(0)
 
 
 # Quick sketch to check LEDs and control one

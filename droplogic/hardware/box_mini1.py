@@ -2,6 +2,7 @@ from ..base import DropSystem, Priority
 from typing import Any
 from ..utils.advanced_drop import AdvancedDrop
 from .modules.temperature import TemperatureModule
+from .modules.temperature.versions.temperature_v1 import TemperatureSafetyError
 from .modules.electrode_matrix import ElectrodeMatrixModule
 from .modules.capacitive_feedback import CapacitiveFeedbackModule
 from .modules.xy_stage import XYStageModule
@@ -22,6 +23,8 @@ import logging
 
 class BOXMini(DropSystem):
     """Represents the BOXMini hardware system as a singleton."""
+
+    TEMPERATURE_VERSION = "TemperatureV1"
 
     _instance = None
     
@@ -44,6 +47,8 @@ class BOXMini(DropSystem):
             return  # Already initialized
         
         super().__init__("BOXMini", state_file=config_file, log_level=log_level)
+        with self._state_lock:
+            self._state.setdefault("temperature", {})["version"] = self.TEMPERATURE_VERSION
         self.logger.info("BOXMini initialization started")
 
         # Initialize electrode matrix from state
@@ -82,7 +87,7 @@ class BOXMini(DropSystem):
         self.xy_stage = XYStageModule(self, self.state.get("xy_stage", {}).get("version", "XYStageV1"))
         self.microscope = MicroscopeModule(self, self.microscope_serial, self.state.get("microscope_settings", {}).get("version", "MicroscopeV1"))
         self.camera = CameraModule(self, self.state.get("camera_settings", {}).get("version", "CameraV1"))
-        self.temperature = TemperatureModule(self, self.temperature_serial, self.state.get("temperature", {}).get("version", "TemperatureV1"))
+        self.temperature = TemperatureModule(self, self.temperature_serial, self.TEMPERATURE_VERSION)
 
         #initialize matrix as a 0 matrix
         rows = self.state["electrode_matrix"]["rows"]
@@ -128,6 +133,10 @@ class BOXMini(DropSystem):
             else:
                 self.logger.warning(f"Unknown command path: {path}")
                 return False
+        except TemperatureSafetyError:
+            self.logger.exception("Temperature safety fault while processing %s", path)
+            self.emergency_stop()
+            raise
         except Exception as e:
             self.logger.error(f"Hardware command failed for {path}: {e}")
             return False
@@ -326,6 +335,10 @@ class BOXMini(DropSystem):
                         self.temperature.set_temperature(float(target_temp))
                         return True
                         
+        except TemperatureSafetyError:
+            self.logger.exception("Temperature safety fault")
+            self.emergency_stop()
+            raise
         except Exception as e:
             self.logger.error(f"Temperature command failed: {e}")
             return False
@@ -361,12 +374,8 @@ class BOXMini(DropSystem):
         try:
             # Use individual locks for different serial devices
             with self._temperature_lock:
-                temp_version = self.state.get("temperature", {}).get("version", "TemperatureV1")
-                if temp_version == "TemperatureV2":
-                    self.temperature_serial = None  # TemperatureV2 opens its own serial
-                else:
-                    temp_port = self.state["temperature"]["Port"]
-                    self.temperature_serial = serial.Serial(temp_port, baudrate=9600)
+                temp_port = self.state["temperature"]["Port"]
+                self.temperature_serial = serial.Serial(temp_port, baudrate=9600)
 
             with self._light_lock:
                 # Check light version to handle different initialization
@@ -492,6 +501,10 @@ class BOXMini(DropSystem):
                         current_temp = self.temperature.get_temperature()
                         if current_temp is not None:
                             self._state["temperature"]["current"] = current_temp
+                    except TemperatureSafetyError:
+                        self.logger.exception("Temperature safety fault in state monitor")
+                        self.emergency_stop()
+                        raise
                     except Exception:
                         # Skip temperature update on error
                         pass
@@ -504,6 +517,9 @@ class BOXMini(DropSystem):
                     # Normal updates when stationary (50ms)
                     self._monitor_stop.wait(0.05)
 
+            except TemperatureSafetyError:
+                self._monitor_stop.set()
+                raise
             except Exception as e:
                 self.logger.error(f"State monitor error: {e}")
                 self._monitor_stop.wait(0.05)  # Default to 50ms on error
@@ -615,6 +631,21 @@ class BOXMini(DropSystem):
         """Called when state is updated - no longer needs to do anything as queue system handles updates."""
         pass
 
+    def emergency_stop(self):
+        """Disable temperature control and stop queued hardware work."""
+        try:
+            if getattr(self, "temperature", None):
+                self.temperature.disable()
+        except Exception as e:
+            self.logger.debug(f"Error disabling temperature during emergency stop: {e}")
+
+        if hasattr(self, "_temperature_update_stop"):
+            self._temperature_update_stop.set()
+        if hasattr(self, "_queue_stop_event"):
+            self._queue_stop_event.set()
+
+        super().emergency_stop()
+
     def _start_temperature_update_thread(self):
         """Start the background thread for updating temperature state."""
         self._temperature_update_stop.clear()
@@ -634,6 +665,11 @@ class BOXMini(DropSystem):
                     temp = self.temperature.get_temperature()
                     if temp is not None:
                         self.update_state("temperature.current", temp)
+            except TemperatureSafetyError:
+                self.logger.exception("Temperature safety fault in temperature update thread")
+                self.emergency_stop()
+                self._temperature_update_stop.set()
+                raise
             except Exception as e:
                 self.logger.debug(f"Error updating temperature state: {e}")
             time.sleep(1.0)  # Update every second
@@ -651,7 +687,8 @@ class BOXMini(DropSystem):
         # Stop temperature update thread
         if self._temperature_update_thread and self._temperature_update_thread.is_alive():
             self._temperature_update_stop.set()
-            self._temperature_update_thread.join(timeout=2.0)
+            if threading.current_thread() is not self._temperature_update_thread:
+                self._temperature_update_thread.join(timeout=2.0)
             self.logger.debug("Temperature update thread stopped")
 
         # Close visualizers first so movie writers flush before their camera/microscope disappears.
@@ -671,8 +708,14 @@ class BOXMini(DropSystem):
                     self.logger.debug(f"Error closing StreamerVisualizer: {e}")
 
         self.logger.info("Closing hardware modules")
-        for module in [self.temperature, self.electrode_matrix, self.xy_stage,
-                self.microscope, self.camera, self.light]:
+        for module in [
+            getattr(self, "temperature", None),
+            getattr(self, "electrode_matrix", None),
+            getattr(self, "xy_stage", None),
+            getattr(self, "microscope", None),
+            getattr(self, "camera", None),
+            getattr(self, "light", None),
+        ]:
             if module:
                 try:
                     module.close()
@@ -690,10 +733,14 @@ class BOXMini(DropSystem):
         # Close serial ports
         try:
             if hasattr(self, 'temperature_serial') and self.temperature_serial:
-                self.temperature_serial.close()
+                if getattr(self.temperature_serial, "is_open", False):
+                    self.temperature_serial.close()
+                self.temperature_serial = None
                 self.logger.debug("Temperature serial port closed")
             if hasattr(self, 'microscope_serial') and self.microscope_serial:
-                self.microscope_serial.close()
+                if getattr(self.microscope_serial, "is_open", False):
+                    self.microscope_serial.close()
+                self.microscope_serial = None
                 self.logger.debug("Microscope serial port closed")
         except Exception as e:
             self.logger.debug(f"Error closing serial ports: {e}")

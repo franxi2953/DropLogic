@@ -6,9 +6,9 @@ import cv2
 import time
 import threading
 
-# Dynamically inject the runtime vendor directory for mvs_camera Python wrappers
+# Dynamically inject the vendored mvs_camera Python wrappers
 from droplogic.utils.native_runtime import inject_vendor_python_path
-_local_fallback = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "..", "vendor_bin", "camera"))
+_local_fallback = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "..", "vendors_bin", "camera"))
 inject_vendor_python_path("camera", _local_fallback)
 
 # Now we can import the MVS Python SDK (mvs_camera folder must have __init__.py)

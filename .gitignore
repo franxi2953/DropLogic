@@ -55,6 +55,7 @@ site/
 
 # Proprietary binaries / standalone installers
 vendor_bin/
+droplogic/vendors_bin/
 installer/
 Output/
 *.exe

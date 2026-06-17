@@ -2,8 +2,15 @@ import os
 import sys
 import platform
 import ctypes
-from termcolor import colored
 from droplogic.utils.native_runtime import resolve_dll
+
+
+try:
+    from termcolor import colored
+except ImportError:
+    def colored(text, color=None):
+        return text
+
 
 def check_dll(name, relative_path, dummy_local):
     print(f"Checking {name}...", end=" ")
@@ -25,17 +32,17 @@ def check_dll(name, relative_path, dummy_local):
         return False
 
 def run_doctor():
-    print("DropLogic Runtime Doctor")
+    print("DropLogic Native Vendor Doctor")
     print("========================")
     
     if platform.system() != "Windows":
         print("native_runtime components are primarily used on Windows.")
         sys.exit(0)
     
-    # We pass a nonexistent local fallback to ensure it checks the runtime dir
+    # We pass a nonexistent local fallback to ensure it checks packaged vendors_bin assets.
     success = True
     success &= check_dll("DMLite SDK", "electrode_matrix/dmlite/sdk.dll", "dummy_dmlite.dll")
-    success &= check_dll("Camera MVS", "camera/mvs/MvCameraControl.dll", "dummy_mvs.dll")
+    success &= check_dll("Camera MVS", "camera/mvs_camera/drivers/Runtime/Win64_x64/MvCameraControl.dll", "dummy_mvs.dll")
     success &= check_dll("XY Stage", "xy_stage/nmc/MCDLL_NET.dll", "dummy_xy.dll")
     
     print("\nSummary:")
@@ -43,12 +50,9 @@ def run_doctor():
         print(colored("All native components validated successfully.", "green"))
     else:
         print(colored("Some components failed to load.", "red"))
-        print("Expected runtime locations:")
-        print("  - DROPLOGIC_RUNTIME_DIR")
-        print("  - a runtime folder next to the DropLogic package")
-        print("  - the installer-provided runtime path")
-        print("  - %ProgramData%/DropLogic/runtime")
-        print("Install the DropLogic runtime or point DROPLOGIC_RUNTIME_DIR to it.")
+        print("Expected vendor assets:")
+        print("  - droplogic/vendors_bin inside the installed package")
+        print("Install DropLogic with its bundled vendors_bin files.")
         sys.exit(1)
 
 if __name__ == "__main__":

@@ -52,7 +52,7 @@ def _platform_sdk_subdir():
     )
 
 
-def _runtime_relative_sdk_path():
+def _vendor_relative_sdk_path():
     sdk_name = _platform_sdk_name()
     sdk_subdir = _platform_sdk_subdir()
     if sdk_subdir:
@@ -72,7 +72,7 @@ def _candidate_local_sdks():
 
     try:
         repo_root = Path(__file__).resolve().parents[5]
-        vendor_dir = repo_root / "vendor_bin" / "electrode_matrix" / "dmlite"
+        vendor_dir = repo_root / "droplogic" / "vendors_bin" / "electrode_matrix" / "dmlite"
         if sdk_subdir:
             candidates.append(vendor_dir / sdk_subdir / sdk_name)
         candidates.append(vendor_dir / sdk_name)
@@ -84,7 +84,7 @@ def _candidate_local_sdks():
 
 def _resolve_sdk_library():
     last_error = None
-    relative_path = _runtime_relative_sdk_path()
+    relative_path = _vendor_relative_sdk_path()
     for fallback in _candidate_local_sdks():
         try:
             sdk_path = resolve_dll(relative_path, str(fallback))
@@ -177,8 +177,8 @@ class DMLite:
 
         if microfluidics is None:
             raise RuntimeError(
-                "DMLite native SDK could not be loaded. Install the DropLogic runtime "
-                "assets for this OS before using DMLite hardware control."
+                "DMLite native SDK could not be loaded. Install DropLogic with "
+                "its vendors_bin assets before using DMLite hardware control."
             )
 
         self.init_board()
