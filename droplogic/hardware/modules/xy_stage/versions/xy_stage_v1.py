@@ -9,7 +9,7 @@ class XYStageV1:
 
     AXIS_MAPPING = {"X": 0, "Z": 1, "Y": 2}
     AXIS_ID_TO_NAME = {0: "X", 1: "Z", 2: "Y"}
-    SAFE_LIMITS = {"X": 108000, "Z": 30000, "Y": 50000}
+    SAFE_LIMITS = {"X": 108000, "Z": 18000, "Y": 50000}
     MOTION_PARAMS = {
         "dV_ini": 0.0,
         "dMaxV": 10000.0,
@@ -21,6 +21,9 @@ class XYStageV1:
     }
     HOME_OFFSET = 0
     BACKLASH_WAIT_TIMEOUT_SECONDS = 30.0
+    JOG_KEEPALIVE_TIMEOUT_SECONDS = 0.30
+    JOG_POLL_INTERVAL_SECONDS = 0.02
+    JOG_MIN_LIMIT_MARGIN_STEPS = 250
     BACKLASH_DIRECTIONS = (
         "left_to_right",
         "right_to_left",
@@ -65,6 +68,8 @@ class XYStageV1:
         self._corrected_offset_by_axis = {axis_name: 0 for axis_name in self.AXIS_MAPPING}
         self._jog_active_by_axis = {axis_name: False for axis_name in self.AXIS_MAPPING}
         self._jog_direction_by_axis = {axis_name: None for axis_name in self.AXIS_MAPPING}
+        self._jog_requested_direction_by_axis = {axis_name: 0 for axis_name in self.AXIS_MAPPING}
+        self._jog_deadline_by_axis = {axis_name: 0.0 for axis_name in self.AXIS_MAPPING}
         self._jog_threads_by_axis = {}
         self._reload_backlash_steps_from_parent()
 
@@ -90,6 +95,8 @@ class XYStageV1:
             self._corrected_offset_by_axis = {axis_name: 0 for axis_name in self.AXIS_MAPPING}
             self._jog_active_by_axis = {axis_name: False for axis_name in self.AXIS_MAPPING}
             self._jog_direction_by_axis = {axis_name: None for axis_name in self.AXIS_MAPPING}
+            self._jog_requested_direction_by_axis = {axis_name: 0 for axis_name in self.AXIS_MAPPING}
+            self._jog_deadline_by_axis = {axis_name: 0.0 for axis_name in self.AXIS_MAPPING}
             self._initialize_axis_positions()
             self.logger.info("Motion initialization complete and axes homed.")
 
@@ -184,6 +191,41 @@ class XYStageV1:
         safe_limit = self.SAFE_LIMITS[axis_name]
         return 0 <= int(target_position) <= safe_limit
 
+    def _publish_axis_position(self, axis_name, corrected_position):
+        parent = getattr(self, "parent", None)
+        if parent is None or not hasattr(parent, "_state") or not hasattr(parent, "_state_lock"):
+            return
+        try:
+            with parent._state_lock:
+                xy_state = parent._state.setdefault("xy_stage", {})
+                xy_state.setdefault("position", {})[axis_name] = int(corrected_position)
+        except Exception:
+            pass
+
+    def _publish_continuous_movement(self, axis_name, direction):
+        parent = getattr(self, "parent", None)
+        if parent is None or not hasattr(parent, "_state") or not hasattr(parent, "_state_lock"):
+            return
+        try:
+            with parent._state_lock:
+                xy_state = parent._state.setdefault("xy_stage", {})
+                xy_state.setdefault("continuous_movement", {})[axis_name] = int(direction)
+        except Exception:
+            pass
+
+    def _jog_limit_margin_steps(self):
+        max_velocity = abs(float(self.MOTION_PARAMS.get("dMaxV", 0) or 0))
+        acceleration = max(abs(float(self.MOTION_PARAMS.get("dMaxA", 1) or 1)), 1.0)
+        braking_distance = (max_velocity * max_velocity) / (2.0 * acceleration)
+        polling_distance = max_velocity * self.JOG_POLL_INTERVAL_SECONDS * 2.0
+        return int(max(self.JOG_MIN_LIMIT_MARGIN_STEPS, braking_distance + polling_distance + 100))
+
+    def _renew_jog_deadline(self, axis_name):
+        self._jog_deadline_by_axis[axis_name] = time.monotonic() + self.JOG_KEEPALIVE_TIMEOUT_SECONDS
+
+    def _jog_keepalive_expired(self, axis_name):
+        return time.monotonic() > float(self._jog_deadline_by_axis.get(axis_name, 0.0) or 0.0)
+
     def _wait_for_axis_motion_complete(self, axis_name, timeout_seconds=None):
         timeout_seconds = self.BACKLASH_WAIT_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
         start_time = time.time()
@@ -248,12 +290,14 @@ class XYStageV1:
 
         self._raw_position_by_axis[axis_name] = raw_position
         self._corrected_position_by_axis[axis_name] = int(raw_position) - current_offset
+        self._publish_axis_position(axis_name, self._corrected_position_by_axis[axis_name])
         return self._corrected_position_by_axis[axis_name]
 
     def _update_axis_tracking_state(self, axis_name, raw_position, corrected_position, offset_steps):
         self._raw_position_by_axis[axis_name] = int(raw_position)
         self._corrected_position_by_axis[axis_name] = int(corrected_position)
         self._corrected_offset_by_axis[axis_name] = int(offset_steps)
+        self._publish_axis_position(axis_name, corrected_position)
 
     def _preload_axis_backlash(self, axis_name, target_offset, current_corrected_position):
         """Shift the raw axis position to the new backlash offset without moving corrected space."""
@@ -311,9 +355,13 @@ class XYStageV1:
         """Stop and optionally join the jog thread for one axis."""
         self._jog_active_by_axis[axis_name] = False
         self._jog_direction_by_axis[axis_name] = None
+        self._jog_requested_direction_by_axis[axis_name] = 0
+        self._jog_deadline_by_axis[axis_name] = 0.0
+        self._publish_continuous_movement(axis_name, 0)
 
         if clear_motion:
             self.stop_and_clear_axis(axis_name)
+            self._refresh_axis_position_from_hardware(axis_name)
 
         jog_thread = self._jog_threads_by_axis.get(axis_name)
         if jog_thread and jog_thread.is_alive() and threading.current_thread() is not jog_thread:
@@ -653,37 +701,65 @@ class XYStageV1:
     def start_continuous_movement(self, axis, direction):
         """Start continuous jog movement in a given direction while checking limits."""
         axis_name = self._normalize_axis_name(axis)
+        if axis_name is None:
+            raise ValueError(f"Invalid axis: {axis}")
+
+        if int(direction) == 0:
+            self.stop_continuous_movement(axis_name)
+            return
+
         axis = self.AXIS_MAPPING.get(axis_name)
         if axis is None:
             raise ValueError(f"Invalid axis: {axis}")
+        requested_direction = 1 if int(direction) > 0 else -1
 
         safe_limit = self.SAFE_LIMITS[axis_name]
-        max_velocity = self.MOTION_PARAMS["dMaxV"] * direction
+        max_velocity = abs(float(self.MOTION_PARAMS["dMaxV"])) * requested_direction
         acceleration = self.MOTION_PARAMS["dMaxA"]
-        continuous_direction = self._direction_for_continuous_movement(axis_name, direction)
+        continuous_direction = self._direction_for_continuous_movement(axis_name, requested_direction)
 
         def jog_loop():
+            jog_started = False
             while self._jog_active_by_axis.get(axis_name, False):
-                current_position = ctypes.c_long()
-                result = self.dll.MCF_Get_Position_Net(
-                    ctypes.c_ushort(axis), ctypes.byref(current_position), ctypes.c_ushort(0)
+                if self._jog_keepalive_expired(axis_name):
+                    self.logger.warning("Jog keepalive expired on axis %s; stopping.", axis_name)
+                    self._jog_active_by_axis[axis_name] = False
+                    self.stop_and_clear_axis(axis_name)
+                    break
+
+                raw_position = self._read_raw_position(axis_name)
+                if raw_position is None:
+                    self._jog_active_by_axis[axis_name] = False
+                    self.stop_and_clear_axis(axis_name)
+                    break
+
+                current_offset = int(self._corrected_offset_by_axis.get(axis_name, 0) or 0)
+                corrected_position = int(raw_position) - current_offset
+                self._update_axis_tracking_state(
+                    axis_name,
+                    raw_position,
+                    corrected_position,
+                    current_offset,
                 )
-                if result != 0:
-                    self.logger.error(f"Failed to get position for axis {axis}. Error: {result}")
+
+                limit_margin = self._jog_limit_margin_steps()
+                lower_limit_reached = requested_direction < 0 and raw_position <= limit_margin
+                upper_limit_reached = requested_direction > 0 and raw_position >= safe_limit - limit_margin
+                outside_limits = raw_position < 0 or raw_position > safe_limit
+                if lower_limit_reached or upper_limit_reached or outside_limits:
+                    self.logger.warning(
+                        "Jog axis %s stopping near safe limit: raw=%s limit=%s margin=%s direction=%s.",
+                        axis_name,
+                        raw_position,
+                        safe_limit,
+                        limit_margin,
+                        requested_direction,
+                    )
                     self._jog_active_by_axis[axis_name] = False
-                    self._jog_direction_by_axis[axis_name] = None
                     self.stop_and_clear_axis(axis_name)
                     break
 
-                new_position = current_position.value + (direction * 100)
-
-                if new_position < 0 or new_position > safe_limit:
-                    self._jog_active_by_axis[axis_name] = False
-                    self._jog_direction_by_axis[axis_name] = None
-                    self.stop_and_clear_axis(axis_name)
-                    break
-
-                if self._jog_active_by_axis.get(axis_name, False):
+                if not jog_started:
                     result = self.dll.MCF_JOG_Net(
                         ctypes.c_ushort(axis),
                         ctypes.c_double(max_velocity),
@@ -693,19 +769,24 @@ class XYStageV1:
                     if result not in {0, 1}:
                         self.logger.error(f"Failed to jog axis {axis}. Error: {result}")
                         self._jog_active_by_axis[axis_name] = False
-                        self._jog_direction_by_axis[axis_name] = None
                         self.stop_and_clear_axis(axis_name)
                         break
-                else:
-                    break
+                    jog_started = True
+
+                time.sleep(self.JOG_POLL_INTERVAL_SECONDS)
 
             self._jog_active_by_axis[axis_name] = False
             self._jog_direction_by_axis[axis_name] = None
+            self._jog_requested_direction_by_axis[axis_name] = 0
+            self._jog_deadline_by_axis[axis_name] = 0.0
+            self._publish_continuous_movement(axis_name, 0)
+            self._refresh_axis_position_from_hardware(axis_name)
 
         with self._motion_command_lock:
             if self._is_jog_active(axis_name):
-                active_direction = self._jog_direction_by_axis.get(axis_name)
-                if active_direction == continuous_direction:
+                active_direction = self._jog_requested_direction_by_axis.get(axis_name)
+                if active_direction == requested_direction:
+                    self._renew_jog_deadline(axis_name)
                     return
                 self._stop_active_jog(axis_name, clear_motion=True)
                 self._refresh_axis_position_from_hardware(axis_name)
@@ -733,6 +814,9 @@ class XYStageV1:
             self._last_direction_by_axis[axis_name] = continuous_direction
             self._jog_active_by_axis[axis_name] = True
             self._jog_direction_by_axis[axis_name] = continuous_direction
+            self._jog_requested_direction_by_axis[axis_name] = requested_direction
+            self._renew_jog_deadline(axis_name)
+            self._publish_continuous_movement(axis_name, requested_direction)
             jog_thread = threading.Thread(
                 target=jog_loop,
                 name=f"XYJog-{axis_name}",
@@ -768,6 +852,7 @@ class XYStageV1:
             self._raw_position_by_axis[axis_name] = raw_position
             current_offset = int(self._corrected_offset_by_axis.get(axis_name, 0) or 0)
             self._corrected_position_by_axis[axis_name] = int(raw_position) - current_offset
+            self._publish_axis_position(axis_name, self._corrected_position_by_axis[axis_name])
             return raw_position
 
     def get_position(self, axis):
@@ -799,6 +884,12 @@ class XYStageV1:
     def close(self):
         """Close the connection and reset the singleton state."""
         if self.connected:
+            for axis_name in self.AXIS_MAPPING:
+                try:
+                    self._stop_active_jog(axis_name, clear_motion=True)
+                except Exception:
+                    pass
+
             try:
                 self.stop_motion("X")
             except Exception:

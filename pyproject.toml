@@ -39,11 +39,13 @@ dependencies = [
     "pillow",
     "crcmod",
     "pyusb",
+    "pywin32",
 ]
 
 [project.scripts]
 droplogic-doctor = "droplogic.utils.doctor:run_doctor"
 droplogic-mcp = "droplogic.mcp.server:main"
+droplogic-manual-control = "droplogic.manual_control:main"
 
 [project.optional-dependencies]
 agent = [

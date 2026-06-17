@@ -140,6 +140,14 @@ class BOXMini(DropSystem):
         except Exception as e:
             self.logger.error(f"Hardware command failed for {path}: {e}")
             return False
+
+    def _determine_command_priority(self, path: str) -> Priority:
+        """Prioritize motion-sensitive commands above slower UI/state updates."""
+        if path.startswith("xy_stage.continuous_movement."):
+            return Priority.HIGH
+        if path.startswith("xy_stage.position") or path.startswith("electrode_matrix."):
+            return Priority.HIGH
+        return super()._determine_command_priority(path)
         
     # Individual Command Processors
     def _process_xy_stage_command(self, path: str, value: Any) -> bool:
@@ -154,6 +162,20 @@ class BOXMini(DropSystem):
                 # Handle continuous movement: xy_stage.continuous_movement.X/Y/Z
                 axis = path_parts[2]
                 direction = int(value)
+                with self._state_lock:
+                    current_direction = int(
+                        self._state.get("xy_stage", {})
+                        .get("continuous_movement", {})
+                        .get(axis, 0)
+                    )
+                if current_direction != direction:
+                    self.logger.debug(
+                        "Skipping stale jog command for axis %s: queued=%s current=%s",
+                        axis,
+                        direction,
+                        current_direction,
+                    )
+                    return True
                 if direction == 0:
                     self.xy_stage.stop_continuous_movement(axis)
                 else:
