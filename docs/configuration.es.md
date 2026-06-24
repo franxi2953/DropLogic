@@ -1,6 +1,6 @@
 # Configuracion
 
-`config.json` es el archivo de estado por defecto que usan los sistemas de DropLogic.
+`config.json` es el archivo de configuracion por defecto que usan los sistemas de DropLogic.
 
 El default publico vive en la raiz del repositorio:
 
@@ -8,7 +8,7 @@ El default publico vive en la raiz del repositorio:
 config.json
 ```
 
-Si instancias un sistema sin pasar una ruta alternativa, el sistema carga `config.json` desde el directorio actual de ejecucion. Si lanzas los ejemplos desde la raiz del repositorio clonado, ese archivo es el default del repositorio:
+Si instancias un sistema sin pasar una ruta alternativa, el sistema carga configuracion estable desde `config.json` en el directorio actual de ejecucion. Si lanzas los ejemplos desde la raiz del repositorio clonado, ese archivo es el default del repositorio:
 
 ```python
 from droplogic.hardware.DMLite import DMLite
@@ -23,6 +23,8 @@ system = DMLite(config_file="local_config.json")
 ```
 
 `local_config*.json`, `config.local.json` y `calibration_data.json` estan ignorados por Git para que la calibracion privada de una maquina se quede local.
+
+El estado runtime se guarda aparte. La matriz activa de electrodos se persiste en un sidecar local junto al config, por ejemplo `config.runtime-state.json`, y se restaura en la siguiente inicializacion del hardware. Pasar `reset_matrix=true` arranca con la matriz apagada y reemplaza la matriz persistida por ceros cuando el reset se procesa. Otros valores vivos como lecturas de temperatura, posicion de platina, luces, camara y microscopio no se restauran desde el sidecar.
 
 `DMLite` y `BOXMini` son plataformas hardware de [Acxel](https://www.acxel.com/). Este repositorio contiene adaptadores Python y logica de control compartida alrededor de hardware compatible; el hardware del proveedor y los archivos nativos de runtime no forman parte de la libreria.
 
@@ -44,9 +46,9 @@ Campos obligatorios:
 | `electrode_matrix.columns` | Numero de columnas de la matriz | `128` |
 | `electrode_matrix.voltage` | Voltaje de actuacion | `55` |
 | `electrode_matrix.version` | Implementacion de bajo nivel | `DMLite` |
-| `electrode_matrix.matrix` | Estado runtime de la matriz | `[]` al inicio |
+| `electrode_matrix.matrix` | Matriz fallback estatica/esquema default | `[]` |
 
-Para el setup actual de DMLite, los defaults del repositorio son adecuados. El sistema reinicia `electrode_matrix.matrix` al arrancar, asi que normalmente no hay que editar ese campo a mano.
+Para el setup actual de DMLite, los defaults del repositorio son adecuados. Normalmente no hay que editar `electrode_matrix.matrix` a mano; la ultima matriz runtime activa se restaura desde el sidecar local, o se usan ceros si no existe un sidecar/default valido.
 
 `electrode_matrix.version: "DMLite"` carga el runtime nativo correspondiente al sistema operativo y arquitectura de CPU actual. Los runtimes DMLite soportados son Windows x86_64, macOS Apple Silicon, Linux x86_64, Raspberry Pi OS 64-bit y Raspberry Pi OS 32-bit. Si el archivo de runtime correspondiente no esta instalado, `DMLite()` lanza un error claro.
 

@@ -38,10 +38,13 @@ class Priority(Enum):
 
 class DropSystem(ABC):
     """Base class for all DropSystem hardware systems with queue-based hardware processing."""
+
+    RUNTIME_PERSISTENT_PATHS = {"electrode_matrix.matrix"}
     
     def __init__(self, name="test", state_file="config.json", log_level=logging.INFO):
         self._name = name
         self._state_file = state_file
+        self._runtime_state_file = self._derive_runtime_state_file(state_file)
         self.host_platform = self._detect_host_platform()
         
         # Set up logging for this DropSystem instance
@@ -54,20 +57,24 @@ class DropSystem(ABC):
             self.host_platform["machine"],
         )
         
-        # Load state from config file
+        # Load stable configuration from config file.
         try:
             with open(state_file, "r") as f:
                 self._state = json.load(f)
         except Exception as e:
             self.logger.error(f"Could not load state from {state_file}: {e}")
             self._state = {}
+
+        self._runtime_state = self._load_runtime_state(self._runtime_state_file)
         
         self._state_lock = threading.RLock()
         # AdvancedDrop will be initialized by child classes after hardware setup
 
-        # State persistence is handled by a dedicated worker so update_state()
-        # never performs file I/O in the caller's thread.
-        self._setup_state_persistence()
+        # config.json is reserved for stable configuration, calibration,
+        # defaults, and presets. Runtime persistence writes only explicitly
+        # tracked physical state, currently the active electrode matrix, to a
+        # separate local runtime-state file.
+        self._setup_state_persistence(enabled=True)
         
         # Initialize queue system
         self._setup_queue_system()
@@ -102,15 +109,37 @@ class DropSystem(ABC):
         with self._state_lock:
             return self._state.copy()
 
-    def _setup_state_persistence(self):
-        """Start the background worker that persists the latest state snapshot."""
+    def _derive_runtime_state_file(self, config_file: Optional[str]) -> Optional[str]:
+        """Return the sidecar runtime-state path for a config file."""
+        if not config_file:
+            return None
+        root, ext = os.path.splitext(os.path.abspath(config_file))
+        return f"{root}.runtime-state{ext or '.json'}"
+
+    def _load_runtime_state(self, runtime_state_file: Optional[str]) -> Dict[str, Any]:
+        """Load persisted runtime state from the local sidecar file."""
+        if not runtime_state_file or not os.path.exists(runtime_state_file):
+            return {}
+        try:
+            with open(runtime_state_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                self.logger.info("Loaded runtime state from %s", runtime_state_file)
+                return data
+            self.logger.warning("Ignoring non-object runtime state in %s", runtime_state_file)
+        except Exception as e:
+            self.logger.warning("Could not load runtime state from %s: %s", runtime_state_file, e)
+        return {}
+
+    def _setup_state_persistence(self, enabled: bool = False):
+        """Configure optional runtime-state persistence."""
         self._state_save_event = threading.Event()
         self._state_save_stop_event = threading.Event()
         self._state_write_lock = threading.Lock()
         self._state_save_version = 0
         self._state_saved_version = 0
         self._state_save_debounce_seconds = 0.05
-        self._state_persistence_enabled = bool(self._state_file)
+        self._state_persistence_enabled = bool(enabled and self._runtime_state_file)
         self._state_save_worker = None
 
         if not self._state_persistence_enabled:
@@ -124,7 +153,7 @@ class DropSystem(ABC):
         self._state_save_worker.start()
 
     def mark_state_dirty(self):
-        """Mark direct state mutations for asynchronous persistence."""
+        """Mark runtime-state dirty after a direct persisted mutation."""
         if not getattr(self, "_state_persistence_enabled", False):
             return
         with self._state_lock:
@@ -132,14 +161,14 @@ class DropSystem(ABC):
         self._state_save_event.set()
 
     def _mark_state_dirty_locked(self):
-        """Mark state dirty while the caller already holds _state_lock."""
+        """Mark runtime-state dirty while the caller already holds _state_lock."""
         if not getattr(self, "_state_persistence_enabled", False):
             return
         self._state_save_version += 1
         self._state_save_event.set()
 
     def _state_save_loop(self):
-        """Persist coalesced state updates until the system is closed."""
+        """Persist coalesced runtime-state updates until the system is closed."""
         while True:
             self._state_save_event.wait(timeout=0.5)
             if self._state_save_stop_event.is_set():
@@ -155,7 +184,7 @@ class DropSystem(ABC):
         self.flush_state()
 
     def flush_state(self):
-        """Write the latest dirty state snapshot to disk using an atomic replace."""
+        """Write the latest dirty runtime-state snapshot using an atomic replace."""
         if not getattr(self, "_state_persistence_enabled", False):
             return
 
@@ -164,17 +193,20 @@ class DropSystem(ABC):
                 version = self._state_save_version
                 if version == self._state_saved_version:
                     return
-                snapshot = copy.deepcopy(self._state)
+                snapshot = copy.deepcopy(self._runtime_state)
+                if not snapshot:
+                    self._state_saved_version = version
+                    return
 
             try:
                 self._write_state_snapshot(self._json_safe(snapshot))
                 self._state_saved_version = version
             except Exception as e:
-                self.logger.error(f"Could not save state to {self._state_file}: {e}")
+                self.logger.error(f"Could not save runtime state to {self._runtime_state_file}: {e}")
                 self._state_save_event.set()
 
     def _write_state_snapshot(self, snapshot: Dict[str, Any]):
-        state_path = os.path.abspath(self._state_file)
+        state_path = os.path.abspath(self._runtime_state_file)
         state_dir = os.path.dirname(state_path) or "."
         os.makedirs(state_dir, exist_ok=True)
 
@@ -214,34 +246,105 @@ class DropSystem(ABC):
             return [self._json_safe(item) for item in value]
         return value
 
-    def _get_initial_electrode_matrix(self, rows: int, columns: int, reset_matrix: bool = False):
-        """Return a valid matrix from state, or zeros when requested/missing/invalid."""
+    def _should_persist_runtime_path(self, path: str) -> bool:
+        """Return whether a state path should be persisted across sessions."""
+        return path in self.RUNTIME_PERSISTENT_PATHS
+
+    def _coerce_electrode_matrix(self, matrix: Any, rows: int, columns: int) -> np.ndarray:
+        """Validate and coerce an electrode matrix to an integer ndarray."""
+        if matrix is None:
+            raise ValueError("missing matrix")
+        if isinstance(matrix, list) and not matrix:
+            raise ValueError("empty matrix")
+        matrix_array = np.asarray(matrix)
+        if matrix_array.shape != (rows, columns):
+            raise ValueError(f"expected {(rows, columns)}, got {matrix_array.shape}")
+        return matrix_array.astype(int)
+
+    def _runtime_matrix_candidate(self):
+        runtime_matrix = (
+            self._runtime_state
+            .get("electrode_matrix", {})
+            .get("matrix")
+        )
+        config_matrix = (
+            self._state
+            .get("electrode_matrix", {})
+            .get("matrix")
+        )
+        return (
+            ("runtime_state", runtime_matrix),
+            ("config_matrix", config_matrix),
+        )
+
+    def _has_matrix_candidate(self, matrix: Any) -> bool:
+        """Return whether a matrix candidate is meaningful enough to warn about."""
+        if matrix is None:
+            return False
+        if isinstance(matrix, list) and not matrix:
+            return False
+        return True
+
+    def _record_runtime_persistent_value(self, path: str, value: Any):
+        """Record a processed hardware value in the runtime-state sidecar."""
+        if not self._should_persist_runtime_path(path):
+            return
+
+        if path == "electrode_matrix.matrix":
+            try:
+                matrix_array = np.asarray(value).astype(int)
+            except Exception as e:
+                self.logger.warning("Ignoring invalid runtime matrix value: %s", e)
+                return
+            if matrix_array.ndim != 2 or 0 in matrix_array.shape:
+                self.logger.warning("Ignoring invalid runtime matrix shape: %s", matrix_array.shape)
+                return
+
+            rows, columns = matrix_array.shape
+            with self._state_lock:
+                self._runtime_state["version"] = 1
+                self._runtime_state["system"] = self._name
+                self._runtime_state["updated_at"] = time.time()
+                matrix_state = self._runtime_state.setdefault("electrode_matrix", {})
+                matrix_state["rows"] = int(rows)
+                matrix_state["columns"] = int(columns)
+                matrix_state["matrix"] = matrix_array.tolist()
+                self._mark_state_dirty_locked()
+
+    def _get_initial_electrode_matrix(
+        self,
+        rows: int,
+        columns: int,
+        reset_matrix: bool = False,
+        restore_runtime_matrix: bool = True,
+    ):
+        """Return an initial matrix for hardware startup.
+
+        Runtime matrix restore is on by default and uses the local sidecar
+        runtime-state file. config.json is only a fallback for explicit static
+        defaults and should not act as the last-frame persistence store.
+        """
         if reset_matrix:
             return np.zeros((rows, columns), dtype=int).tolist(), "reset"
+        if not restore_runtime_matrix:
+            return np.zeros((rows, columns), dtype=int).tolist(), "default_zero"
 
         with self._state_lock:
-            matrix = (
-                self._state
-                .get("electrode_matrix", {})
-                .get("matrix")
-            )
+            candidates = self._runtime_matrix_candidate()
 
-        try:
-            if matrix is None:
-                raise ValueError("missing matrix")
-            if isinstance(matrix, list) and not matrix:
-                raise ValueError("empty matrix")
+        for source, matrix in candidates:
+            try:
+                matrix_array = self._coerce_electrode_matrix(matrix, rows, columns)
+                return matrix_array.tolist(), source
+            except Exception as e:
+                if self._has_matrix_candidate(matrix):
+                    self.logger.warning(
+                        "Could not restore electrode matrix from %s (%s); trying next source",
+                        source,
+                        e,
+                    )
 
-            matrix_array = np.asarray(matrix)
-            if matrix_array.shape != (rows, columns):
-                raise ValueError(f"expected {(rows, columns)}, got {matrix_array.shape}")
-            return matrix_array.astype(int).tolist(), "state_file"
-        except Exception as e:
-            self.logger.warning(
-                "Could not restore electrode matrix from state (%s); using zeros",
-                e,
-            )
-            return np.zeros((rows, columns), dtype=int).tolist(), "default_zero"
+        return np.zeros((rows, columns), dtype=int).tolist(), "default_zero"
 
     def _setup_queue_system(self):
         """Initialize the hardware command queue system."""
@@ -273,7 +376,10 @@ class DropSystem(ABC):
 
             try:
                 self.logger.debug(f"Processing {priority.name} command: {cmd.path} = {cmd.value} (queued at {cmd.timestamp:.3f})")
-                self._process_hardware_command(cmd.path, cmd.value, cmd.priority)
+                result = self._process_hardware_command(cmd.path, cmd.value, cmd.priority)
+                if result is False:
+                    raise RuntimeError(f"Hardware command returned False for {cmd.path}")
+                self._record_runtime_persistent_value(cmd.path, cmd.value)
                 self._last_hardware_command[priority.name] = {
                     "path": cmd.path,
                     "priority": priority.name,
@@ -303,18 +409,19 @@ class DropSystem(ABC):
                 self._hardware_queues[priority].task_done()
 
     def update_state(self, path: str, value: Any, priority: Optional[Priority] = None):
-        """Simplified update_state with queue-based hardware processing."""
+        """Update in-memory state and enqueue hardware processing."""
         state_value = copy.deepcopy(value)
         command_value = copy.deepcopy(value)
 
-        # Update software state (simple, fast)
+        # Update software state (simple, fast). This does not rewrite
+        # config.json. Persisted runtime paths are saved only after their
+        # hardware command has been processed by a worker.
         with self._state_lock:
             keys = path.split('.')
             current = self._state
             for key in keys[:-1]:
                 current = current[key]  # Assume path exists
             current[keys[-1]] = state_value
-            self._mark_state_dirty_locked()
         
         # Determine priority and enqueue hardware command
         if priority is None:
@@ -355,6 +462,7 @@ class DropSystem(ABC):
             }
         status["STATE_SAVE"] = {
             "enabled": getattr(self, "_state_persistence_enabled", False),
+            "runtime_state_file": getattr(self, "_runtime_state_file", None),
             "dirty": getattr(self, "_state_save_version", 0) != getattr(self, "_state_saved_version", 0),
             "worker_alive": bool(
                 getattr(self, "_state_save_worker", None)

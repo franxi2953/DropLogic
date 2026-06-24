@@ -54,7 +54,6 @@ class BOXMini(DropSystem):
         super().__init__("BOXMini", state_file=config_file, log_level=log_level)
         with self._state_lock:
             self._state.setdefault("temperature", {})["version"] = self.TEMPERATURE_VERSION
-            self._mark_state_dirty_locked()
         self.logger.info("BOXMini initialization started")
 
         # Initialize electrode matrix from state

@@ -30,9 +30,11 @@ Tool boundaries:
 
 ## Startup And State
 - First call `runtime_status`. If BoxMini is needed and no system is loaded, call `load_system(system="boxmini")`.
-- By default BoxMini restores the last saved `electrode_matrix.matrix` from `config.json` on initialization. Do not assume startup means all electrodes are off.
-- Only clear the matrix on startup when explicitly requested, using `load_system(system="boxmini", reset_matrix=true)` or `restart_system(..., reset_matrix=true)`.
-- DropLogic saves state changes asynchronously in a background worker and flushes on `close_system`. Still close systems cleanly; do not kill the MCP process to end a run.
+- `config.json` is configuration, calibration, defaults, and presets. It is not a live-state log.
+- The last processed `electrode_matrix.matrix` is persisted separately in a local runtime-state sidecar such as `config.runtime-state.json`, not in `config.json`.
+- By default BoxMini restores that last active matrix when hardware initializes. Do not assume startup means all electrodes are off.
+- Runtime values such as `temperature.current`, `xy_stage.position`, camera/microscope settings, and light levels are session state and are not restored from the runtime-state sidecar.
+- Use `reset_matrix=true` only when the user clearly wants an all-off startup; this also replaces the persisted matrix with zero/off after the reset command is processed.
 - Use `state_summary()` for broad inspection; it summarizes large values such as the 128 x 128 matrix.
 - Use `read_state(path="...")` for exact values. Useful paths: `temperature`, `temperature.current`, `xy_stage.position`, `xy_stage.position.Y`, `light_settings`, `microscope_settings`, `camera_settings`, `electrode_matrix.voltage`, `electrode_matrix.matrix`, and `calibration`.
 - Avoid `read_state()` with no path unless the user really needs the full raw state.
@@ -218,7 +220,7 @@ If feedback fails:
 
 ## Never Do
 - Do not use unsafe raw matrix writes unless explicitly supervised.
-- Do not clear the matrix at startup unless the user explicitly asks for `reset_matrix=true`.
+- Do not clear the restored matrix at startup unless the user explicitly asks for `reset_matrix=true` or an all-off start.
 - Do not assume reagent identity from hole labels.
 - Do not invent stage coordinates for loading, imaging, or recovery.
 - Do not continue after a visual/vision mismatch without correction or confirmation.

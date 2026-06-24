@@ -42,6 +42,7 @@ merge_debug.json
 local_config*.json
 config.local.json
 calibration_data.json
+*.runtime-state.json
 
 # Archivos de MacOS
 .DS_Store
