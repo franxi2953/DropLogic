@@ -103,9 +103,6 @@ class AdvancedDrop:
             initial_frame = np.zeros((128, 128), dtype=np.int32)
             self.system.logger.warning(f"Failed to access system matrix: {e}, using default zero matrix")
 
-        # Create initial empty frame (all electrodes off)
-        initial_frame = np.zeros((128, 128), dtype=np.int32)
-
         self.plan = DropletPlan(
             frames=[initial_frame],
             frame_count=1,

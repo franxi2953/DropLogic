@@ -5,6 +5,7 @@ import numpy as np
 import cv2
 import time
 import threading
+from droplogic.utils.logging_config import setup_droplogic_logger
 
 # Dynamically inject the vendored mvs_camera Python wrappers
 from droplogic.utils.native_runtime import inject_vendor_python_path
@@ -19,10 +20,14 @@ class CameraV1:
 
     def __init__(self, parent, device_index=0):
         self.capture_lock = threading.Lock()
+        self.logger = setup_droplogic_logger(
+            'droplogic.hardware.camera.v1',
+            console_output=False,
+        )
         if device_index == 0:
-            print("\n[INFO] Initializing camera module...")
+            self.logger.info("Initializing camera module...")
         elif device_index == 1:
-            print("\n[INFO] Initializing microscope camera module...")
+            self.logger.info("Initializing microscope camera module...")
         self.device_index = device_index
         self.parent = parent
         self.cam = None
@@ -31,9 +36,9 @@ class CameraV1:
         try:
             self.device_list = self.enum_devices()
             self.open_camera(device_index)
-            print("Camera initialized and powered on.")
+            self.logger.info("Camera initialized and powered on.")
         except Exception as e:
-            print(f"[ERROR] Failed to enumerate devices: {e}")
+            self.logger.error(f"Failed to enumerate devices: {e}")
             self.close()
             raise  
 
@@ -52,13 +57,13 @@ class CameraV1:
 
             return device_list
         except Exception as e:
-            print(f"[ERROR] Camera enumeration failed: {e}")
+            self.logger.error(f"Camera enumeration failed: {e}")
             self.close()
             raise  
 
     def open_camera(self, device_index=0):
         """Opens the selected camera."""
-        print(f"initializing camera {device_index}")
+        self.logger.info(f"Initializing camera {device_index}")
         try:
             if self.device_list is None:
                 raise RuntimeError("No devices found!")
@@ -81,10 +86,10 @@ class CameraV1:
             if ret != 0:
                 raise RuntimeError(f"Failed to start grabbing: {parse_mvs_error(ret)}")
             self._is_grabbing = True
-            print(f"[INFO] Started grabbing on camera {device_index}")
+            self.logger.info(f"Started grabbing on camera {device_index}")
 
         except Exception as e:
-            print(f"[ERROR] Failed to open camera {device_index}: {e}")
+            self.logger.error(f"Failed to open camera {device_index}: {e}")
             time.sleep(1)
             self.close()
             raise  
@@ -206,7 +211,10 @@ class CameraV1:
                     # Monochrome image, no conversion needed
                     image = np.frombuffer(pData, dtype=np.uint8).reshape(height, width)
                 else:
-                    print(f"[WARN] Unsupported pixel format {pixel_type}. Supported: BayerRG8 (17301513) or Mono8 (17301505).")
+                    self.logger.warning(
+                        f"Unsupported pixel format {pixel_type}. "
+                        "Supported: BayerRG8 (17301513) or Mono8 (17301505)."
+                    )
                     return None
 
                 # Save to disk if requested
@@ -221,7 +229,7 @@ class CameraV1:
                 return image
 
             except Exception as e:
-                print(f"[ERROR] Image capture failed: {e}")
+                self.logger.error(f"Image capture failed: {e}")
                 self.close()
                 raise
 
@@ -232,12 +240,12 @@ class CameraV1:
                 if getattr(self, "_is_grabbing", False):
                     self.cam.MV_CC_StopGrabbing()
                     self._is_grabbing = False
-                    print("[INFO] Stopped grabbing")
+                    self.logger.info("Stopped grabbing")
                 self.cam.MV_CC_CloseDevice()
                 self.cam.MV_CC_DestroyHandle()
-                print("[INFO] Camera closed and handle destroyed")
+                self.logger.info("Camera closed and handle destroyed")
         except Exception as e:
-            print(f"[ERROR] Error while closing camera: {e}")
+            self.logger.error(f"Error while closing camera: {e}")
 
     def __del__(self):
         """Ensure the camera is closed when the object is deleted."""

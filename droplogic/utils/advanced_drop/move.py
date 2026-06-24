@@ -18,7 +18,7 @@ from droplogic.utils.advanced_drop.common import (
 )
 
 # Import centralized logging configuration
-from ..logging_config import setup_droplogic_logger
+from ..logging_config import _default_log_file, setup_droplogic_logger
 
 # Logger
 logger = setup_droplogic_logger("droplogic.advanced_drop.sipp")
@@ -29,7 +29,10 @@ planning_logger.setLevel(python_logging.CRITICAL)
 planning_logger.propagate = False  # Prevent propagation to root logger
 # Only add handler if not already present
 if not planning_logger.handlers:
-    _planning_file_handler = python_logging.FileHandler("planning_steps.log", mode='a')  # Append mode
+    _planning_file_handler = python_logging.FileHandler(
+        _default_log_file().replace("droplogic_debug.log", "planning_steps.log"),
+        mode='a',
+    )
     _planning_file_handler.setLevel(python_logging.CRITICAL)
     _planning_formatter = python_logging.Formatter('%(asctime)s - %(message)s')
     _planning_file_handler.setFormatter(_planning_formatter)

@@ -12,12 +12,12 @@ class Simulator(DropSystem):
 
     _instance = None
     
-    def __new__(cls, config_file="config.json", log_level=logging.INFO):
+    def __new__(cls, config_file="config.json", log_level=logging.INFO, reset_matrix=False):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, config_file="config.json", log_level=logging.INFO):
+    def __init__(self, config_file="config.json", log_level=logging.INFO, reset_matrix=False):
         if isinstance(log_level, str):
             log_level = getattr(logging, log_level.upper(), logging.INFO)
         
@@ -28,6 +28,11 @@ class Simulator(DropSystem):
                 handler.setLevel(log_level)
             from ..utils.logging_config import set_droplogic_logging_level
             set_droplogic_logging_level(log_level)
+            if reset_matrix:
+                rows = self.state.get("electrode_matrix", {}).get("rows", 128)
+                columns = self.state.get("electrode_matrix", {}).get("columns", 128)
+                matrix, _ = self._get_initial_electrode_matrix(rows, columns, reset_matrix=True)
+                self.update_state("electrode_matrix.matrix", matrix, priority=Priority.HIGH)
             return  # Already initialized
         
         super().__init__("Simulator", state_file=config_file, log_level=log_level)
@@ -38,17 +43,26 @@ class Simulator(DropSystem):
         rows = electrode_config.get("rows", 128)
         columns = electrode_config.get("columns", 128)
         voltage = electrode_config.get("voltage", 40)
+        initial_matrix, matrix_source = self._get_initial_electrode_matrix(
+            rows,
+            columns,
+            reset_matrix=reset_matrix,
+        )
         
         # Initialize simulated electrode matrix state
-        self._simulated_matrix = np.zeros((rows, columns), dtype=int)
+        self._simulated_matrix = np.asarray(initial_matrix, dtype=int)
         self._simulated_voltage = voltage
         
         # Thread lock for electrode operations
         self._electrode_lock = threading.Lock()
         
-        # Initialize matrix as zeros in state
-        matrix = np.zeros((rows, columns), int).tolist()
-        self.update_state("electrode_matrix.matrix", matrix)
+        self.update_state("electrode_matrix.matrix", initial_matrix, priority=Priority.HIGH)
+        active_electrodes = int(np.count_nonzero(self._simulated_matrix))
+        self.logger.info(
+            "Electrode matrix initialized from %s with %s active electrodes",
+            matrix_source,
+            active_electrodes,
+        )
         
         # Initialize simulated XY stage
         self._xy_stage_lock = threading.Lock()

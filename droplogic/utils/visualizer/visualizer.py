@@ -1,4 +1,4 @@
-from droplogic.utils.window_manager import bring_window_to_front
+from droplogic.utils.window_manager import bring_window_to_front, request_window_close
 import time
 import cv2
 import threading
@@ -88,6 +88,8 @@ class StreamerVisualizer:
 
         self.coordinates = False
         self.electrode_overlay = False
+        self.electrode_overlay_center = None
+        self.auto_bring_to_front = True
         self.droplet_detection_overlay = False  # Enable/disable droplet detection overlay
 
         self.electrode_width_px = 375  # Width of each electrode rectangle in pixels
@@ -139,7 +141,8 @@ class StreamerVisualizer:
     def start(self, stop_condition=None):
         """Start capture immediately and display in the safest mode for the host OS."""
         if self.is_running():
-            self._bring_to_front()
+            if self.auto_bring_to_front:
+                self._bring_to_front()
             return
 
         self.flag_exit.clear()
@@ -172,7 +175,8 @@ class StreamerVisualizer:
         )
         self.display_thread.start()
         self.thread = self.display_thread  # For backward compatibility
-        self._bring_to_front()
+        if self.auto_bring_to_front:
+            self._bring_to_front()
 
     def set_device(self, device):
         """Switch to a different capture device at runtime."""
@@ -240,7 +244,8 @@ class StreamerVisualizer:
                 return
 
             time.sleep(0.1)
-            self._bring_to_front()
+            if self.auto_bring_to_front:
+                self._bring_to_front()
 
             while not self.flag_exit.is_set():
                 if stop_condition is not None and stop_condition():
@@ -374,8 +379,14 @@ class StreamerVisualizer:
                         pos = self.box.state["xy_stage"]["position"]
 
                     try:
-                        # Use floating-point electrode coordinates for precise overlay positioning
-                        electrode_pos_float = stage_to_electrode_float((pos["X"], pos["Y"]))
+                        # Use an explicit calibration target if one is provided; during
+                        # stage calibration the stage/electrode transform is being edited,
+                        # so deriving the overlay center from the old transform is wrong.
+                        if self.electrode_overlay_center is not None:
+                            electrode_pos_float = self.electrode_overlay_center
+                        else:
+                            # Use floating-point electrode coordinates for precise overlay positioning
+                            electrode_pos_float = stage_to_electrode_float((pos["X"], pos["Y"]))
 
                         if electrode_pos_float is None:
                             # Default to electrode 0,0 if stage position is outside the grid
@@ -385,10 +396,10 @@ class StreamerVisualizer:
                             current_row, current_col = electrode_pos_float[0], electrode_pos_float[1]
 
                     except Exception as e:
-                        print(f"Error in stage_to_electrode_float: {e}")
+                        self.logger.warning(f"Error in stage_to_electrode_float: {e}")
                         return frame
                 except Exception as e:
-                    print(f"Error in electrode overlay: {e}")
+                    self.logger.warning(f"Error in electrode overlay: {e}")
                     return frame
                 
                 # Create overlay for transparent drawing
@@ -472,7 +483,7 @@ class StreamerVisualizer:
                             # Add white text on overlay with bolder font (thicker strokes)
                             cv2.putText(overlay, text, text_pos, cv2.FONT_HERSHEY_SIMPLEX, 1.8, (255, 255, 255), 4)
                         except (IndexError, TypeError) as e:
-                            print(f"[DEBUG] Error drawing electrode ({electrode_row}, {electrode_col}): {e}")
+                            self.logger.debug(f"Error drawing electrode ({electrode_row}, {electrode_col}): {e}")
                             # Skip this electrode if there's an error
                             return frame
                 
@@ -707,9 +718,16 @@ class StreamerVisualizer:
 
         # Bring window to front OS gracefully
         try:
-            bring_window_to_front(self.window_name)
+            return bring_window_to_front(self.window_name)
         except Exception:
-            pass
+            return None
+
+    def bring_to_front(self):
+        """Bring the live stream window to the foreground when supported."""
+        return {
+            "window_name": self.window_name,
+            "window_status": self._bring_to_front(),
+        }
 
     def get_electrodes_in_fov(self):
         """
@@ -777,34 +795,27 @@ class StreamerVisualizer:
         self.flag_exit.set()
         current_thread = threading.current_thread()
 
-        # Wait for threads to finish with longer timeout
-        if self.capture_thread and self.capture_thread.is_alive() and self.capture_thread is not current_thread:
-            self.capture_thread.join(timeout=3.0)
-            if self.capture_thread.is_alive():
-                self.logger.warning(f"Capture thread for {self.window_name} did not stop gracefully")
-        if self.display_thread and self.display_thread.is_alive() and self.display_thread is not current_thread:
-            self.display_thread.join(timeout=3.0)
-            if self.display_thread.is_alive():
-                self.logger.warning(f"Display thread for {self.window_name} did not stop gracefully")
-        if self.thread and hasattr(self.thread, "is_alive") and self.thread.is_alive() and self.thread is not current_thread:
-            self.thread.join(timeout=3.0)
-
-        # Force destroy window with multiple attempts
-        for attempt in range(5):
-            try:
-                if cv2.getWindowProperty(self.window_name, cv2.WND_PROP_VISIBLE) >= 0:
-                    cv2.destroyWindow(self.window_name)
-                    time.sleep(0.2)
-                else:
-                    break
-            except:
-                break
-
-        # Final cleanup - destroy all windows as fallback
         try:
-            cv2.destroyAllWindows()
-        except:
+            request_window_close(self.window_name)
+        except Exception:
             pass
+
+        for thread_name in ("capture_thread", "display_thread", "thread"):
+            thread = getattr(self, thread_name, None)
+            if thread and thread is not current_thread and thread.is_alive():
+                thread.join(timeout=0.75)
+                if thread.is_alive():
+                    self.logger.warning(
+                        "%s thread for %s did not stop before timeout",
+                        thread_name,
+                        self.window_name,
+                    )
+
+        if self.thread is self.display_thread:
+            self.thread = None
+        self.display_thread = None
+        self.capture_thread = None
+        self._display_active = False
 
 class MatrixVisualizer:
     """
@@ -845,6 +856,8 @@ class MatrixVisualizer:
         self.host_platform = _resolve_host_platform(self.box)
         self._display_active = False
         self._window_mode = "background"
+        self.auto_bring_to_front = True
+        self.logger = setup_droplogic_logger('droplogic.utils.visualizer', console_output=False)
         
         # Path tracking for droplet trajectories
         self.paths       = paths or []                # list of paths (each path is a list of (row, col) positions)
@@ -867,6 +880,8 @@ class MatrixVisualizer:
         self.last_canvas_shape = None
         self.last_display_shape = None
         self.last_matrix_shape = None
+        self.last_exit_reason = None
+        self.last_display_error = None
 
     # ───────────────────────────── public API ────────────────────────────────
     def requires_main_thread_window(self):
@@ -877,14 +892,15 @@ class MatrixVisualizer:
 
     def start(self, stop_condition=None):
         if self.is_running():
-            self._bring_to_front()
+            if self.auto_bring_to_front:
+                self._bring_to_front()
             return
 
         self.flag_exit.clear()
         if self.requires_main_thread_window():
             self._window_mode = "foreground"
             if threading.current_thread() is not threading.main_thread():
-                print(
+                self.logger.warning(
                     f"[Visualizer] Skipping '{self.window_name}' window creation on "
                     f"{self.host_platform.get('system', 'this OS')} because GUI windows require the main thread."
                 )
@@ -897,10 +913,11 @@ class MatrixVisualizer:
         self.thread = threading.Thread(
             target=self._run_display,
             kwargs={"stop_condition": stop_condition},
-            daemon=False,  # Not daemon so we can wait for it
+            daemon=True,
         )
         self.thread.start()
-        self._bring_to_front()
+        if self.auto_bring_to_front:
+            self._bring_to_front()
 
     def set_background(self, frame):
         with self.lock:
@@ -990,71 +1007,131 @@ class MatrixVisualizer:
             return False
 
     # ───────────────────────────── internal loop ─────────────────────────────
+    def _placeholder_frame(self, message):
+        """Return a visible fallback frame when transient render data is invalid."""
+        canvas = np.zeros((self.matrix_size[1], self.matrix_size[0], 3), np.uint8)
+        cv2.putText(
+            canvas,
+            "Matrix visualizer waiting for valid state",
+            (20, 45),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.75,
+            (180, 180, 180),
+            2,
+        )
+        text = str(message or "")[:90]
+        if text:
+            cv2.putText(
+                canvas,
+                text,
+                (20, 85),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (120, 120, 255),
+                1,
+            )
+        return canvas
+
     def _run_display(self, stop_condition=None):
         self._display_active = True
+        exit_reason = "unknown"
         try:
             try:
                 cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
                 cv2.resizeWindow(self.window_name, *self.matrix_size)
             except Exception as e:
-                print(f"[Visualizer] Failed to create '{self.window_name}' window: {e}")
+                self.logger.warning(f"[Visualizer] Failed to create '{self.window_name}' window: {e}")
+                exit_reason = "window_create_failed"
                 return
 
             time.sleep(0.1)
-            self._bring_to_front()
+            if self.auto_bring_to_front:
+                self._bring_to_front()
 
             cv2.setMouseCallback(self.window_name, self._handle_mouse_event)
 
             prev_size = (0, 0)
             while not self.flag_exit.is_set():
                 if stop_condition is not None and stop_condition():
+                    exit_reason = "stop_condition"
                     self.flag_exit.set()
                     break
 
-                # 1) fetch the latest electrode matrix straight from BOXMini
-                mat = self.box.state["electrode_matrix"]["matrix"]
-                # ensure numpy int array
-                mat_np = np.array(mat, dtype=int)
+                try:
+                    # 1) fetch the latest electrode matrix straight from BOXMini
+                    mat = self.box.state["electrode_matrix"]["matrix"]
+                    # ensure numpy int array
+                    mat_np = np.array(mat, dtype=int)
 
-                # 2) copy latest background (if any) under lock
-                with self.lock:
-                    bg = None if self.background is None else self.background.copy()
+                    # 2) copy latest background (if any) under lock
+                    with self.lock:
+                        bg = None if self.background is None else self.background.copy()
 
-                # 3) build the canvas ------------------------------------------------
-                canvas = self._compose_frame(mat_np, bg)
+                    # 3) build the canvas --------------------------------------------
+                    canvas = self._compose_frame(mat_np, bg)
+                    self.last_display_error = None
+                except Exception as e:
+                    self.last_display_error = f"{type(e).__name__}: {e}"
+                    self.logger.warning(
+                        "Matrix visualizer '%s' render error; keeping window alive: %s",
+                        self.window_name,
+                        self.last_display_error,
+                    )
+                    canvas = self._placeholder_frame(self.last_display_error)
+                    mat_np = np.array([])
 
                 # 4) show + keep aspect ratio ---------------------------------------
                 try:
-                    _, _, win_w, win_h = cv2.getWindowImageRect(self.window_name)
-                except cv2.error:
-                    win_w, win_h = 0, 0
-                if win_w > 0 and win_h > 0:
-                    h, w = canvas.shape[:2]
-                    ar = w / h
-                    if win_w / win_h > ar:
-                        nw, nh = int(win_h * ar), win_h
+                    try:
+                        _, _, win_w, win_h = cv2.getWindowImageRect(self.window_name)
+                    except cv2.error:
+                        win_w, win_h = 0, 0
+                    if win_w > 0 and win_h > 0:
+                        h, w = canvas.shape[:2]
+                        ar = w / h
+                        if win_w / win_h > ar:
+                            nw, nh = int(win_h * ar), win_h
+                        else:
+                            nw, nh = win_w, int(win_w / ar)
+                        if abs(nw - prev_size[0]) > 2 or abs(nh - prev_size[1]) > 2:
+                            cv2.resizeWindow(self.window_name, nw, nh)
+                            prev_size = (nw, nh)
+                        disp = cv2.resize(canvas, (nw, nh), interpolation=cv2.INTER_AREA)
                     else:
-                        nw, nh = win_w, int(win_w / ar)
-                    if abs(nw - prev_size[0]) > 2 or abs(nh - prev_size[1]) > 2:
-                        cv2.resizeWindow(self.window_name, nw, nh)
-                        prev_size = (nw, nh)
-                    disp = cv2.resize(canvas, (nw, nh), interpolation=cv2.INTER_AREA)
-                else:
-                    disp = canvas
+                        disp = canvas
 
-                with self.lock:
-                    self.last_canvas_shape = canvas.shape[:2]
-                    self.last_display_shape = disp.shape[:2]
-                    self.last_matrix_shape = mat_np.shape
+                    with self.lock:
+                        self.last_canvas_shape = canvas.shape[:2]
+                        self.last_display_shape = disp.shape[:2]
+                        self.last_matrix_shape = mat_np.shape
 
-                cv2.imshow(self.window_name, disp)
-                
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    cv2.imshow(self.window_name, disp)
+                except Exception as e:
+                    exit_reason = f"display_error:{type(e).__name__}"
+                    self.last_display_error = f"{type(e).__name__}: {e}"
+                    self.logger.warning(
+                        "Matrix visualizer '%s' display loop exiting after display error: %s",
+                        self.window_name,
+                        self.last_display_error,
+                    )
+                    break
+
+                key = cv2.waitKey(1)
+                if key != -1 and (key & 0xFF) == ord('q'):
+                    exit_reason = "q_key"
                     self.flag_exit.set()
                     break
+            else:
+                exit_reason = "flag_exit"
         finally:
             self._display_active = False
             self.thread = None
+            self.last_exit_reason = exit_reason
+            self.logger.debug(
+                "Matrix visualizer '%s' display loop exiting: %s",
+                self.window_name,
+                exit_reason,
+            )
             try:
                 cv2.destroyWindow(self.window_name)
             except:
@@ -1176,8 +1253,11 @@ class MatrixVisualizer:
 
 
         # ───── overlay microscope position on the rotated grid ──────
-        stage_pos = self.box.state["xy_stage"]["position"]
-        rc = stage_to_electrode((stage_pos["X"], stage_pos["Y"]))
+        try:
+            stage_pos = self.box.state["xy_stage"]["position"]
+            rc = stage_to_electrode((stage_pos["X"], stage_pos["Y"]))
+        except Exception:
+            rc = None
 
         if rc is not None:
             row_orig, col_orig = rc
@@ -1440,18 +1520,33 @@ class MatrixVisualizer:
 
         # Bring window to front OS gracefully
         try:
-            bring_window_to_front(self.window_name)
+            return bring_window_to_front(self.window_name)
         except Exception:
-            pass
+            return None
+
+    def bring_to_front(self):
+        """Bring the matrix window to the foreground when supported."""
+        return {
+            "window_name": self.window_name,
+            "window_status": self._bring_to_front(),
+        }
 
     # ───────────────────────────── teardown ─────────────────────────────────
     def stop(self):
         self.flag_exit.set()
         current_thread = threading.current_thread()
-        if self.thread and self.thread is not current_thread:
-            self.thread.join(timeout=1.0)
 
         try:
-            cv2.destroyWindow(self.window_name)
+            request_window_close(self.window_name)
         except Exception:
             pass
+
+        if self.thread and self.thread is not current_thread and self.thread.is_alive():
+            self.thread.join(timeout=0.75)
+            if self.thread.is_alive():
+                self.logger.warning(
+                    "Display thread for %s did not stop before timeout",
+                    self.window_name,
+                )
+        self.thread = None
+        self._display_active = False

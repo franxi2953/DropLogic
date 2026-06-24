@@ -1,0 +1,59 @@
+{
+  "name": "boxmini_default",
+  "system": "boxmini",
+  "version": 1,
+  "notes": "TODO-FRAN: short description of the cartridge.",
+  "matrix": {
+    "rows": 128,
+    "columns": 128
+  },
+  "coordinate_system": {
+    "origin": "top-left",
+    "row_direction": "down",
+    "column_direction": "right"
+  },
+  "input_holes": [
+    {
+      "id": "left_upper",
+      "role": "manual_injection",
+      "side": "left",
+      "electrode_region": {
+        "column": 0,
+        "rows": [42, 45]
+      },
+      "notes": "Upper left-side injection hole band."
+    },
+    {
+      "id": "left_lower",
+      "role": "manual_injection",
+      "side": "left",
+      "electrode_region": {
+        "column": 0,
+        "rows": [82, 85]
+      },
+      "notes": "Lower left-side injection hole band."
+    },
+    {
+      "id": "right_upper",
+      "role": "manual_injection",
+      "side": "right",
+      "electrode_region": {
+        "column": 127,
+        "rows": [42, 45]
+      },
+      "notes": "Upper right-side injection hole band."
+    },
+    {
+      "id": "right_lower",
+      "role": "manual_injection",
+      "side": "right",
+      "electrode_region": {
+        "column": 127,
+        "rows": [82, 85]
+      },
+      "notes": "Lower right-side injection hole band."
+    }
+  ],
+  "usable_regions": [],
+  "no_go_regions": []
+}

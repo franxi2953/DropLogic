@@ -38,7 +38,7 @@ The extra installs the `mcp` package and enables the `droplogic-mcp` command.
 For a local desktop MCP client, use `stdio`:
 
 ```bash
-droplogic-mcp --transport stdio --load-system simulator
+droplogic-mcp --transport stdio
 ```
 
 For a remote MCP client or a long-running local daemon, use the HTTP transport:
@@ -47,20 +47,21 @@ For a remote MCP client or a long-running local daemon, use the HTTP transport:
 droplogic-mcp \
   --transport streamable-http \
   --host 127.0.0.1 \
-  --port 8765 \
-  --load-system simulator
+  --port 8765
 ```
 
-By default, the server can load the simulator only. Real hardware must be enabled explicitly:
+The server starts idle. It does not instantiate a simulator, DMLite, or BOXMini until an agent calls `load_system(...)`.
+
+By default, the server can load the simulator only. Real hardware must be enabled explicitly, but this still does not open hardware at startup:
 
 ```bash
-droplogic-mcp --allow-real-hardware --load-system dmlite
+droplogic-mcp --allow-real-hardware
 ```
 
 Raw state writes and raw module operations are also disabled by default:
 
 ```bash
-droplogic-mcp --allow-real-hardware --allow-unsafe-tools --load-system boxmini
+droplogic-mcp --allow-real-hardware --allow-unsafe-tools
 ```
 
 Use `--allow-unsafe-tools` only for supervised debugging.
@@ -99,7 +100,7 @@ Use these to load systems and inspect the server:
 | `read_state` | Read all state or a dotted path such as `electrode_matrix.voltage` |
 | `emergency_stop` | Stop execution, clear queues, and optionally deactivate electrodes |
 
-`capabilities()` is the best first call for an agent because available modules depend on the loaded system.
+When the server starts, no system is loaded. Use `load_system(...)` to create one, `close_system()` to release it, and `restart_system(...)` only after an observed failure. `capabilities()` is useful after loading because available modules depend on the active system.
 
 ### Droplet And Planning Tools
 
@@ -291,6 +292,7 @@ A simple simulator workflow looks like this:
 6. start_plan(frame_delay=0.5, verify_positions=false)
 7. executor_status()
 8. save_protocol(output_path="runs/example.pkl")
+9. close_system()
 ```
 
 For real hardware, keep the same shape but start the server with `--allow-real-hardware` and use the appropriate system name.
@@ -321,7 +323,6 @@ Important flags:
 | `--transport streamable-http` | HTTP MCP server |
 | `--host` / `--port` | HTTP bind address |
 | `--config` | Path to `config.json` |
-| `--load-system` | Optional startup system |
 | `--allow-real-hardware` | Permit DMLite or BOXMini loading |
 | `--allow-unsafe-tools` | Permit raw state writes and raw module tools |
 | `--snapshots-dir` | Where visualizer snapshots are saved |

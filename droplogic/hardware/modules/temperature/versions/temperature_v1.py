@@ -25,6 +25,7 @@ class TemperatureV1:
     DEFAULT_P = 26
     DEFAULT_I = 1
     DEFAULT_D = 60
+    DEFAULT_OUTPUT_LIMIT = 85
 
     MIN_TARGET_TEMP_C = 20.0
     MAX_TARGET_TEMP_C = 80.0
@@ -60,11 +61,13 @@ class TemperatureV1:
                 self.disable()
             if set_default_pid_on_init:
                 self.set_default_pid()
+                self.set_default_output_limit()
             self.logger.info(
-                "Temperature V1 ready with PID P=%s I=%s D=%s",
+                "Temperature V1 ready with PID P=%s I=%s D=%s, output limit U=%s",
                 self.DEFAULT_P,
                 self.DEFAULT_I,
                 self.DEFAULT_D,
+                self.DEFAULT_OUTPUT_LIMIT,
             )
         except Exception:
             self.close()
@@ -238,6 +241,21 @@ class TemperatureV1:
         if d is not None:
             responses["D"] = self.send_command(f"SD {float(d):g}")
         return responses
+
+    def set_output_limit(self, limit: int):
+        """Set the controller output limit in the 0-100 range."""
+        limit = int(limit)
+        if not 0 <= limit <= 100:
+            raise ValueError("Temperature output limit must be in the 0-100 range")
+        return self.send_command(f"SU {limit}")
+
+    def get_output_limit(self):
+        """Read the controller output limit."""
+        return self._parse_number_response(self.send_command("RU"))
+
+    def set_default_output_limit(self):
+        """Apply the calibrated BOXMini temperature output limit."""
+        return self.set_output_limit(self.DEFAULT_OUTPUT_LIMIT)
 
     def get_pid(self):
         """Read PID terms from the controller."""

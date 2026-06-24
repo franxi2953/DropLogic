@@ -39,6 +39,24 @@ class TemperatureModule:
         """Applies the controller default PID values."""
         return self.temperature_controller.set_default_pid()
 
+    def set_output_limit(self, limit: int):
+        """Sets the controller output limit when supported."""
+        if not hasattr(self.temperature_controller, "set_output_limit"):
+            raise NotImplementedError("This temperature controller does not support output limits")
+        return self.temperature_controller.set_output_limit(limit)
+
+    def get_output_limit(self):
+        """Reads the controller output limit when supported."""
+        if not hasattr(self.temperature_controller, "get_output_limit"):
+            raise NotImplementedError("This temperature controller does not support output limits")
+        return self.temperature_controller.get_output_limit()
+
+    def set_default_output_limit(self):
+        """Applies the calibrated controller output limit when supported."""
+        if not hasattr(self.temperature_controller, "set_default_output_limit"):
+            raise NotImplementedError("This temperature controller does not support output limits")
+        return self.temperature_controller.set_default_output_limit()
+
     def disable(self):
         """Disables the temperature control loop."""
         return self.temperature_controller.disable()

@@ -7,7 +7,21 @@ all DropLogic modules with configurable levels and consistent formatting.
 
 import logging
 import os
+import tempfile
 from typing import Optional
+
+
+def _default_log_file() -> str:
+    """Return a writable default log path independent of the process cwd."""
+    configured = os.environ.get("DROPLOGIC_LOG_FILE")
+    if configured:
+        return os.path.abspath(os.path.expanduser(configured))
+
+    root = (
+        os.environ.get("DROPLOGIC_LOG_DIR")
+        or os.path.join(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(), "DropLogic", "logs")
+    )
+    return os.path.join(os.path.abspath(os.path.expanduser(root)), "droplogic_debug.log")
 
 
 def setup_droplogic_logger(
@@ -22,14 +36,18 @@ def setup_droplogic_logger(
     Args:
         name: Logger name (typically module name like 'droplogic.advanced_drop.sipp')
         level: Logging level (default: ERROR for production use)
-        log_file: Optional log file path (default: 'droplogic_debug.log')
+        log_file: Optional log file path. Defaults to a user-writable
+                  DropLogic log directory, or DROPLOGIC_LOG_FILE when set.
         console_output: Whether to output to console (default: True)
     
     Returns:
         Configured logger instance
     """
     if log_file is None:
-        log_file = 'droplogic_debug.log'
+        log_file = _default_log_file()
+    else:
+        log_file = os.path.abspath(os.path.expanduser(log_file))
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
     
     if level is None:
         level = logging.INFO

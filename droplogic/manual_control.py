@@ -93,6 +93,7 @@ adjusting_electrode_position = False  # Tracks if we are setting electrode posit
 electrode_input = ""                  # Stores user input for electrode row,
 
 streamer = None
+streamer_source = "Microscope"
 box = None
 close_lock = threading.Lock()
 closed = False
@@ -155,6 +156,66 @@ def get_chip_origin_position():
         "Z": int(round(float(origin["Z"]))),
     }
 
+
+def get_streamer_source_name():
+    """Return the currently selected StreamerVisualizer device label."""
+    if box is None or not getattr(box, "visualizers", None):
+        return "N/A"
+    stream = getattr(box.visualizers, "streamer", None)
+    if stream is None:
+        return "N/A"
+    device = getattr(stream, "device", None)
+    if device is getattr(box, "microscope", None):
+        return "Microscope"
+    if device is getattr(box, "camera", None):
+        return "Camera"
+    return type(device).__name__ if device is not None else "None"
+
+
+def set_streamer_source(source):
+    """Switch the main StreamerVisualizer between microscope and camera."""
+    global streamer_source
+
+    if box is None or not getattr(box, "visualizers", None):
+        console.print("[bold red]No BOXMini visualizers available[/]")
+        return False
+
+    stream = getattr(box.visualizers, "streamer", None)
+    if stream is None:
+        console.print("[bold red]No streamer visualizer available[/]")
+        return False
+
+    source = source.lower()
+    if source == "microscope":
+        device = getattr(box, "microscope", None)
+        if device is None:
+            console.print("[bold red]Microscope is not available[/]")
+            return False
+        stream.set_device(device)
+        stream.electrode_overlay = True
+        streamer_source = "Microscope"
+    elif source == "camera":
+        device = getattr(box, "camera", None)
+        if device is None:
+            console.print("[bold red]Camera is not available[/]")
+            return False
+        stream.set_device(device)
+        stream.electrode_overlay = False
+        streamer_source = "Camera"
+    else:
+        raise ValueError("source must be 'microscope' or 'camera'")
+
+    console.print(f"[bold green]Streamer source: {streamer_source}[/]")
+    return True
+
+
+def toggle_streamer_source():
+    """Toggle the main StreamerVisualizer source."""
+    current = get_streamer_source_name()
+    target = "camera" if current == "Microscope" else "microscope"
+    return set_streamer_source(target)
+
+
 def get_status_panel():
     global speed
     """Generates the status panel displaying current settings."""
@@ -198,6 +259,7 @@ def get_status_panel():
         f"[bold cyan]Status[/bold cyan]\n"
         f"[bold magenta]Position:[/bold magenta] X={POSITION['X']}, Y={POSITION['Y']}, Z={POSITION['Z']}\n"
         f"[bold magenta]Speed:[/bold magenta] {box.state['xy_stage']['motion_params']['dMaxV']} mm/s\n"
+        f"[bold magenta]Streamer:[/bold magenta] {get_streamer_source_name()}\n"
         f"{light_info}\n"
         f"[bold green]Channel:[/] {box.state['microscope_settings']['current_channel']}\n"
         f"{exposure_info}\n"
@@ -264,11 +326,12 @@ def get_controls_panel():
         "[bold blue]M : Move to default position[/]\n"
         "[bold blue]D : Show camera coordinates[/]\n"
         "[bold blue]P : Toggle electrode overlay[/]\n\n"
+        "[bold blue]V : Toggle streamer microscope/camera[/]\n\n"
         "[bold blue]1, 2, 3, 4 : Set movement speed[/]\n\n"
         "[bold magenta]Lighting:[/]\n"
         "[bold blue]C : Adjust Coaxial Light[/]\n"
         "[bold blue]R : Adjust Ring Light[/]\n"
-        "[bold blue]L : Adjust Tarjet Exposure[/]\n"
+        "[bold blue]L : Adjust Exposure Time[/]\n"
         "[bold blue]G : Adjust Analog Gain[/]\n\n"
         "[bold magenta]Temperature:[/]\n"
         "[bold blue]T : Set Target Temperature[/]\n\n"
@@ -596,6 +659,7 @@ def debug_key_window():
         ('E (Electrode)', ord('E')),
         ('D (Dot)', ord('D')),
         ('P (Pointer)', ord('P')),
+        ('V (View)', ord('V')),
         ('M (Move)', ord('M')),
         ('L (Light)', ord('L')),
         ('G (Gain)', ord('G')),
@@ -819,15 +883,13 @@ def monitor_key_states():
 # Main Control Stage
 # -----------------------------------------------------------------------------
 def control_stage():
-    """Runs the manual control interface while streaming both the camera and microscope."""
+    """Run manual control while the main streamer can toggle microscope/camera."""
 
     # Set auto exposure for microscope via centralized update logic
     box.update_state("microscope_settings.auto_exposure", False)
     box.update_state("camera_settings.auto_exposure", False)
 
-    # Start streaming threads for camera and microscope.
-    threads.append(threading.Thread(target=stream_camera, args=(box.camera, "Camera Stream"), daemon=True))
-    # threads.append(threading.Thread(target=stream_camera, args=(box, "Microscope Stream"), daemon=True))
+    # The main StreamerVisualizer can be toggled between microscope and camera with V.
     threads.append(threading.Thread(target=stream_camera, args=(0, "Device Stream", True), daemon=True))  # System webcam
 
     for thread in threads:
@@ -900,6 +962,12 @@ def control_stage():
                         console.print("[bold red]No streamer visualizer available[/]")
                 except Exception as e:
                     console.print(f"[bold red]Error toggling electrode overlay: {e}[/]")
+
+            if is_key_just_pressed(ord('V')) and not adjusting_light and not adjusting_temperature and not adjusting_exposure and not adjusting_gain and not adjusting_electrode_position:
+                try:
+                    toggle_streamer_source()
+                except Exception as e:
+                    console.print(f"[bold red]Error toggling streamer source: {e}[/]")
             
             if is_key_just_pressed(ord('M')) and not adjusting_light and not adjusting_temperature and not adjusting_exposure and not adjusting_gain and not adjusting_electrode_position:
                 queue_hardware_command("update_state", ("xy_stage.position", get_chip_origin_position()))
@@ -1198,6 +1266,7 @@ def run():
         closed = False
         config_path = resolve_config_path()
         box = BOXMini(config_file=str(config_path))  # Create a new instance each time run() is called
+        set_streamer_source("microscope")
         box.visualizers.streamer.start()
         clear_screen()
         # Main loop!

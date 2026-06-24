@@ -38,7 +38,7 @@ Ese extra instala el paquete `mcp` y habilita el comando `droplogic-mcp`.
 Para un cliente MCP local de escritorio, usa `stdio`:
 
 ```bash
-droplogic-mcp --transport stdio --load-system simulator
+droplogic-mcp --transport stdio
 ```
 
 Para un cliente remoto o un daemon local de larga duracion, usa transporte HTTP:
@@ -47,20 +47,21 @@ Para un cliente remoto o un daemon local de larga duracion, usa transporte HTTP:
 droplogic-mcp \
   --transport streamable-http \
   --host 127.0.0.1 \
-  --port 8765 \
-  --load-system simulator
+  --port 8765
 ```
 
-Por defecto, el servidor solo puede cargar el simulador. El hardware real debe habilitarse explicitamente:
+El servidor arranca en reposo. No instancia simulador, DMLite ni BOXMini hasta que un agente llama `load_system(...)`.
+
+Por defecto, el servidor solo puede cargar el simulador. El hardware real debe habilitarse explicitamente, pero eso tampoco abre hardware al arrancar:
 
 ```bash
-droplogic-mcp --allow-real-hardware --load-system dmlite
+droplogic-mcp --allow-real-hardware
 ```
 
 Las escrituras crudas de estado y operaciones crudas de modulos tambien estan deshabilitadas por defecto:
 
 ```bash
-droplogic-mcp --allow-real-hardware --allow-unsafe-tools --load-system boxmini
+droplogic-mcp --allow-real-hardware --allow-unsafe-tools
 ```
 
 Usa `--allow-unsafe-tools` solo para depuracion supervisada.
@@ -97,7 +98,7 @@ El servidor expone varios grupos de tools.
 | `read_state` | Lee todo el estado o una ruta como `electrode_matrix.voltage` |
 | `emergency_stop` | Para ejecucion, limpia colas y opcionalmente apaga electrodos |
 
-`capabilities()` deberia ser la primera llamada de un agente, porque los modulos disponibles dependen del sistema cargado.
+Cuando el servidor arranca, no hay ningun sistema cargado. Usa `load_system(...)` para crear uno, `close_system()` para liberarlo y `restart_system(...)` solo tras un fallo observado. `capabilities()` es util despues de cargar, porque los modulos disponibles dependen del sistema activo.
 
 ### Gotas Y Planificacion
 
@@ -279,6 +280,7 @@ Un flujo sencillo con simulador:
 6. start_plan(frame_delay=0.5, verify_positions=false)
 7. executor_status()
 8. save_protocol(output_path="runs/example.pkl")
+9. close_system()
 ```
 
 Para hardware real, manten el mismo flujo, pero arranca el servidor con `--allow-real-hardware` y usa el sistema adecuado.
@@ -309,7 +311,6 @@ Flags importantes:
 | `--transport streamable-http` | Servidor MCP HTTP |
 | `--host` / `--port` | Direccion HTTP |
 | `--config` | Ruta a `config.json` |
-| `--load-system` | Sistema inicial opcional |
 | `--allow-real-hardware` | Permite cargar DMLite o BOXMini |
 | `--allow-unsafe-tools` | Permite escrituras crudas y tools crudas |
 | `--snapshots-dir` | Directorio para snapshots |

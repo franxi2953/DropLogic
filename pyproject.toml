@@ -28,13 +28,12 @@ classifiers = [
 dependencies = [
     "rich",
     "numpy",
-    "opencv-python",
+    "opencv-python>=4.8",
     "pyserial",
     "asciichartpy",
     "ultralytics",
     "pygame",
     "pynput",
-    "easyocr",
     "matplotlib",
     "pillow",
     "crcmod",
@@ -46,10 +45,14 @@ dependencies = [
 droplogic-doctor = "droplogic.utils.doctor:run_doctor"
 droplogic-mcp = "droplogic.mcp.server:main"
 droplogic-manual-control = "droplogic.manual_control:main"
+droplogic-calibrate-stage = "droplogic.calibration_tool:main"
 
 [project.optional-dependencies]
 agent = [
     "mcp>=1.8",
+]
+ocr = [
+    "easyocr",
 ]
 
 [tool.setuptools.packages.find]
@@ -60,4 +63,6 @@ include = ["droplogic*"]
 droplogic = [
     "vendors_bin/**/*",
     "utils/drop_vision/models/*.pt",
+    "mcp/context/*",
+    "mcp/context/**/*",
 ]

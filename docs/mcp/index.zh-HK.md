@@ -38,7 +38,7 @@ pip install -e ".[agent]"
 本地 desktop MCP client 使用 `stdio`：
 
 ```bash
-droplogic-mcp --transport stdio --load-system simulator
+droplogic-mcp --transport stdio
 ```
 
 遠程 MCP client 或長期運行嘅本地 daemon 使用 HTTP transport：
@@ -47,20 +47,19 @@ droplogic-mcp --transport stdio --load-system simulator
 droplogic-mcp \
   --transport streamable-http \
   --host 127.0.0.1 \
-  --port 8765 \
-  --load-system simulator
+  --port 8765
 ```
 
 預設情況下 server 只可以載入 simulator。真實硬件必須明確啟用：
 
 ```bash
-droplogic-mcp --allow-real-hardware --load-system dmlite
+droplogic-mcp --allow-real-hardware
 ```
 
 raw state writes 同 raw module operations 預設亦被停用：
 
 ```bash
-droplogic-mcp --allow-real-hardware --allow-unsafe-tools --load-system boxmini
+droplogic-mcp --allow-real-hardware --allow-unsafe-tools
 ```
 
 `--allow-unsafe-tools` 只應該喺有人監督嘅除錯中使用。

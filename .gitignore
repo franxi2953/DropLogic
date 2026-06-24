@@ -15,6 +15,7 @@ env/
 
 # Resultados de pruebas o experimentales
 runs/
+results/
 test_images/
 melting_results/
 sdk_reverse/

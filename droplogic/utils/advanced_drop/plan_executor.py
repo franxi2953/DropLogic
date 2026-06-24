@@ -100,11 +100,20 @@ class PlanExecutor:
 
         # Manual stage-follow override from matrix visualizer clicks
         self.stage_focus_cycle_length = 5
+        self.stage_tracking_mode = "follow_droplets"
+        self.fixed_stage_position: Optional[Dict[str, int]] = None
         self.manual_stage_target: Optional[Tuple[int, int]] = None
         self.manual_stage_target_expires_at: Optional[int] = None
         self.manual_stage_command_id = 0
         self.stage_motion_lock = threading.Lock()
         self.last_stage_target_position = None
+        self.last_frame_index = None
+        self.last_frame_started_at = None
+        self.last_frame_finished_at = None
+        self.last_frame_duration_seconds = None
+        self.last_frame_error = None
+        self.last_matrix_queue_wait = None
+        self._active_frame_started_at = None
         
         # Save file path for pkl updates
         self.save_file_path = None
@@ -169,7 +178,9 @@ class PlanExecutor:
         return self.stop_event.is_set() or execution_completed or (not thread_alive and not self.state.is_executing)
 
     def start(self, plan=None, frame_delay=1.0, verify_positions=True, enable_visualizers=False, save_to_file=None,
-              record_matrix=False, record_streamer=False, matrix_filename=None, streamer_filename=None):
+              record_matrix=False, record_streamer=False, matrix_filename=None, streamer_filename=None,
+              stage_tracking_mode="follow_droplets", fixed_stage_position=None,
+              fixed_stage_ready=False):
         """
         Start asynchronous execution of a plan.
 
@@ -183,6 +194,9 @@ class PlanExecutor:
             record_streamer: Whether to record streamer visualizer to video file
             matrix_filename: Custom filename for matrix recording (auto-generated if None)
             streamer_filename: Custom filename for streamer recording (auto-generated if None)
+            stage_tracking_mode: "follow_droplets" follows active droplets; "fixed_stage" keeps the stage fixed
+            fixed_stage_position: XYZ stage position used when stage_tracking_mode is "fixed_stage"
+            fixed_stage_ready: True when the caller already moved and verified fixed_stage_position
         """
         deferred_foreground_visualizer = None
         with self.execution_lock:
@@ -191,12 +205,31 @@ class PlanExecutor:
                 self.stop()
                 time.sleep(0.2)  # Brief pause to ensure clean shutdown
 
-            logger.info(f"Starting plan execution with frame_delay={frame_delay}, verify_positions={verify_positions}, save_to_file={save_to_file}, record_matrix={record_matrix}, record_streamer={record_streamer}")
+            stage_tracking_mode = self._normalize_stage_tracking_mode(stage_tracking_mode)
+            if stage_tracking_mode == "fixed_stage" and verify_positions:
+                logger.warning(
+                    "Disabling verify_positions for fixed-stage execution; "
+                    "droplet verification moves the stage and changes imaging settings."
+                )
+                verify_positions = False
+
+            logger.info(
+                f"Starting plan execution with frame_delay={frame_delay}, "
+                f"verify_positions={verify_positions}, save_to_file={save_to_file}, "
+                f"record_matrix={record_matrix}, record_streamer={record_streamer}, "
+                f"stage_tracking_mode={stage_tracking_mode}"
+            )
 
             # Update execution parameters
             self.frame_delay = frame_delay
             self.verify_positions = verify_positions
             self.enable_visualizers = enable_visualizers
+            self.breakpoint_reached.clear()
+            self.configure_stage_tracking(
+                stage_tracking_mode,
+                fixed_stage_position=fixed_stage_position,
+                move_now=False,
+            )
 
             # Set plan and related components
             if plan is not None:
@@ -302,6 +335,20 @@ class PlanExecutor:
             # Start keyboard listener if enabled
             if self.enable_keyboard_pause and msvcrt:
                 self._start_keyboard_listener()
+
+            if self.stage_tracking_mode == "fixed_stage" and self.fixed_stage_position is not None:
+                if fixed_stage_ready:
+                    self.last_stage_target_position = self.fixed_stage_position.copy()
+                    logger.debug(
+                        "Fixed stage position already prepared by caller: %s",
+                        self.fixed_stage_position,
+                    )
+                else:
+                    self._move_stage_to_stage_position(
+                        frame_idx=-1,
+                        target_id="fixed_stage_start",
+                        stage_position=self.fixed_stage_position,
+                    )
 
             # Start execution thread
             self.stop_event.clear()
@@ -485,6 +532,14 @@ class PlanExecutor:
     def set_manual_stage_target(self, electrode_pos: Tuple[int, int]):
         """Override stage following with a user-selected electrode for one focus cycle."""
         with self.execution_lock:
+            if self.stage_tracking_mode != "follow_droplets":
+                logger.info(
+                    "Ignoring manual stage target %s because stage_tracking_mode=%s",
+                    electrode_pos,
+                    self.stage_tracking_mode,
+                )
+                return
+
             self.manual_stage_target = electrode_pos
             self.manual_stage_target_expires_at = self.state.current_frame + self.stage_focus_cycle_length
             self.manual_stage_command_id += 1
@@ -530,6 +585,107 @@ class PlanExecutor:
             return all(self.system.xy_stage.is_motion_complete(axis) for axis in ['X', 'Y', 'Z'])
         except Exception:
             return False
+
+    def _read_stage_position(self):
+        """Read the current logical XYZ stage position when available."""
+        if not hasattr(self.system, 'xy_stage') or self.system.xy_stage is None:
+            return None
+        if not hasattr(self.system.xy_stage, "get_position"):
+            return None
+
+        values = {}
+        for axis in ("X", "Y", "Z"):
+            try:
+                position = self.system.xy_stage.get_position(axis)
+            except Exception:
+                return None
+            if position is None:
+                return None
+            values[axis] = int(position)
+        return values
+
+    def _stage_positions_close(self, target, actual, tolerance_steps: int = 100) -> bool:
+        if target is None or actual is None:
+            return False
+        try:
+            return all(
+                abs(int(actual[axis]) - int(target[axis])) <= int(tolerance_steps)
+                for axis in ("X", "Y", "Z")
+                if axis in target and axis in actual
+            )
+        except Exception:
+            return False
+
+    def _wait_for_hardware_queue_empty(
+        self,
+        priority_names=None,
+        timeout_seconds: float = 5.0,
+        poll_interval: float = 0.02,
+        since_timestamp: float = None,
+    ) -> Dict[str, Any]:
+        """Wait until queued hardware commands for selected priorities are processed."""
+        if not hasattr(self.system, "get_queue_status"):
+            return {"ok": True, "pending_commands": 0, "queues": {}}
+
+        selected = {name.upper() for name in priority_names} if priority_names else None
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        poll_interval = max(0.01, float(poll_interval))
+        last_status = {}
+
+        while True:
+            try:
+                last_status = self.system.get_queue_status()
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "pending_commands": None,
+                    "error": str(exc),
+                    "queues": {},
+                }
+
+            pending = 0
+            command_errors = []
+            for name, item in last_status.items():
+                if selected is not None and str(name).upper() not in selected:
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                command_error = item.get("last_command_error")
+                if command_error:
+                    processed_at = command_error.get("processed_at")
+                    if since_timestamp is None or processed_at is None or float(processed_at) >= float(since_timestamp):
+                        command_errors.append(command_error)
+                pending += int(
+                    item.get(
+                        "unfinished_tasks",
+                        item.get("queue_size", 0),
+                    )
+                    or 0
+                )
+
+            if pending <= 0:
+                if command_errors:
+                    return {
+                        "ok": False,
+                        "pending_commands": 0,
+                        "hardware_errors": command_errors,
+                        "queues": last_status,
+                    }
+                return {
+                    "ok": True,
+                    "pending_commands": 0,
+                    "queues": last_status,
+                }
+
+            if time.monotonic() >= deadline:
+                return {
+                    "ok": False,
+                    "pending_commands": pending,
+                    "timed_out": True,
+                    "queues": last_status,
+                }
+
+            time.sleep(poll_interval)
 
     def pause(self):
         """Pause the current execution."""
@@ -583,8 +739,71 @@ class PlanExecutor:
                 'progress': (self.state.frames_executed / self.state.total_frames * 100) if self.state.total_frames > 0 else 0,
                 'last_update': self.state.last_update,
                 'breakpoints': list(self.breakpoints),
-                'breakpoint_reached': self.breakpoint_reached.is_set()
+                'breakpoint_reached': self.breakpoint_reached.is_set(),
+                'stage_tracking_mode': self.stage_tracking_mode,
+                'fixed_stage_position': self.fixed_stage_position,
+                'verify_positions': self.verify_positions,
+                'last_stage_target_position': self.last_stage_target_position,
+                'last_frame': {
+                    'index': self.last_frame_index,
+                    'started_at': self.last_frame_started_at,
+                    'finished_at': self.last_frame_finished_at,
+                    'duration_seconds': self.last_frame_duration_seconds,
+                    'error': self.last_frame_error,
+                    'matrix_queue_wait': self.last_matrix_queue_wait,
+                },
             }
+
+    def configure_stage_tracking(self, mode="follow_droplets", fixed_stage_position=None, move_now=False):
+        """Configure how the executor handles stage motion during plan execution."""
+        normalized_mode = self._normalize_stage_tracking_mode(mode)
+        normalized_position = (
+            self._normalize_stage_position(fixed_stage_position)
+            if fixed_stage_position is not None
+            else None
+        )
+
+        if normalized_mode == "fixed_stage" and normalized_position is None:
+            raise ValueError("fixed_stage mode requires fixed_stage_position")
+
+        with self.execution_lock:
+            self.stage_tracking_mode = normalized_mode
+            self.fixed_stage_position = normalized_position
+            if normalized_mode != "follow_droplets":
+                self.manual_stage_target = None
+                self.manual_stage_target_expires_at = None
+
+        if move_now and normalized_mode == "fixed_stage":
+            self._move_stage_to_stage_position(
+                frame_idx=self.state.current_frame,
+                target_id="fixed_stage",
+                stage_position=normalized_position,
+            )
+
+    def _normalize_stage_tracking_mode(self, mode):
+        name = (mode or "follow_droplets").strip().lower()
+        if name in {"follow", "follow_droplets", "track", "track_droplets", "droplet_tracking"}:
+            return "follow_droplets"
+        if name in {"fixed", "fixed_stage", "whole_chip_camera", "camera_overview", "overview"}:
+            return "fixed_stage"
+        raise ValueError("stage_tracking_mode must be follow_droplets or fixed_stage")
+
+    def _normalize_stage_position(self, position):
+        if position is None:
+            return None
+        if isinstance(position, dict):
+            return {
+                "X": int(round(float(position["X"]))),
+                "Y": int(round(float(position["Y"]))),
+                "Z": int(round(float(position["Z"]))),
+            }
+        if isinstance(position, (list, tuple)) and len(position) >= 3:
+            return {
+                "X": int(round(float(position[0]))),
+                "Y": int(round(float(position[1]))),
+                "Z": int(round(float(position[2]))),
+            }
+        raise ValueError("fixed_stage_position must be a dict with X/Y/Z or a 3-item sequence")
 
     def _start_keyboard_listener(self):
         """Start the keyboard listener thread."""
@@ -934,6 +1153,15 @@ class PlanExecutor:
     def _execute_frame(self, frame_idx: int):
         """Execute a single frame."""
         
+        frame_started_at = time.time()
+        self.last_frame_index = frame_idx
+        self.last_frame_started_at = frame_started_at
+        self.last_frame_finished_at = None
+        self.last_frame_duration_seconds = None
+        self.last_frame_error = None
+        self.last_matrix_queue_wait = None
+        self._active_frame_started_at = frame_started_at
+
         try:
             # _t0 = time.time()
             
@@ -973,13 +1201,24 @@ class PlanExecutor:
 
             # Apply frame to hardware
             self.system.update_state("electrode_matrix.matrix", frame_matrix)
-            
+            matrix_queue_wait = self._wait_for_hardware_queue_empty(
+                priority_names=("HIGH",),
+                timeout_seconds=max(2.0, min(10.0, self.frame_delay + 2.0)),
+                since_timestamp=frame_started_at,
+            )
+            self.last_matrix_queue_wait = matrix_queue_wait
+            if not matrix_queue_wait.get("ok", False):
+                raise RuntimeError(
+                    "Frame %s matrix update did not drain before continuing: %s"
+                    % (frame_idx, matrix_queue_wait)
+                )
+
             # _t3 = time.time()
             # print(f"  [Time] Matrix/Hardware update: {(_t3 - _t2)*1000:.2f} ms")
 
             # Handle stage movements for active droplets
             self._handle_stage_movements(frame_idx, active_droplets)
-            
+
             # _t4 = time.time()
             # print(f"  [Time] Stage movements: {(_t4 - _t3)*1000:.2f} ms")
 
@@ -991,14 +1230,14 @@ class PlanExecutor:
                 self._handle_visualization()
 
             self._record_executor_synced_visualizer_frames()
-                   
+
             # _t5 = time.time()
             # print(f"  [Time] Vis & Pos updates: {(_t5 - _t4)*1000:.2f} ms")
 
             # Handle verification
             if self.validator and self.verify_positions:
                 self._handle_verification(frame_idx)
-                
+
             # _t6 = time.time()
             # print(f"  [Time] Verification: {(_t6 - _t5)*1000:.2f} ms")
 
@@ -1009,9 +1248,25 @@ class PlanExecutor:
             else:
                 ids_str = f"{active_ids[:5]}...{active_ids[-5:]}"
             logger.debug(f"Executed frame {frame_idx} with {len(active_droplets)} active droplets: {ids_str}")
+            self.last_frame_finished_at = time.time()
+            self.last_frame_duration_seconds = round(
+                self.last_frame_finished_at - frame_started_at,
+                3,
+            )
 
         except Exception as e:
+            finished_at = time.time()
+            self.last_frame_finished_at = finished_at
+            self.last_frame_duration_seconds = round(finished_at - frame_started_at, 3)
+            self.last_frame_error = {
+                "type": type(e).__name__,
+                "message": str(e),
+            }
             logger.error(f"Frame execution error at {frame_idx}: {e}")
+            with self.execution_lock:
+                self.state.is_executing = False
+            self.stop_event.set()
+            raise
 
     def _update_droplet_positions(self, frame_idx: int, active_droplets=None):
         """Update droplet positions based on current frame."""
@@ -1079,6 +1334,9 @@ class PlanExecutor:
 
     def _handle_stage_movements(self, frame_idx: int, active_droplets):
         """Handle stage movements to follow active droplets that have moved since the previous frame."""
+        if self.stage_tracking_mode != "follow_droplets":
+            return
+
         # If we are paused at a breakpoint, do not interfere with manual stage targeting.
         if self.breakpoint_reached.is_set():
             return
@@ -1150,27 +1408,51 @@ class PlanExecutor:
 
     def _move_stage_to_target(self, frame_idx: int, target_id, target_position):
         """Move the stage to a selected target and wait for motion completion."""
+        stage_position = self._electrode_to_stage_position(target_position)
+        self._move_stage_to_stage_position(frame_idx, target_id, stage_position)
+
+    def _move_stage_to_stage_position(self, frame_idx: int, target_id, stage_position):
+        """Move the stage to an explicit XYZ position and wait for motion completion."""
         with self.stage_motion_lock:
             try:
-                stage_position = self._electrode_to_stage_position(target_position)
-                
                 has_stage = hasattr(self.system, "xy_stage")
                 is_mock = type(self.system).__name__ == "Simulator"
                 
                 if stage_position and has_stage:
+                    stage_position = self._normalize_stage_position(stage_position)
+                    actual_stage_position = self._read_stage_position()
+                    if self._stage_positions_close(stage_position, actual_stage_position) and self._is_stage_idle():
+                        self.last_stage_target_position = stage_position.copy()
+                        logger.debug(
+                            f"Frame {frame_idx}: Stage already physically at target {target_id} -> {stage_position}"
+                        )
+                        return
+
                     if self.last_stage_target_position == stage_position and self._is_stage_idle():
                         logger.debug(
                             f"Frame {frame_idx}: Stage already at target {target_id} -> {stage_position}, skipping move"
                         )
                         return
 
+                    motion_complete = False
+                    timeout = 10.0  # 10 second timeout
+
                     # Move stage to follow the droplet if we aren't paused at a breakpoint
                     if not self.breakpoint_reached.is_set():
+                        stage_command_started_at = time.time()
                         self.system.update_state("xy_stage.position", stage_position)
                         self.last_stage_target_position = stage_position.copy()
-
-                        timeout = 10.0  # 10 second timeout
-                        motion_complete = False
+                        queue_wait = self._wait_for_hardware_queue_empty(
+                            priority_names=("HIGH",),
+                            timeout_seconds=2.0,
+                            since_timestamp=stage_command_started_at,
+                        )
+                        if not queue_wait.get("ok", False):
+                            logger.warning(
+                                "Stage command for target %s did not drain before motion polling: %s",
+                                target_id,
+                                queue_wait,
+                            )
 
                         if is_mock:
                             motion_complete = True
@@ -1198,7 +1480,7 @@ class PlanExecutor:
                             if wait_time_after > 0:
                                 time.sleep(wait_time_after)
 
-                    logger.debug(f"Frame {frame_idx}: Stage following target {target_id} at electrode {target_position} -> stage {stage_position}")
+                    logger.debug(f"Frame {frame_idx}: Stage target {target_id} -> stage {stage_position}")
             except Exception as e:
                 logger.warning(f"Failed to move stage for target {target_id}: {e}")
 

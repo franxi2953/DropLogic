@@ -28,12 +28,12 @@ class BOXMini(DropSystem):
 
     _instance = None
     
-    def __new__(cls, config_file="config.json", log_level=logging.INFO):
+    def __new__(cls, config_file="config.json", log_level=logging.INFO, reset_matrix=False):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, config_file="config.json", log_level=logging.INFO):
+    def __init__(self, config_file="config.json", log_level=logging.INFO, reset_matrix=False):
         if isinstance(log_level, str):
             log_level = getattr(logging, log_level.upper(), logging.INFO)
         
@@ -44,18 +44,28 @@ class BOXMini(DropSystem):
                 handler.setLevel(log_level)
             from ..utils.logging_config import set_droplogic_logging_level
             set_droplogic_logging_level(log_level)
+            if reset_matrix:
+                rows = self.state.get("electrode_matrix", {}).get("rows", 128)
+                columns = self.state.get("electrode_matrix", {}).get("columns", 128)
+                matrix, _ = self._get_initial_electrode_matrix(rows, columns, reset_matrix=True)
+                self.update_state("electrode_matrix.matrix", matrix, priority=Priority.HIGH)
             return  # Already initialized
         
         super().__init__("BOXMini", state_file=config_file, log_level=log_level)
         with self._state_lock:
             self._state.setdefault("temperature", {})["version"] = self.TEMPERATURE_VERSION
+            self._mark_state_dirty_locked()
         self.logger.info("BOXMini initialization started")
 
         # Initialize electrode matrix from state
         electrode_config = self.state.get("electrode_matrix", {})
         rows = electrode_config.get("rows", 128)
         columns = electrode_config.get("columns", 128)
-        electrode_config["matrix"] = np.zeros((rows, columns))
+        initial_matrix, matrix_source = self._get_initial_electrode_matrix(
+            rows,
+            columns,
+            reset_matrix=reset_matrix,
+        )
         version = electrode_config.get("version", "DMLite")
         voltage = int(electrode_config.get("voltage", 55))
 
@@ -89,11 +99,13 @@ class BOXMini(DropSystem):
         self.camera = CameraModule(self, self.state.get("camera_settings", {}).get("version", "CameraV1"))
         self.temperature = TemperatureModule(self, self.temperature_serial, self.TEMPERATURE_VERSION)
 
-        #initialize matrix as a 0 matrix
-        rows = self.state["electrode_matrix"]["rows"]
-        cols = self.state["electrode_matrix"]["columns"]
-        matrix = np.zeros((rows, cols), int).tolist()
-        self.update_state("electrode_matrix.matrix", matrix)
+        self.update_state("electrode_matrix.matrix", initial_matrix, priority=Priority.HIGH)
+        active_electrodes = int(np.count_nonzero(np.asarray(initial_matrix)))
+        self.logger.info(
+            "Electrode matrix initialized from %s with %s active electrodes",
+            matrix_source,
+            active_electrodes,
+        )
 
         # Initialize temperature update thread
         self._temperature_update_thread = None
