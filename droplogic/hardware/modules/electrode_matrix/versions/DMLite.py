@@ -130,7 +130,11 @@ def _bind_sdk_signatures(sdk):
     sdk.InquireVolt.restype = ctypes.c_int
     sdk.InquireVolt.argtypes = [ctypes.POINTER(ctypes.c_int)] * 9
 
-    sdk.ActivateElec.restype = ctypes.c_bool
+    # The DMLite SDK follows the same convention as the other exported
+    # functions here: 0 means success. Treating this as c_bool turns a
+    # successful activation into False and makes the executor report a fake
+    # hardware fault after the electrodes have already changed.
+    sdk.ActivateElec.restype = ctypes.c_int
     sdk.ActivateElec.argtypes = [
         ctypes.c_int,
         ctypes.c_int,
@@ -357,14 +361,16 @@ class DMLite:
         else:
             drops_array = (Drop * 1)()
 
-        result = microfluidics.ActivateElec(
+        result = int(microfluidics.ActivateElec(
             self.rows,
             self.columns,
             len(active_drops),
             drops_array,
-        )
-        if active_drops and not result:
-            raise RuntimeError("ActivateElec failed")
+        ))
+        if result < 0:
+            raise RuntimeError(f"ActivateElec failed with code {result}")
+        if result > 0 and self.debug:
+            self.logger.warning("DMLite ActivateElec returned non-zero status %s", result)
         return True
 
     def _update_device_state(self):

@@ -1,4 +1,5 @@
 from droplogic.utils.window_manager import bring_window_to_front, request_window_close
+import ctypes
 import time
 import cv2
 import threading
@@ -37,6 +38,54 @@ def _resolve_host_platform(box):
 # ————————————————————————————————————————————————
 # 1) StreamerVisualizer: streams from a device + optional processor
 # ————————————————————————————————————————————————
+
+def _primary_screen_size(default=(1920, 1080)):
+    if platform.system() == "Windows":
+        try:
+            user32 = ctypes.windll.user32
+            width = int(user32.GetSystemMetrics(0))
+            height = int(user32.GetSystemMetrics(1))
+            if width > 0 and height > 0:
+                return width, height
+        except Exception:
+            pass
+
+    return default
+
+
+def _initial_visualizer_window_rect(role):
+    screen_w, screen_h = _primary_screen_size()
+    margin = 24
+    gap = 12
+    pane_w = max(480, min(1100, screen_w // 2 - margin * 2))
+    available_h = max(420, screen_h - margin * 2 - gap)
+
+    streamer_h = int(available_h * 0.62)
+    streamer_h = max(320, min(streamer_h, available_h - 220))
+    matrix_h = max(220, available_h - streamer_h)
+    if streamer_h + matrix_h > available_h:
+        matrix_h = max(180, available_h - streamer_h)
+    if streamer_h + matrix_h > available_h:
+        streamer_h = max(240, available_h - matrix_h)
+
+    x = margin
+    if role == "streamer":
+        return x, margin, pane_w, streamer_h
+
+    return x, margin + streamer_h + gap, pane_w, matrix_h
+
+
+def _apply_initial_visualizer_window_layout(window_name, role, logger=None):
+    try:
+        x, y, width, height = _initial_visualizer_window_rect(role)
+        cv2.resizeWindow(window_name, width, height)
+        cv2.moveWindow(window_name, x, y)
+        return True
+    except Exception as exc:
+        if logger is not None:
+            logger.debug("Could not apply %s visualizer window layout: %s", role, exc)
+        return False
+
 
 class StreamerVisualizer:
     def __init__(self,
@@ -239,6 +288,7 @@ class StreamerVisualizer:
         try:
             try:
                 cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+                _apply_initial_visualizer_window_layout(self.window_name, "streamer", self.logger)
             except Exception as e:
                 self.logger.warning(f"Failed to create window '{self.window_name}': {e}")
                 return
@@ -879,6 +929,7 @@ class MatrixVisualizer:
         self.electrode_click_callback = None
         self.last_canvas_shape = None
         self.last_display_shape = None
+        self.last_display_offset = (0, 0)
         self.last_matrix_shape = None
         self.last_exit_reason = None
         self.last_display_error = None
@@ -1038,7 +1089,8 @@ class MatrixVisualizer:
         try:
             try:
                 cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
-                cv2.resizeWindow(self.window_name, *self.matrix_size)
+                if not _apply_initial_visualizer_window_layout(self.window_name, "matrix", self.logger):
+                    cv2.resizeWindow(self.window_name, *self.matrix_size)
             except Exception as e:
                 self.logger.warning(f"[Visualizer] Failed to create '{self.window_name}' window: {e}")
                 exit_reason = "window_create_failed"
@@ -1050,7 +1102,6 @@ class MatrixVisualizer:
 
             cv2.setMouseCallback(self.window_name, self._handle_mouse_event)
 
-            prev_size = (0, 0)
             while not self.flag_exit.is_set():
                 if stop_condition is not None and stop_condition():
                     exit_reason = "stop_condition"
@@ -1093,16 +1144,22 @@ class MatrixVisualizer:
                             nw, nh = int(win_h * ar), win_h
                         else:
                             nw, nh = win_w, int(win_w / ar)
-                        if abs(nw - prev_size[0]) > 2 or abs(nh - prev_size[1]) > 2:
-                            cv2.resizeWindow(self.window_name, nw, nh)
-                            prev_size = (nw, nh)
-                        disp = cv2.resize(canvas, (nw, nh), interpolation=cv2.INTER_AREA)
+                        resized = cv2.resize(canvas, (nw, nh), interpolation=cv2.INTER_AREA)
+                        disp = np.zeros((win_h, win_w, 3), dtype=np.uint8)
+                        x_offset = (win_w - nw) // 2
+                        y_offset = (win_h - nh) // 2
+                        disp[y_offset:y_offset + nh, x_offset:x_offset + nw] = resized
+                        display_shape = (nh, nw)
+                        display_offset = (x_offset, y_offset)
                     else:
                         disp = canvas
+                        display_shape = disp.shape[:2]
+                        display_offset = (0, 0)
 
                     with self.lock:
                         self.last_canvas_shape = canvas.shape[:2]
-                        self.last_display_shape = disp.shape[:2]
+                        self.last_display_shape = display_shape
+                        self.last_display_offset = display_offset
                         self.last_matrix_shape = mat_np.shape
 
                     cv2.imshow(self.window_name, disp)
@@ -1383,6 +1440,7 @@ class MatrixVisualizer:
         with self.lock:
             canvas_shape = self.last_canvas_shape
             display_shape = self.last_display_shape
+            display_offset = self.last_display_offset
             matrix_shape = self.last_matrix_shape
             matrix_rotation_degrees = self.matrix_rotation_degrees
 
@@ -1394,6 +1452,12 @@ class MatrixVisualizer:
         rows_orig, cols_orig = matrix_shape
 
         if display_h <= 0 or display_w <= 0 or rows_orig <= 0 or cols_orig <= 0:
+            return None
+
+        offset_x, offset_y = display_offset
+        x -= offset_x
+        y -= offset_y
+        if x < 0 or y < 0 or x >= display_w or y >= display_h:
             return None
 
         scale_x = canvas_w / display_w
