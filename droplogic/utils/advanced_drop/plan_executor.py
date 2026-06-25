@@ -114,6 +114,8 @@ class PlanExecutor:
         self.last_frame_error = None
         self.last_matrix_queue_wait = None
         self._active_frame_started_at = None
+        self.matrix_update_attempts = 2
+        self.matrix_update_retry_delay_seconds = 0.25
         
         # Save file path for pkl updates
         self.save_file_path = None
@@ -687,6 +689,62 @@ class PlanExecutor:
 
             time.sleep(poll_interval)
 
+    def _apply_frame_matrix_with_retry(self, frame_idx: int, frame_matrix, frame_started_at: float) -> Dict[str, Any]:
+        """Apply one matrix frame, retrying short-lived queue/hardware failures."""
+        attempts = max(1, int(getattr(self, "matrix_update_attempts", 2) or 1))
+        retry_delay = max(0.0, float(getattr(self, "matrix_update_retry_delay_seconds", 0.25) or 0.0))
+        timeout_seconds = max(2.0, min(10.0, self.frame_delay + 2.0))
+        attempt_results = []
+
+        for attempt in range(1, attempts + 1):
+            attempt_started_at = time.time()
+            self.system.update_state("electrode_matrix.matrix", frame_matrix)
+            queue_wait = self._wait_for_hardware_queue_empty(
+                priority_names=("HIGH",),
+                timeout_seconds=timeout_seconds,
+                since_timestamp=attempt_started_at,
+            )
+            attempt_result = {
+                "attempt": attempt,
+                "started_at": attempt_started_at,
+                "queue_wait": queue_wait,
+            }
+            attempt_results.append(attempt_result)
+
+            if queue_wait.get("ok", False):
+                if attempt > 1:
+                    logger.warning(
+                        "Frame %s matrix update succeeded on retry attempt %s/%s",
+                        frame_idx,
+                        attempt,
+                        attempts,
+                    )
+                return {
+                    "ok": True,
+                    "attempts": attempt_results,
+                    "successful_attempt": attempt,
+                    "queue_wait": queue_wait,
+                    "frame_started_at": frame_started_at,
+                }
+
+            logger.warning(
+                "Frame %s matrix update attempt %s/%s failed: %s",
+                frame_idx,
+                attempt,
+                attempts,
+                queue_wait,
+            )
+            if attempt < attempts and retry_delay > 0:
+                time.sleep(retry_delay)
+
+        return {
+            "ok": False,
+            "attempts": attempt_results,
+            "successful_attempt": None,
+            "queue_wait": attempt_results[-1]["queue_wait"] if attempt_results else None,
+            "frame_started_at": frame_started_at,
+        }
+
     def pause(self):
         """Pause the current execution."""
         with self.execution_lock:
@@ -1199,17 +1257,18 @@ class PlanExecutor:
 
             frame_matrix = self.current_plan.frames[frame_idx]
 
-            # Apply frame to hardware
-            self.system.update_state("electrode_matrix.matrix", frame_matrix)
-            matrix_queue_wait = self._wait_for_hardware_queue_empty(
-                priority_names=("HIGH",),
-                timeout_seconds=max(2.0, min(10.0, self.frame_delay + 2.0)),
-                since_timestamp=frame_started_at,
+            # Apply frame to hardware. A single False can be a transient
+            # driver/queue hiccup, so retry the exact same frame once before
+            # halting. Persistent failures still stop execution.
+            matrix_queue_wait = self._apply_frame_matrix_with_retry(
+                frame_idx,
+                frame_matrix,
+                frame_started_at,
             )
             self.last_matrix_queue_wait = matrix_queue_wait
             if not matrix_queue_wait.get("ok", False):
                 raise RuntimeError(
-                    "Frame %s matrix update did not drain before continuing: %s"
+                    "Frame %s matrix update failed after retry: %s"
                     % (frame_idx, matrix_queue_wait)
                 )
 

@@ -24,6 +24,7 @@ class HardwareCommand:
     value: Any
     priority: 'Priority'
     timestamp: float
+    previous_value: Any = None
 
 class Priority(Enum):
     """Command priority levels with processing intervals."""
@@ -311,6 +312,44 @@ class DropSystem(ABC):
                 matrix_state["matrix"] = matrix_array.tolist()
                 self._mark_state_dirty_locked()
 
+    def _values_equal(self, a: Any, b: Any) -> bool:
+        """Compare possibly numpy-backed state values."""
+        try:
+            if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+                return bool(np.array_equal(np.asarray(a), np.asarray(b)))
+            return a == b
+        except Exception:
+            return False
+
+    def _get_state_path_locked(self, path: str):
+        keys = path.split('.')
+        current = self._state
+        for key in keys:
+            current = current[key]
+        return current
+
+    def _set_state_path_locked(self, path: str, value: Any) -> None:
+        keys = path.split('.')
+        current = self._state
+        for key in keys[:-1]:
+            current = current[key]
+        current[keys[-1]] = copy.deepcopy(value)
+
+    def _restore_state_after_failed_command(self, cmd: HardwareCommand) -> None:
+        """Roll back optimistic state when a hardware command fails.
+
+        If another command has already changed the same path, skip rollback so a
+        stale failure cannot overwrite newer intent.
+        """
+        with self._state_lock:
+            try:
+                current_value = self._get_state_path_locked(cmd.path)
+            except Exception:
+                return
+            if not self._values_equal(current_value, cmd.value):
+                return
+            self._set_state_path_locked(cmd.path, cmd.previous_value)
+
     def _get_initial_electrode_matrix(
         self,
         rows: int,
@@ -389,6 +428,7 @@ class DropSystem(ABC):
                 }
                 self._last_hardware_command_error[priority.name] = None
             except Exception as e:
+                self._restore_state_after_failed_command(cmd)
                 self.logger.error(f"Worker {priority.name} error: {e}")
                 self._last_hardware_command[priority.name] = {
                     "path": cmd.path,
@@ -421,16 +461,45 @@ class DropSystem(ABC):
             current = self._state
             for key in keys[:-1]:
                 current = current[key]  # Assume path exists
+            previous_value = copy.deepcopy(current.get(keys[-1]))
             current[keys[-1]] = state_value
         
         # Determine priority and enqueue hardware command
         if priority is None:
             priority = self._determine_command_priority(path)
         
-        cmd = HardwareCommand(path=path, value=command_value, priority=priority, timestamp=time.time())
+        cmd = HardwareCommand(
+            path=path,
+            value=command_value,
+            priority=priority,
+            timestamp=time.time(),
+            previous_value=previous_value,
+        )
         self._hardware_queues[priority].put(cmd)
 
         return {'success': True, 'key': path, 'actual_value': copy.deepcopy(state_value), 'changed': True}
+
+    def set_cached_state(self, path: str, value: Any):
+        """Update in-memory state without sending a hardware command.
+
+        Use this for readback/telemetry values such as measured temperature or
+        stage position. Commanded hardware state should still use update_state().
+        """
+        state_value = copy.deepcopy(value)
+        with self._state_lock:
+            keys = path.split('.')
+            current = self._state
+            for key in keys[:-1]:
+                current = current.setdefault(key, {})
+            current[keys[-1]] = state_value
+
+        return {
+            'success': True,
+            'key': path,
+            'actual_value': copy.deepcopy(state_value),
+            'changed': True,
+            'cached_only': True,
+        }
     
     def _determine_command_priority(self, path: str) -> Priority:
         """Determine command priority based on path. Override in child classes."""

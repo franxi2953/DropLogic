@@ -699,7 +699,7 @@ class BOXMini(DropSystem):
                     with self._temperature_lock:
                         temp = self.temperature.get_temperature()
                     if temp is not None:
-                        self.update_state("temperature.current", temp)
+                        self.set_cached_state("temperature.current", temp)
             except TemperatureSafetyError:
                 self.logger.exception("Temperature safety fault in temperature update thread")
                 self.emergency_stop()

@@ -2119,7 +2119,8 @@ class DropLogicMCPRuntime:
                 "--allow-unsafe-tools if you intentionally want to expose it."
             )
 
-        module_instance = getattr(self.require_system(), module_key, None)
+        system = self.require_system()
+        module_instance = getattr(system, module_key, None)
         if module_instance is None:
             raise DropLogicMCPError(f"Loaded system has no module '{module}'.")
         func = getattr(module_instance, method, None)
@@ -2143,6 +2144,22 @@ class DropLogicMCPRuntime:
 
         try:
             result = func(**(arguments or {}))
+            if module_key == "temperature" and method == "get_temperature" and result is None:
+                return {
+                    "ok": False,
+                    "busy": False,
+                    "module": module_key,
+                    "method": method,
+                    "result": None,
+                    "read_failed": True,
+                    "error": "temperature.get_temperature returned no valid reading",
+                }
+            if module_key == "temperature" and method == "get_temperature" and result is not None:
+                try:
+                    if hasattr(system, "set_cached_state"):
+                        system.set_cached_state("temperature.current", result)
+                except Exception:
+                    pass
             return {
                 "ok": True,
                 "busy": False,

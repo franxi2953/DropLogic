@@ -39,6 +39,8 @@ Tool boundaries:
 - Use `read_state(path="...")` for exact values. Useful paths: `temperature`, `temperature.current`, `xy_stage.position`, `xy_stage.position.Y`, `light_settings`, `microscope_settings`, `camera_settings`, `electrode_matrix.voltage`, `electrode_matrix.matrix`, and `calibration`.
 - Avoid `read_state()` with no path unless the user really needs the full raw state.
 - State reads are cached snapshots. For fresh measurements, call the relevant module method, such as `module_call(module="temperature", method="get_temperature")`, then read state if needed.
+- Cached telemetry such as `temperature.current` is not a hardware command. Do not interpret an old cached value as proof that a fresh temperature read succeeded.
+- If a fresh `temperature.get_temperature` returns `read_failed`, retry once after a short pause before declaring the temperature module unavailable, unless a safety fault is reported.
 
 ## Visualizers
 - For real BoxMini runs, prepare both visualizers early unless the user says not to. `load_system(system="boxmini")` should auto-prepare them without forcing OS focus; if they are not visible, call `visualizer_status`, then `bring_visualizer_to_front("streamer")` or `bring_visualizer_to_front("matrix")`.
@@ -140,6 +142,7 @@ NOTE: By default, execute every real-hardware action immediately after planning 
 - In `whole_chip_camera`, execution should not move the XY stage frame-by-frame and should not change the camera/light preset. If frames take far longer than `frame_delay`, the view goes black, the stage moves, or light changes, pause/stop and inspect diagnostics; do not declare the slow pace normal.
 - If the stage moves but the matrix visualizer or physical matrix does not update, stop or pause immediately. Inspect `executor_status`, `runtime_status` queue state, `state_summary(path="electrode_matrix.matrix")`, and `visualizer_status` before continuing.
 - Empty hardware queues only mean there are no pending commands; they do not prove that the last command succeeded. If execution is unexpectedly slow or the active matrix is not changing, inspect `executor_status.last_frame`, `runtime_status.system.queues.*.last_command_error`, and the logs before calling the pace normal.
+- The executor retries a failed `electrode_matrix.matrix` frame write once with the same frame. If `executor_status.last_frame.matrix_queue_wait.successful_attempt` is set, report the transient retry but do not treat hardware as dead. If all attempts fail, stop and diagnose before any manual retry.
 - Do not verify every frame. Use visual/model feedback after injection/reservoir setup, extraction batches, split/merge operations, recovery moves, and before long unattended imaging.
 - Droplet visual checks are reliable only for droplets up to `2 x 2` electrodes. For larger reservoirs or irregular shapes, use human inspection, saved frames, or protocol-specific checks.
 - For slow/risky moves, prefer breakpoints and explicit confirmation over unchecked execution.
