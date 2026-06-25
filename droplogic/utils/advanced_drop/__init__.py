@@ -671,6 +671,7 @@ class AdvancedDrop:
                             linear_space_per_row: Optional[int] = None,
                             linear_drop_shape: Optional[Union[Tuple[int,int], Set[Tuple[int,int]]]] = None,
                             linear_direction: Optional[Tuple[int,int]] = None,
+                            linear_vital_space: Optional[int] = None,
                             remove_duplicate_frames: bool = False,
                             **kwargs):
         """
@@ -703,6 +704,7 @@ class AdvancedDrop:
             linear_space_per_row: Electrode spacing between rows in linear mode
             linear_drop_shape: Shape of droplets in linear mode
             linear_direction: Direction tuple (dr, dc) for linear sweep
+            linear_vital_space: Vital-space assigned to droplets created in linear mode
 
         Returns:
             List of IDs of newly created droplets
@@ -726,6 +728,7 @@ class AdvancedDrop:
             linear_space_per_row=linear_space_per_row,
             linear_drop_shape=linear_drop_shape,
             linear_direction=linear_direction,
+            linear_vital_space=linear_vital_space,
             **kwargs
         )
 

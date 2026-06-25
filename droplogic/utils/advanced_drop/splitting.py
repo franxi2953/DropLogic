@@ -42,7 +42,7 @@ UTILITY FUNCTIONS:                # Low-level operations
 from typing import List, Tuple, Optional, Dict, Set, Union
 from dataclasses import dataclass
 from copy import deepcopy
-from .common import Droplet, DropletPlan, create_droplet, get_droplet_positions, relax_droplet_shape, next_event_id, tag_frame_span
+from .common import Droplet, DropletPlan, create_droplet, get_droplet_positions, relax_droplet_shape, next_event_id, tag_frame_span, check_vital_space_conflict
 import numpy as np
 
 
@@ -70,6 +70,7 @@ def reservoir_extraction(
     linear_space_per_row: Optional[int] = None,
     linear_drop_shape: Optional[Union[Tuple[int,int], Set[Tuple[int,int]]]] = None,
     linear_direction: Optional[Tuple[int,int]] = None,
+    linear_vital_space: Optional[int] = None,
 ) -> Tuple[List[Droplet], DropletPlan]:
     """
     Extract a droplet from a reservoir (core splitting function).
@@ -125,6 +126,10 @@ def reservoir_extraction(
     if reservoir_droplet is None:
         raise ValueError(f"Reservoir droplet with id {reservoir_droplet_id} not found")
 
+    linear_shape = (linear_drop_shape if linear_drop_shape is not None else (1, 1))
+    inferred_linear_space = _default_linear_spacing_for_shape(linear_shape)
+    inferred_vital_space = max(int(getattr(reservoir_droplet, "vital_space", 1) or 1), inferred_linear_space)
+
     # Make a deep copy of the existing plan to avoid accidental in-place mutation
     existing_plan_copy = deepcopy(existing_plan) if existing_plan is not None else None
 
@@ -149,10 +154,11 @@ def reservoir_extraction(
             cfg_obj = LinearConfig(
                 drops_number=(linear_drops_number if linear_drops_number is not None else 1),
                 offset=(linear_offset if linear_offset is not None else 0),
-                space_per_col=(linear_space_per_col or 1),
-                space_per_row=(linear_space_per_row or 1),
-                drop_shape=(linear_drop_shape if linear_drop_shape is not None else (1, 1)),
-                direction=(linear_direction if linear_direction is not None else (1, 0))
+                space_per_col=(linear_space_per_col if linear_space_per_col is not None else inferred_linear_space),
+                space_per_row=(linear_space_per_row if linear_space_per_row is not None else inferred_linear_space),
+                drop_shape=linear_shape,
+                direction=(linear_direction if linear_direction is not None else (1, 0)),
+                droplet_vital_space=(linear_vital_space if linear_vital_space is not None else inferred_vital_space),
             )
 
         updated_droplets, new_plan = _split_linear(
@@ -1231,6 +1237,26 @@ class LinearConfig:
     offset: int = 0    # starting offset from the reservoir
     drop_shape: Union[Tuple[int,int], Set[Tuple[int,int]]] = (1,1)
     direction: Tuple[int,int] = (1,0)
+    droplet_vital_space: Optional[int] = None
+
+
+def _linear_drop_dimensions(drop_shape: Union[Tuple[int,int], Set[Tuple[int,int]]]) -> Tuple[int, int]:
+    if isinstance(drop_shape, (tuple, list)):
+        if len(drop_shape) != 2:
+            raise ValueError("drop_shape tuple must be (height, width).")
+        return int(drop_shape[0]), int(drop_shape[1])
+
+    if not drop_shape:
+        raise ValueError("drop_shape set cannot be empty.")
+
+    rows = [int(row) for row, _ in drop_shape]
+    cols = [int(col) for _, col in drop_shape]
+    return max(rows) - min(rows) + 1, max(cols) - min(cols) + 1
+
+
+def _default_linear_spacing_for_shape(drop_shape: Union[Tuple[int,int], Set[Tuple[int,int]]]) -> int:
+    height, width = _linear_drop_dimensions(drop_shape)
+    return 2 if height > 1 or width > 1 else 1
 
 
 def _validate_linear_cfg(cfg: LinearConfig, logger) -> None:
@@ -1241,13 +1267,15 @@ def _validate_linear_cfg(cfg: LinearConfig, logger) -> None:
         raise ValueError("space_per_row must be a positive integer.")
     if cfg.space_per_col <= 0:
         raise ValueError("space_per_col must be a positive integer.")
-    if not (isinstance(cfg.drop_shape, tuple) or isinstance(cfg.drop_shape, set)):
-        raise ValueError("drop_shape must be either a tuple (height, width) or a set of (row, col) offsets.")
-    if isinstance(cfg.drop_shape, tuple):
+    if cfg.droplet_vital_space is not None and cfg.droplet_vital_space < 0:
+        raise ValueError("droplet_vital_space must be a non-negative integer.")
+    if not (isinstance(cfg.drop_shape, (tuple, list)) or isinstance(cfg.drop_shape, set)):
+        raise ValueError("drop_shape must be either a tuple/list (height, width) or a set of (row, col) offsets.")
+    if isinstance(cfg.drop_shape, (tuple, list)):
         if len(cfg.drop_shape) != 2 or not all(isinstance(x, int) and x > 0 for x in cfg.drop_shape):
-            raise ValueError("If drop_shape is a tuple, it must be of the form (height, width) with positive integers.")
-    if not (isinstance(cfg.direction, tuple) and len(cfg.direction) == 2 and all(isinstance(x, int) for x in cfg.direction)):
-        raise ValueError("direction must be a tuple of two integers (row_direction, column_direction).")
+            raise ValueError("If drop_shape is a tuple/list, it must be of the form (height, width) with positive integers.")
+    if not (isinstance(cfg.direction, (tuple, list)) and len(cfg.direction) == 2 and all(isinstance(x, int) for x in cfg.direction)):
+        raise ValueError("direction must be a tuple/list of two integers (row_direction, column_direction).")
 
     logger.debug("LinearConfig validated successfully.")
 
@@ -1324,7 +1352,7 @@ def _split_linear(
             reservoir_droplet.origin_corner[1]
         )
     elif cfg.direction[1] < 0:  # moving left
-        if isinstance(cfg.drop_shape, tuple):
+        if isinstance(cfg.drop_shape, (tuple, list)):
             drop_width = cfg.drop_shape[1]
         else:
             drop_width = max(dy for dx, dy in cfg.drop_shape) + 1
@@ -1352,9 +1380,15 @@ def _split_linear(
     droplet_id_counter = max((d.id for d in droplets), default=0) + 1
     current_origin = list(initial_droplet_origin)
     column_row_counter = 0  # to track when to apply offset
+    created_linear_droplets: List[Droplet] = []
+    extracted_vital_space = (
+        cfg.droplet_vital_space
+        if cfg.droplet_vital_space is not None
+        else reservoir_droplet.vital_space
+    )
     while created_droplets < cfg.drops_number:
         # Create droplet shape
-        if isinstance(cfg.drop_shape, tuple):
+        if isinstance(cfg.drop_shape, (tuple, list)):
             drop_height, drop_width = cfg.drop_shape
             drop_shape = {(r, c) for r in range(drop_height) for c in range(drop_width)}
         else:
@@ -1367,9 +1401,23 @@ def _split_linear(
             target=tuple(current_origin),
             shape=drop_shape,
             priority=reservoir_droplet.priority,
-            vital_space=reservoir_droplet.vital_space
+            vital_space=extracted_vital_space
         )
+        for existing_droplet in created_linear_droplets:
+            if check_vital_space_conflict(
+                existing_droplet,
+                existing_droplet.origin_corner,
+                new_droplet,
+                new_droplet.origin_corner,
+            ):
+                raise ValueError(
+                    "Linear extraction generated droplets closer than their vital space: "
+                    f"droplet {existing_droplet.id} at {existing_droplet.origin_corner} and "
+                    f"droplet {new_droplet.id} at {new_droplet.origin_corner}. "
+                    "Increase linear_space_per_row/linear_space_per_col or reduce linear_vital_space."
+                )
         droplets.append(new_droplet)
+        created_linear_droplets.append(new_droplet)
         new_plan.droplet_trajectories[new_droplet.id] = [new_droplet.origin_corner]
         created_droplets += 1
         droplet_id_counter += 1
