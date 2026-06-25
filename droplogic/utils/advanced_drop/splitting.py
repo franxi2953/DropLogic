@@ -1429,11 +1429,7 @@ def _split_linear(
             # Check if fits in reservoir vertically
             res_top_row, res_bottom_row, res_left_col, res_right_col = get_droplet_bounds(reservoir_droplet, reservoir_droplet.origin_corner)
 
-            offset_applied = 0
-            if (column_row_counter) % 2 == 1:
-                offset_applied = cfg.offset
-
-            if current_origin[0] + drop_height + offset_applied > res_bottom_row + 1:
+            if current_origin[0] + drop_height > res_bottom_row + 1:
                 # Move to next column
                 column_row_counter += 1
                 current_origin[0] = initial_droplet_origin[0]
@@ -1447,11 +1443,7 @@ def _split_linear(
             # Check if fits in reservoir horizontally
             res_top_row, res_bottom_row, res_left_col, res_right_col = get_droplet_bounds(reservoir_droplet, reservoir_droplet.origin_corner)
 
-            offset_applied = 0
-            if (column_row_counter) % 2 == 1:
-                offset_applied = cfg.offset
-
-            if current_origin[1] + drop_width + offset_applied > res_right_col + 1:
+            if current_origin[1] + drop_width > res_right_col + 1:
                 
                 # Move to next row
                 column_row_counter += 1
