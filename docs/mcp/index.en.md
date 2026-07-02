@@ -102,9 +102,9 @@ Use these to load systems and inspect the server:
 
 When the server starts, no system is loaded. Use `load_system(...)` to create one, `close_system()` to release it, and `restart_system(...)` only after an observed failure. `capabilities()` is useful after loading because available modules depend on the active system.
 
-### Droplet And Planning Tools
+### Droplet Definition Tools
 
-Use these to define droplets and call planning functions:
+Use these to define and edit the logical droplet set:
 
 | Tool | Purpose |
 | --- | --- |
@@ -112,26 +112,41 @@ Use these to define droplets and call planning functions:
 | `add_droplets` | Create many droplets |
 | `delete_droplet` | Remove a droplet from the logical droplet list |
 | `update_droplet_target` | Change a droplet target before planning |
+| `update_droplet_targets` | Change many targets before planning |
 | `update_droplet_position` | Correct the logical current position |
 | `droplets_summary` | Inspect all droplets |
-| `list_advanced_drop_methods` | Show whitelisted `AdvancedDrop` methods |
-| `advanced_drop_call` | Call a whitelisted `AdvancedDrop` method |
+
+### Planning Primitive Tools
+
+Use these to add one logical planning primitive to the current plan. They do not execute hardware. The agent should plan, inspect `plan_summary`, then execute deliberately through `PlanExecutor`.
+
+| Tool | Purpose |
+| --- | --- |
+| `plan_activation_frame` | Append one activation frame for the current droplets |
+| `plan_move` | Plan movement for droplets whose targets differ from their current positions |
+| `plan_reservoir_extraction` | Plan extraction of droplets from a reservoir |
+| `plan_isometric_split` | Plan an isometric split |
+| `plan_mix` | Plan a mixing sequence |
+| `plan_merge` | Plan droplet merge |
+| `planning_job_status` | Poll a background planning job |
+| `cancel_planning_job` | Request cancellation of a background planning job |
 | `plan_summary` | Inspect frame count, events, trajectories, and planning result |
 | `save_protocol` | Save the current plan and droplets to a pickle file |
 
-`advanced_drop_call` currently exposes public planning and correction methods such as `move`, `reservoir_extraction`, `isometric_split`, `mix`, `merge`, `verify_droplets`, `detect_condensates`, `correct_droplet_position`, `clear`, and `push_frame`.
+For large moves or difficult plans, use `background=true` and poll `planning_job_status()` rather than holding one MCP request open.
 
-Example agent call:
+Example move planning call:
 
 ```json
 {
-  "method": "move",
-  "arguments": {
-    "mode": "sipp",
-    "remove_duplicate_frames": false
-  }
+  "mode": "sipp",
+  "remove_duplicate_frames": false,
+  "planning_timeout": 1200,
+  "background": true
 }
 ```
+
+The generic `advanced_drop_call` and `list_advanced_drop_methods` tools are debug-only surfaces exposed only when the server starts with `--allow-unsafe-tools`.
 
 ### Execution Tools
 
@@ -147,7 +162,9 @@ Use these to control `PlanExecutor`:
 | `add_breakpoint` | Pause when a frame is reached |
 | `remove_breakpoint` | Remove one breakpoint |
 | `clear_breakpoints` | Remove all breakpoints |
-| `execute_until_breakpoint` | Block until the next breakpoint or plan completion |
+| `start_execute_until_breakpoint` | Start a background wait for breakpoint/plan completion |
+| `execution_wait_status` | Poll the active or last execution wait |
+| `cancel_execution_wait` | Cancel only the wait job, not physical execution |
 
 Typical execution call:
 
@@ -163,6 +180,23 @@ Typical execution call:
 
 Recording still belongs to `PlanExecutor`, so recorded videos stay synchronized to executed frames.
 
+### State And Scene Tools
+
+Use these when an agent or external app needs structured state rather than an image:
+
+| Tool | Purpose |
+| --- | --- |
+| `state_summary` | Read summarized system state without expanding large arrays |
+| `read_state` | Read one exact small state path |
+| `matrix_summary` | Return exact compact active matrix ranges; zeros are implicit |
+| `execution_scene` | Return compact plan/executor/matrix/droplet scene state |
+
+`execution_scene` combines the pieces most dashboards need: executor cursor, last applied frame, current plan frame summary, active matrix ranges, current event, droplet positions, targets, bounding boxes, and bounded paths. It uses the same compact matrix encoding as `matrix_summary`, so it is safe for normal MCP use. By default it does not return every droplet cell; request `include_droplet_cells=true` only when a client needs those cells and can handle the extra context.
+
+Use `matrix_summary` when the question is only about the electrode matrix. Use `execution_scene` when the question is about how the matrix relates to the plan, executor frame, events, and droplets. Use `visualizer_frame` only when the agent needs pixels.
+
+Raw 128 x 128 matrix reads are guarded because MCP transports can duplicate data in both text and structured payloads. `read_large_state` is only registered when the server starts with `--allow-large-state-tools`; use that only for supervised debugging.
+
 ### Visualizer And Frame Tools
 
 Use these when an agent needs to see the current state:
@@ -171,10 +205,9 @@ Use these when an agent needs to see the current state:
 | --- | --- |
 | `visualizer_status` | Inspect matrix and streamer availability |
 | `visualizer_frame` | Return a current frame as base64 and/or save it to disk |
-| `visualizer_snapshot` | Save a snapshot file |
-| `visualizer_call` | Call a whitelisted visualizer method |
 | `start_visualizer` | Start a visualizer window when supported |
 | `stop_visualizer` | Stop a visualizer window |
+| `bring_visualizer_to_front` | Bring a visualizer window forward when supported |
 
 For matrix state:
 
@@ -204,8 +237,6 @@ The MCP server is not a video streaming server. Agents can poll `visualizer_fram
 
 ### Vision Tools
 
-Vision tools are exposed both directly and through `advanced_drop_call`.
-
 | Tool | Purpose |
 | --- | --- |
 | `verify_droplets` | Check droplet positions for a plan frame |
@@ -230,14 +261,12 @@ Use module tools for system-specific hardware modules:
 | Tool | Purpose |
 | --- | --- |
 | `list_system_modules` | Show loaded modules and whitelisted methods |
-| `module_call` | Call a whitelisted module method |
 | `module_busy_status` | Check whether one module, or all modules, appear busy |
-| `wait_for_module_free` | Wait until a module is free, or return timeout status |
-| `system_call` | Call a whitelisted loaded-system method |
+| `module_call` | Debug/fallback call to a whitelisted module method |
 
-Examples of exposed module surfaces include light intensity, camera exposure, microscope channel, temperature setpoints, XY stage positions, and capacitive feedback.
+Normal workflows should prefer the dedicated stage, light, imaging, temperature, planning, execution, and state tools. `module_call` remains available for supervised low-level reads or operations that do not yet have a dedicated high-level tool.
 
-Raw electrode matrix methods such as `set_chip` are considered unsafe and require `--allow-unsafe-tools`. The private vendor command path, including `send_ascii_command`, is not exposed.
+Raw electrode matrix methods such as `set_chip` are considered unsafe and require `--allow-unsafe-tools`. `system_call`, `set_system_state`, and the generic AdvancedDrop call tools are also debug-only and only registered with `--allow-unsafe-tools`. The private vendor command path, including `send_ascii_command`, is not exposed.
 
 ## Busy Modules And Recovery
 
@@ -247,11 +276,10 @@ Agents should prefer this pattern before direct module calls:
 
 ```text
 1. module_busy_status(module="electrode_matrix")
-2. If busy, wait_for_module_free(module="electrode_matrix", timeout_seconds=30)
-3. module_call(module="electrode_matrix", method="deactivate_all")
+2. If a fallback module call is necessary, call module_call(..., wait_if_busy=true, timeout_seconds=30)
 ```
 
-`module_call` and `system_call` also accept `wait_if_busy`, `timeout_seconds`, and `poll_interval`:
+`module_call` accepts `wait_if_busy`, `timeout_seconds`, and `poll_interval`:
 
 ```json
 {
@@ -287,7 +315,7 @@ A simple simulator workflow looks like this:
 1. load_system(system="simulator")
 2. capabilities()
 3. create_droplet(droplet_id=1, origin=[5, 5], target=[20, 20])
-4. advanced_drop_call(method="move", arguments={"mode": "sipp"})
+4. plan_move(mode="sipp")
 5. visualizer_frame(visualizer="matrix", frame_source="snapshot")
 6. start_plan(frame_delay=0.5, verify_positions=false)
 7. executor_status()

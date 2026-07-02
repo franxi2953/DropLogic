@@ -39,15 +39,15 @@
     },
     "camera_settings": {
         "auto_exposure": true,
-        "exposure_time": 60000,
+        "exposure_time": 72000,
         "version": "CameraV1",
         "gain": 0
     },
     "microscope_settings": {
         "auto_exposure": false,
-        "exposure_time": 10000,
+        "exposure_time": 12000,
         "version": "MicroscopeV1",
-        "gain": 12,
+        "gain": 0,
         "Port": "COM8",
         "total_channels": [
             "FAM",
@@ -84,12 +84,12 @@
                 "channel": "Brightfield",
                 "camera_settings": {
                     "auto_exposure": false,
-                    "exposure_time": 60000,
+                    "exposure_time": 72000,
                     "gain": 0
                 },
                 "light_settings": {
                     "coaxial_intensity": 0,
-                    "ring_intensity": 20
+                    "ring_intensity": 30
                 },
                 "notes": "Wide camera overview position for seeing the full chip."
             }
@@ -101,6 +101,12 @@
         "rows": 128,
         "columns": 128,
         "voltage": 55,
+        "initial_voltages": [
+            60,
+            55,
+            0,
+            0
+        ],
         "matrix": [],
         "version": "DMLite"
     },
@@ -112,22 +118,22 @@
             }
         },
         "chip_origin": {
-            "X": 59417,
-            "Y": 8523,
-            "Z": 10013
+            "X": 59297,
+            "Y": 8554,
+            "Z": 9803
         },
         "electrode_mapping": {
             "offset_x": 0,
             "offset_y": 0,
             "inter_row": [
-                -250.1496062992126,
-                -0.14173228346456693,
-                -4.3700787401574805
+                -250.03149606299212,
+                -0.25984251968503935,
+                -3.9133858267716537
             ],
             "inter_column": [
-                2.0393700787401574,
-                -49.99212598425197,
-                7.283464566929134
+                1.2598425196850394,
+                -50.00787401574803,
+                7.559055118110236
             ]
         },
         "backlash_steps": {

@@ -388,7 +388,10 @@ class BOXMini(DropSystem):
             param_name = path_parts[1]
             
             with self._light_lock:
-                if param_name == "coaxial_intensity":
+                if param_name == "light_on":
+                    self.light.switch_light(bool(value))
+                    return True
+                elif param_name == "coaxial_intensity":
                     self.light.set_coaxial_light(int(value))
                     return True
                 elif param_name == "ring_intensity":

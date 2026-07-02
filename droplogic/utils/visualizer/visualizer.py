@@ -9,6 +9,14 @@ import os
 import platform
 from queue import Queue, Empty
 
+
+def _env_flag(name):
+    return str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _visualizer_windows_enabled():
+    return not (_env_flag("DROPLOGIC_VISUALIZER_HEADLESS") or _env_flag("DROPLOGIC_COCKPIT_MODE"))
+
 # Add the DropLogic library root to the path for proper module imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
 
@@ -131,7 +139,9 @@ class StreamerVisualizer:
         self.display_thread = None
         self.host_platform = _resolve_host_platform(self.box)
         self._display_active = False
+        self._headless_active = False
         self._window_mode = "background"
+        self.window_enabled = _visualizer_windows_enabled()
         self.window_size = (960, 720)
         self.placeholder_frame_shape = (720, 960, 3)
 
@@ -182,7 +192,8 @@ class StreamerVisualizer:
 
     def is_running(self):
         return bool(
-            self._display_active
+            self._headless_active
+            or self._display_active
             or (self.capture_thread is not None and self.capture_thread.is_alive())
             or (self.display_thread is not None and self.display_thread.is_alive())
         )
@@ -190,17 +201,23 @@ class StreamerVisualizer:
     def start(self, stop_condition=None):
         """Start capture immediately and display in the safest mode for the host OS."""
         if self.is_running():
-            if self.auto_bring_to_front:
+            if self.window_enabled and self.auto_bring_to_front:
                 self._bring_to_front()
             return
 
         self.flag_exit.clear()
+        self._headless_active = False
         self.capture_thread = threading.Thread(
             target=self._capture_loop,
             daemon=True,
             name=f"{self.window_name}_capture",
         )
         self.capture_thread.start()
+
+        if not self.window_enabled:
+            self._window_mode = "headless"
+            self._headless_active = True
+            return
 
         if self.requires_main_thread_window():
             self._window_mode = "foreground"
@@ -765,6 +782,8 @@ class StreamerVisualizer:
         return frame
 
     def _bring_to_front(self):
+        if not self.window_enabled:
+            return {"ok": True, "mode": "headless", "message": "OpenCV window disabled."}
 
         # Bring window to front OS gracefully
         try:
@@ -843,12 +862,14 @@ class StreamerVisualizer:
 
     def stop(self):
         self.flag_exit.set()
+        self._headless_active = False
         current_thread = threading.current_thread()
 
-        try:
-            request_window_close(self.window_name)
-        except Exception:
-            pass
+        if self.window_enabled:
+            try:
+                request_window_close(self.window_name)
+            except Exception:
+                pass
 
         for thread_name in ("capture_thread", "display_thread", "thread"):
             thread = getattr(self, thread_name, None)
@@ -905,7 +926,9 @@ class MatrixVisualizer:
         self.thread      = None
         self.host_platform = _resolve_host_platform(self.box)
         self._display_active = False
+        self._headless_active = False
         self._window_mode = "background"
+        self.window_enabled = _visualizer_windows_enabled()
         self.auto_bring_to_front = True
         self.logger = setup_droplogic_logger('droplogic.utils.visualizer', console_output=False)
         
@@ -939,15 +962,21 @@ class MatrixVisualizer:
         return bool(self.host_platform.get("gui_requires_main_thread"))
 
     def is_running(self):
-        return self._display_active or (self.thread is not None and self.thread.is_alive())
+        return self._headless_active or self._display_active or (self.thread is not None and self.thread.is_alive())
 
     def start(self, stop_condition=None):
         if self.is_running():
-            if self.auto_bring_to_front:
+            if self.window_enabled and self.auto_bring_to_front:
                 self._bring_to_front()
             return
 
         self.flag_exit.clear()
+        self._headless_active = False
+        if not self.window_enabled:
+            self._window_mode = "headless"
+            self._headless_active = True
+            return
+
         if self.requires_main_thread_window():
             self._window_mode = "foreground"
             if threading.current_thread() is not threading.main_thread():
@@ -1581,6 +1610,8 @@ class MatrixVisualizer:
 
     # ───────────────────────────── window helper ─────────────────────────────
     def _bring_to_front(self):
+        if not self.window_enabled:
+            return {"ok": True, "mode": "headless", "message": "OpenCV window disabled."}
 
         # Bring window to front OS gracefully
         try:
@@ -1598,12 +1629,14 @@ class MatrixVisualizer:
     # ───────────────────────────── teardown ─────────────────────────────────
     def stop(self):
         self.flag_exit.set()
+        self._headless_active = False
         current_thread = threading.current_thread()
 
-        try:
-            request_window_close(self.window_name)
-        except Exception:
-            pass
+        if self.window_enabled:
+            try:
+                request_window_close(self.window_name)
+            except Exception:
+                pass
 
         if self.thread and self.thread is not current_thread and self.thread.is_alive():
             self.thread.join(timeout=0.75)

@@ -1403,6 +1403,14 @@ def _split_linear(
             priority=reservoir_droplet.priority,
             vital_space=extracted_vital_space
         )
+        new_positions = get_droplet_positions(new_droplet, new_droplet.origin_corner)
+        if not set(new_positions).issubset(original_reservoir_positions):
+            raise ValueError(
+                "Linear extraction generated a droplet outside the reservoir footprint: "
+                f"droplet {new_droplet.id} at {new_droplet.origin_corner}. "
+                "Reduce linear_offset, reduce linear_drops_number, use smaller spacing, "
+                "or choose a larger reservoir/another linear_direction."
+            )
         for existing_droplet in created_linear_droplets:
             if check_vital_space_conflict(
                 existing_droplet,
@@ -1738,6 +1746,18 @@ def _split_linear(
         final_corner = new_plan.droplet_trajectories[reservoir_droplet.id][-1]
         reservoir_droplet.origin_corner = final_corner
         reservoir_droplet.target_corner = final_corner
+
+    missing_active = [
+        d.id
+        for d in created_droplets_list
+        if not any(d.id in active for active in new_plan.active_droplets_per_frame)
+    ]
+    if missing_active:
+        raise ValueError(
+            "Linear extraction failed to activate all created droplets. "
+            f"Inactive droplet ids: {missing_active}. "
+            "Adjust linear_offset, spacing, direction, or reservoir size."
+        )
 
     # for debug, print the length of all trajectories of created droplets (including reservoir) and the length of frames
     # for d in created_droplets_list + [reservoir_droplet]:

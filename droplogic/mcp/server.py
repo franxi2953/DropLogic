@@ -156,7 +156,15 @@ def _redirect_native_stdout_to_stderr():
 def _runtime_call(fn: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
     """Run DropLogic code without letting hardware/library stdout corrupt stdio MCP."""
     with contextlib.redirect_stdout(sys.stderr), _redirect_native_stdout_to_stderr():
-        return fn(*args, **kwargs)
+        result = fn(*args, **kwargs)
+        runtime = getattr(fn, "__self__", None)
+        writer = getattr(runtime, "write_dashboard_scene_snapshot", None)
+        if writer is not None:
+            try:
+                writer()
+            except Exception:
+                pass
+        return result
 
 
 def _import_fastmcp():
@@ -234,9 +242,9 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         )
 
     @mcp.tool()
-    def runtime_status() -> Dict[str, Any]:
+    def runtime_status(detail: str = "compact") -> Dict[str, Any]:
         """Return server, system, executor, plan and droplet status."""
-        return _runtime_call(runtime.status)
+        return _runtime_call(runtime.status, detail=detail)
 
     @mcp.tool()
     def health_check() -> Dict[str, Any]:
@@ -249,14 +257,124 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         return _runtime_call(runtime.capabilities)
 
     @mcp.tool()
-    def read_state(path: Optional[str] = None) -> Dict[str, Any]:
-        """Read the full DropSystem state or a dotted path."""
-        return _runtime_call(runtime.read_state, path)
+    def read_state(
+        path: Optional[str] = None,
+        include_large_values: bool = False,
+    ) -> Dict[str, Any]:
+        """Read DropSystem state safely; large raw values are guarded unless explicitly enabled."""
+        return _runtime_call(
+            runtime.read_state,
+            path,
+            include_large_values=include_large_values,
+        )
 
     @mcp.tool()
     def state_summary(path: Optional[str] = None) -> Dict[str, Any]:
-        """Read a summarized DropSystem state or a dotted path."""
+        """Read a summarized DropSystem state or a dotted path; numeric path parts index lists."""
         return _runtime_call(runtime.state_summary, path)
+
+    @mcp.tool()
+    def matrix_summary(
+        source: str = "state",
+        include_ranges: bool = True,
+        include_active_cells: bool = False,
+        active_cells_limit: int = 512,
+        include_hash: bool = True,
+    ) -> Dict[str, Any]:
+        """Return exact compact active ranges for the latest electrode matrix."""
+        return _runtime_call(
+            runtime.matrix_summary,
+            source=source,
+            include_ranges=include_ranges,
+            include_active_cells=include_active_cells,
+            active_cells_limit=active_cells_limit,
+            include_hash=include_hash,
+        )
+
+    @mcp.tool()
+    def set_matrix_cells(
+        value: int,
+        cells: Optional[List[List[int]]] = None,
+        rectangles: Optional[List[Dict[str, int]]] = None,
+        row_min: Optional[int] = None,
+        row_max: Optional[int] = None,
+        col_min: Optional[int] = None,
+        col_max: Optional[int] = None,
+        wait_for_queue: bool = False,
+        queue_timeout_seconds: float = 5.0,
+    ) -> Dict[str, Any]:
+        """Set logical matrix cells: -1 forbidden, 0 clean/off, 1 permanent ON."""
+        return _runtime_call(
+            runtime.set_matrix_cells,
+            value=value,
+            cells=cells,
+            rectangles=rectangles,
+            row_min=row_min,
+            row_max=row_max,
+            col_min=col_min,
+            col_max=col_max,
+            wait_for_queue=wait_for_queue,
+            queue_timeout_seconds=queue_timeout_seconds,
+        )
+
+    @mcp.tool()
+    def set_calibration(calibration: Dict[str, Any]) -> Dict[str, Any]:
+        """Update the loaded system calibration mapping after operator calibration."""
+        return _runtime_call(runtime.set_calibration, calibration)
+
+    @mcp.tool()
+    def execution_status_summary(
+        include_matrix: bool = True,
+        include_plan: bool = True,
+        include_droplets: bool = True,
+        include_visualizers: bool = False,
+        include_planning_job: bool = True,
+        include_execution_wait: bool = True,
+    ) -> Dict[str, Any]:
+        """Return one compact runtime/executor/plan/droplet/matrix status snapshot."""
+        return _runtime_call(
+            runtime.execution_status_summary,
+            include_matrix=include_matrix,
+            include_plan=include_plan,
+            include_droplets=include_droplets,
+            include_visualizers=include_visualizers,
+            include_planning_job=include_planning_job,
+            include_execution_wait=include_execution_wait,
+        )
+
+    @mcp.tool()
+    def execution_scene(
+        max_path_points: int = 64,
+        include_paths: bool = True,
+        include_droplet_cells: bool = False,
+        max_droplet_cells: int = 0,
+    ) -> Dict[str, Any]:
+        """Return compact plan/executor scene state for reasoning or external rendering."""
+        return _runtime_call(
+            runtime.execution_scene,
+            max_path_points=max_path_points,
+            include_paths=include_paths,
+            include_droplet_cells=include_droplet_cells,
+            max_droplet_cells=max_droplet_cells,
+        )
+
+    @mcp.tool()
+    def dashboard_scene(
+        max_path_points: int = 256,
+        max_droplet_cells: int = 1024,
+    ) -> Dict[str, Any]:
+        """Dashboard internal: return the freshest full dashboard scene; hidden from agents."""
+        return _runtime_call(
+            runtime.dashboard_scene,
+            max_path_points=max_path_points,
+            max_droplet_cells=max_droplet_cells,
+        )
+
+    if getattr(runtime, "allow_large_state_tools", False):
+        @mcp.tool()
+        def read_large_state(path: str) -> Dict[str, Any]:
+            """Debug only: read a guarded large raw state value."""
+            return _runtime_call(runtime.read_large_state, path)
 
     @mcp.tool()
     def context_status() -> Dict[str, Any]:
@@ -273,10 +391,11 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         """Read one agent context file."""
         return _runtime_call(runtime.read_context_file, path)
 
-    @mcp.tool()
-    def set_system_state(path: str, value: Any) -> Dict[str, Any]:
-        """Set a raw DropSystem state path when unsafe tools are enabled."""
-        return _runtime_call(runtime.set_system_state, path, value)
+    if getattr(runtime, "allow_unsafe_tools", False):
+        @mcp.tool()
+        def set_system_state(path: str, value: Any) -> Dict[str, Any]:
+            """Unsafe debug only: set a raw DropSystem state path."""
+            return _runtime_call(runtime.set_system_state, path, value)
 
     @mcp.tool()
     def emergency_stop(deactivate_electrodes: bool = True) -> Dict[str, Any]:
@@ -284,22 +403,6 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         return _runtime_call(
             runtime.emergency_stop,
             deactivate_electrodes=deactivate_electrodes,
-        )
-
-    @mcp.tool()
-    def visualizer_snapshot(
-        visualizer: str = "matrix",
-        output_path: Optional[str] = None,
-        image_format: str = "png",
-        include_base64: bool = False,
-    ) -> Dict[str, Any]:
-        """Save a matrix or streamer visualizer snapshot and optionally return base64."""
-        return _runtime_call(
-            runtime.visualizer_snapshot,
-            visualizer=visualizer,
-            output_path=output_path,
-            image_format=image_format,
-            include_base64=include_base64,
         )
 
     @mcp.tool()
@@ -328,15 +431,6 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
     def visualizer_status() -> Dict[str, Any]:
         """Return matrix and streamer visualizer status."""
         return _runtime_call(runtime.visualizer_status)
-
-    @mcp.tool()
-    def visualizer_call(
-        visualizer: str,
-        method: str,
-        arguments: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """Call a whitelisted visualizer method."""
-        return _runtime_call(runtime.visualizer_call, visualizer, method, arguments or {})
 
     @mcp.tool()
     def start_visualizer(visualizer: str = "matrix") -> Dict[str, Any]:
@@ -392,10 +486,40 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         )
 
     @mcp.tool()
+    def set_light_state(
+        light_on: Optional[bool] = None,
+        coaxial_intensity: Optional[int] = None,
+        ring_intensity: Optional[int] = None,
+        wait_for_queue: bool = True,
+        queue_timeout_seconds: float = 10.0,
+    ) -> Dict[str, Any]:
+        """Set BoxMini light master/coaxial/ring safely; use light_off for all-off."""
+        return _runtime_call(
+            runtime.set_light_state,
+            light_on=light_on,
+            coaxial_intensity=coaxial_intensity,
+            ring_intensity=ring_intensity,
+            wait_for_queue=wait_for_queue,
+            queue_timeout_seconds=queue_timeout_seconds,
+        )
+
+    @mcp.tool()
+    def light_off(
+        wait_for_queue: bool = True,
+        queue_timeout_seconds: float = 10.0,
+    ) -> Dict[str, Any]:
+        """Turn all BoxMini illumination off: coaxial=0, ring=0, master=false."""
+        return _runtime_call(
+            runtime.light_off,
+            wait_for_queue=wait_for_queue,
+            queue_timeout_seconds=queue_timeout_seconds,
+        )
+
+    @mcp.tool()
     def configure_microscope_imaging(
         channel: str = "Brightfield",
-        exposure_time: int = 60000,
-        gain: int = 12,
+        exposure_time: int = 72000,
+        gain: int = 0,
         coaxial_intensity: int = 4,
         ring_intensity: int = 0,
         auto_exposure: bool = False,
@@ -420,6 +544,52 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         )
 
     @mcp.tool()
+    def configure_camera_imaging(
+        exposure_time: int = 72000,
+        gain: int = 0,
+        auto_exposure: bool = False,
+        queue_timeout_seconds: float = 10.0,
+    ) -> Dict[str, Any]:
+        """Configure the primary camera exposure/gain safely."""
+        return _runtime_call(
+            runtime.configure_camera_imaging,
+            exposure_time=exposure_time,
+            gain=gain,
+            auto_exposure=auto_exposure,
+            queue_timeout_seconds=queue_timeout_seconds,
+        )
+
+    @mcp.tool()
+    def capture_droplet_images(
+        droplet_ids: Optional[List[int]] = None,
+        channels: Optional[List[Any]] = None,
+        output_dir: Optional[str] = None,
+        temperature_label: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        capture_source: str = "streamer",
+        restart_streamer: bool = True,
+        restore_low_light: bool = True,
+        image_format: str = "png",
+        wait_before_check: float = 0.5,
+        wait_after_check: float = 0.5,
+    ) -> Dict[str, Any]:
+        """Move to droplets and save images for channel profiles."""
+        return _runtime_call(
+            runtime.capture_droplet_images,
+            droplet_ids=droplet_ids,
+            channels=channels,
+            output_dir=output_dir,
+            temperature_label=temperature_label,
+            metadata=metadata,
+            capture_source=capture_source,
+            restart_streamer=restart_streamer,
+            restore_low_light=restore_low_light,
+            image_format=image_format,
+            wait_before_check=wait_before_check,
+            wait_after_check=wait_after_check,
+        )
+
+    @mcp.tool()
     def temperature_hold(
         target_c: float,
         hold_seconds: float,
@@ -439,28 +609,6 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
             sample_interval_seconds=sample_interval_seconds,
             require_settle=require_settle,
             max_samples=max_samples,
-        )
-
-    @mcp.tool()
-    def temperature_sweep(
-        steps: List[Dict[str, Any]],
-        tolerance_c: float = 0.5,
-        settle_timeout_seconds: float = 600.0,
-        sample_interval_seconds: float = 5.0,
-        require_settle: bool = False,
-        max_samples_per_step: int = 20,
-        stop_on_error: bool = True,
-    ) -> Dict[str, Any]:
-        """Run multiple temperature hold steps in one compact call."""
-        return _runtime_call(
-            runtime.temperature_sweep,
-            steps=steps,
-            tolerance_c=tolerance_c,
-            settle_timeout_seconds=settle_timeout_seconds,
-            sample_interval_seconds=sample_interval_seconds,
-            require_settle=require_settle,
-            max_samples_per_step=max_samples_per_step,
-            stop_on_error=stop_on_error,
         )
 
     @mcp.tool()
@@ -506,7 +654,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         priority: int = 0,
         vital_space: int = 1,
     ) -> Dict[str, Any]:
-        """Create one droplet in AdvancedDrop."""
+        """Create one logical droplet. Use origin=[row,col]; target defaults to origin."""
         return _runtime_call(
             runtime.create_droplet,
             droplet_id=droplet_id,
@@ -521,17 +669,24 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
 
     @mcp.tool()
     def add_droplets(droplets: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Create multiple droplets in AdvancedDrop."""
+        """Create multiple logical droplets. Each entry needs id/droplet_id, origin=[row,col], and normally target=[row,col]."""
         return _runtime_call(runtime.add_droplets, droplets)
 
     @mcp.tool()
-    def delete_droplet(droplet_id: int) -> Dict[str, Any]:
-        """Delete a droplet by id."""
-        return _runtime_call(runtime.delete_droplet, droplet_id)
+    def delete_droplet(
+        droplet_id: int,
+        persist_electrodes: bool = False,
+    ) -> Dict[str, Any]:
+        """Delete a droplet by id; by default clears its electrodes in the next plan frame."""
+        return _runtime_call(
+            runtime.delete_droplet,
+            droplet_id,
+            persist_electrodes=persist_electrodes,
+        )
 
     @mcp.tool()
     def update_droplet_target(droplet_id: int, target: List[int]) -> Dict[str, Any]:
-        """Update a droplet target coordinate."""
+        """Set one droplet target=[row,col]; planning still requires move/start_plan."""
         return _runtime_call(runtime.update_droplet_target, droplet_id, target)
 
     @mcp.tool()
@@ -539,7 +694,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         targets: Any,
         include_summary: bool = False,
     ) -> Dict[str, Any]:
-        """Update many droplet targets in one compact call."""
+        """Set many droplet targets. Accepts [{"id":1,"target":[r,c]}] or {"1":[r,c]}."""
         return _runtime_call(
             runtime.update_droplet_targets,
             targets=targets,
@@ -552,40 +707,200 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         return _runtime_call(runtime.update_droplet_position, droplet_id, position)
 
     @mcp.tool()
+    def trim_plan_tail(keep_frames: int) -> Dict[str, Any]:
+        """Delete planned tail frames, preserving already executed/applied frames."""
+        return _runtime_call(runtime.trim_plan_tail, keep_frames)
+
+    @mcp.tool()
     def droplets_summary() -> Dict[str, Any]:
         """Return all droplets and their current targets."""
         return _runtime_call(runtime.droplets_summary)
 
     @mcp.tool()
-    def list_advanced_drop_methods() -> Dict[str, Any]:
-        """List AdvancedDrop methods exposed through advanced_drop_call."""
-        return _runtime_call(runtime.list_advanced_drop_methods)
-
-    @mcp.tool()
-    def advanced_drop_call(
-        method: str,
-        arguments: Optional[Dict[str, Any]] = None,
+    def plan_activation_frame(
+        event_type: str = "activation",
+        event_data: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Call only whitelisted AdvancedDrop planning methods, not MCP/runtime tools."""
-        return _runtime_call(runtime.advanced_drop_call, method, arguments or {})
+        """Plan one activation frame for current droplets; does not execute hardware."""
+        return _runtime_call(
+            runtime.plan_activation_frame,
+            event_type=event_type,
+            event_data=event_data,
+        )
 
     @mcp.tool()
-    def start_advanced_drop_call(
-        method: str,
-        arguments: Optional[Dict[str, Any]] = None,
+    def plan_move(
+        mode: str = "sipp",
+        remove_duplicate_frames: bool = False,
+        planning_timeout: Optional[float] = None,
+        background: bool = False,
+        allow_long_sync: bool = False,
+        options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Start a long AdvancedDrop call in the background; poll job status."""
-        return _runtime_call(runtime.start_advanced_drop_call, method, arguments or {})
+        """Plan movement for current droplet targets; does not execute hardware."""
+        return _runtime_call(
+            runtime.plan_move,
+            mode=mode,
+            remove_duplicate_frames=remove_duplicate_frames,
+            planning_timeout=planning_timeout,
+            background=background,
+            allow_long_sync=allow_long_sync,
+            options=options,
+        )
 
     @mcp.tool()
-    def advanced_drop_job_status() -> Dict[str, Any]:
-        """Return compact status for the active or last AdvancedDrop background job."""
+    def plan_reservoir_extraction(
+        reservoir_droplet_id: int,
+        split_mode: str = "linear",
+        steps: Optional[List[int]] = None,
+        split_size: Optional[Any] = None,
+        new_droplet_id: Optional[int] = None,
+        halo_size: int = 0,
+        separation_steps: int = 3,
+        linear_drops_number: Optional[int] = None,
+        linear_offset: Optional[int] = None,
+        linear_space_per_col: Optional[int] = None,
+        linear_space_per_row: Optional[int] = None,
+        linear_drop_shape: Optional[Any] = None,
+        linear_direction: Optional[List[int]] = None,
+        linear_vital_space: Optional[int] = None,
+        remove_duplicate_frames: bool = False,
+        background: bool = False,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Plan extraction from a reservoir; does not execute hardware."""
+        return _runtime_call(
+            runtime.plan_reservoir_extraction,
+            reservoir_droplet_id=reservoir_droplet_id,
+            split_mode=split_mode,
+            steps=steps,
+            split_size=split_size,
+            new_droplet_id=new_droplet_id,
+            halo_size=halo_size,
+            separation_steps=separation_steps,
+            linear_drops_number=linear_drops_number,
+            linear_offset=linear_offset,
+            linear_space_per_col=linear_space_per_col,
+            linear_space_per_row=linear_space_per_row,
+            linear_drop_shape=linear_drop_shape,
+            linear_direction=linear_direction,
+            linear_vital_space=linear_vital_space,
+            remove_duplicate_frames=remove_duplicate_frames,
+            background=background,
+            **(options or {}),
+        )
+
+    @mcp.tool()
+    def plan_isometric_split(
+        droplet_id: int,
+        steps: List[List[int]],
+        simultaneous: bool = True,
+        new_droplet_id: Optional[int] = None,
+        event_id: Optional[str] = None,
+        remove_duplicate_frames: bool = False,
+        background: bool = False,
+    ) -> Dict[str, Any]:
+        """Plan an isometric split; does not execute hardware."""
+        return _runtime_call(
+            runtime.plan_isometric_split,
+            droplet_id=droplet_id,
+            steps=steps,
+            simultaneous=simultaneous,
+            new_droplet_id=new_droplet_id,
+            event_id=event_id,
+            remove_duplicate_frames=remove_duplicate_frames,
+            background=background,
+        )
+
+    @mcp.tool()
+    def plan_mix(
+        droplet_id: int,
+        mode: str = "split_recombine",
+        split_area: Optional[List[List[int]]] = None,
+        mixing_area_size: Optional[int] = None,
+        cycles: int = 5,
+        event_id: Optional[str] = None,
+        remove_duplicate_frames: bool = False,
+        background: bool = False,
+    ) -> Dict[str, Any]:
+        """Plan droplet mixing; does not execute hardware."""
+        return _runtime_call(
+            runtime.plan_mix,
+            droplet_id=droplet_id,
+            mode=mode,
+            split_area=split_area,
+            mixing_area_size=mixing_area_size,
+            cycles=cycles,
+            event_id=event_id,
+            remove_duplicate_frames=remove_duplicate_frames,
+            background=background,
+        )
+
+    @mcp.tool()
+    def plan_merge(
+        droplet_ids: Any,
+        target: Any,
+        forced_width: Optional[int] = None,
+        forced_height: Optional[int] = None,
+        hold_final_position: bool = False,
+        event_id: Optional[str] = None,
+        remove_duplicate_frames: bool = False,
+        background: bool = False,
+    ) -> Dict[str, Any]:
+        """Plan merging droplets into one target; does not execute hardware."""
+        return _runtime_call(
+            runtime.plan_merge,
+            droplet_ids=droplet_ids,
+            target=target,
+            forced_width=forced_width,
+            forced_height=forced_height,
+            hold_final_position=hold_final_position,
+            event_id=event_id,
+            remove_duplicate_frames=remove_duplicate_frames,
+            background=background,
+        )
+
+    @mcp.tool()
+    def planning_job_status() -> Dict[str, Any]:
+        """Return compact status for the active or last background planning job."""
         return _runtime_call(runtime.advanced_drop_job_status)
 
     @mcp.tool()
-    def cancel_advanced_drop_job() -> Dict[str, Any]:
-        """Request cancellation of the active AdvancedDrop background job."""
+    def cancel_planning_job() -> Dict[str, Any]:
+        """Request cancellation of the active background planning job."""
         return _runtime_call(runtime.cancel_advanced_drop_job)
+
+    if getattr(runtime, "allow_unsafe_tools", False):
+        @mcp.tool()
+        def list_advanced_drop_methods() -> Dict[str, Any]:
+            """Debug only: list AdvancedDrop methods behind the generic planner."""
+            return _runtime_call(runtime.list_advanced_drop_methods)
+
+        @mcp.tool()
+        def advanced_drop_call(
+            method: str,
+            arguments: Optional[Dict[str, Any]] = None,
+        ) -> Dict[str, Any]:
+            """Debug only: call a whitelisted AdvancedDrop method by name."""
+            return _runtime_call(runtime.advanced_drop_call, method, arguments or {})
+
+        @mcp.tool()
+        def start_advanced_drop_call(
+            method: str,
+            arguments: Optional[Dict[str, Any]] = None,
+        ) -> Dict[str, Any]:
+            """Debug only: start a generic AdvancedDrop call in the background."""
+            return _runtime_call(runtime.start_advanced_drop_call, method, arguments or {})
+
+        @mcp.tool()
+        def advanced_drop_job_status() -> Dict[str, Any]:
+            """Debug only: status alias for generic AdvancedDrop background jobs."""
+            return _runtime_call(runtime.advanced_drop_job_status)
+
+        @mcp.tool()
+        def cancel_advanced_drop_job() -> Dict[str, Any]:
+            """Debug only: cancel alias for generic AdvancedDrop background jobs."""
+            return _runtime_call(runtime.cancel_advanced_drop_job)
 
     @mcp.tool()
     def verify_droplets(
@@ -616,7 +931,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         debug: bool = False,
         fluo_exposure: int = 2000000,
         fluo_light: int = 99,
-        brightfield_exposure: int = 3000,
+        brightfield_exposure: int = 3600,
         brightfield_light: int = 30,
     ) -> Dict[str, Any]:
         """Detect condensates using AdvancedDrop vision support."""
@@ -637,23 +952,24 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
             brightfield_light=brightfield_light,
         )
 
-    @mcp.tool()
-    def system_call(
-        method: str,
-        arguments: Optional[Dict[str, Any]] = None,
-        wait_if_busy: bool = False,
-        timeout_seconds: float = 30.0,
-        poll_interval: float = 0.1,
-    ) -> Dict[str, Any]:
-        """Call a whitelisted loaded-system method."""
-        return _runtime_call(
-            runtime.system_call,
-            method,
-            arguments or {},
-            wait_if_busy=wait_if_busy,
-            timeout_seconds=timeout_seconds,
-            poll_interval=poll_interval,
-        )
+    if getattr(runtime, "allow_unsafe_tools", False):
+        @mcp.tool()
+        def system_call(
+            method: str,
+            arguments: Optional[Dict[str, Any]] = None,
+            wait_if_busy: bool = False,
+            timeout_seconds: float = 30.0,
+            poll_interval: float = 0.1,
+        ) -> Dict[str, Any]:
+            """Debug only: call a whitelisted loaded-system method."""
+            return _runtime_call(
+                runtime.system_call,
+                method,
+                arguments or {},
+                wait_if_busy=wait_if_busy,
+                timeout_seconds=timeout_seconds,
+                poll_interval=poll_interval,
+            )
 
     @mcp.tool()
     def list_system_modules() -> Dict[str, Any]:
@@ -666,20 +982,6 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         return _runtime_call(runtime.module_busy_status, module)
 
     @mcp.tool()
-    def wait_for_module_free(
-        module: str,
-        timeout_seconds: float = 30.0,
-        poll_interval: float = 0.1,
-    ) -> Dict[str, Any]:
-        """Wait until a hardware module appears free, or return timeout status."""
-        return _runtime_call(
-            runtime.wait_for_module_free,
-            module,
-            timeout_seconds=timeout_seconds,
-            poll_interval=poll_interval,
-        )
-
-    @mcp.tool()
     def module_call(
         module: str,
         method: str,
@@ -688,7 +990,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         timeout_seconds: float = 30.0,
         poll_interval: float = 0.1,
     ) -> Dict[str, Any]:
-        """Call a whitelisted method on a loaded hardware module."""
+        """Low-level hardware module call. Prefer dedicated MCP tools for planning, execution, imaging, state, and temperature."""
         return _runtime_call(
             runtime.module_call,
             module,
@@ -724,6 +1026,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         prepare_execution_view: bool = True,
         execution_view_timeout_seconds: float = 60.0,
         restart_from_beginning: bool = False,
+        allow_failed_plan: bool = False,
     ) -> Dict[str, Any]:
         """Start PlanExecutor from frame 0 unless a partial run needs resume_plan."""
         return _runtime_call(
@@ -741,6 +1044,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
             prepare_execution_view=prepare_execution_view,
             execution_view_timeout_seconds=execution_view_timeout_seconds,
             restart_from_beginning=restart_from_beginning,
+            allow_failed_plan=allow_failed_plan,
         )
 
     @mcp.tool()
@@ -762,14 +1066,30 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         )
 
     @mcp.tool()
+    def move_stage(
+        position: Optional[Any] = None,
+        preset: Optional[str] = None,
+        wait_timeout_seconds: float = 20.0,
+        poll_interval: float = 0.1,
+    ) -> Dict[str, Any]:
+        """Move the XY stage using a named preset or explicit X/Y/Z axis values."""
+        return _runtime_call(
+            runtime.move_stage,
+            position=position,
+            preset=preset,
+            wait_timeout_seconds=wait_timeout_seconds,
+            poll_interval=poll_interval,
+        )
+
+    @mcp.tool()
     def pause_plan() -> Dict[str, Any]:
         """Pause PlanExecutor."""
         return _runtime_call(runtime.pause_plan)
 
     @mcp.tool()
-    def resume_plan() -> Dict[str, Any]:
+    def resume_plan(allow_failed_plan: bool = False) -> Dict[str, Any]:
         """Resume PlanExecutor."""
-        return _runtime_call(runtime.resume_plan)
+        return _runtime_call(runtime.resume_plan, allow_failed_plan)
 
     @mcp.tool()
     def stop_plan() -> Dict[str, Any]:
@@ -797,15 +1117,43 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         return _runtime_call(runtime.clear_breakpoints)
 
     @mcp.tool()
-    def execute_until_breakpoint(
+    def execute_segment_to_breakpoint(
+        frame_number: Optional[int] = None,
         timeout_seconds: Optional[float] = None,
+        poll_interval_seconds: float = 0.25,
         resume_if_paused: bool = True,
+        clear_existing_breakpoints: bool = True,
+        allow_failed_plan: bool = False,
+        frame_delay: float = 1.0,
+        verify_positions: bool = False,
+        enable_visualizers: bool = False,
+        execution_view_mode: str = "follow_droplets",
+        fixed_stage_position: Optional[Any] = None,
+        prepare_execution_view: bool = True,
+        execution_view_timeout_seconds: float = 60.0,
+        wait_mode: str = "auto",
+        inline_wait_max_seconds: Optional[float] = None,
+        inline_wait_margin_seconds: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Block until the next breakpoint or plan completion; prefer background wait for long runs."""
+        """Add a breakpoint, start/resume PlanExecutor, then wait inline or in background."""
         return _runtime_call(
-            runtime.execute_until_breakpoint,
+            runtime.execute_segment_to_breakpoint,
+            frame_number=frame_number,
             timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
             resume_if_paused=resume_if_paused,
+            clear_existing_breakpoints=clear_existing_breakpoints,
+            allow_failed_plan=allow_failed_plan,
+            frame_delay=frame_delay,
+            verify_positions=verify_positions,
+            enable_visualizers=enable_visualizers,
+            execution_view_mode=execution_view_mode,
+            fixed_stage_position=fixed_stage_position,
+            prepare_execution_view=prepare_execution_view,
+            execution_view_timeout_seconds=execution_view_timeout_seconds,
+            wait_mode=wait_mode,
+            inline_wait_max_seconds=inline_wait_max_seconds,
+            inline_wait_margin_seconds=inline_wait_margin_seconds,
         )
 
     @mcp.tool()
@@ -814,7 +1162,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         resume_if_paused: bool = True,
         poll_interval_seconds: float = 0.25,
     ) -> Dict[str, Any]:
-        """Start a background wait for breakpoint/plan completion; poll execution_wait_status."""
+        """Start a background wait for breakpoint/plan completion."""
         return _runtime_call(
             runtime.start_execute_until_breakpoint,
             timeout_seconds=timeout_seconds,
@@ -823,9 +1171,16 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         )
 
     @mcp.tool()
-    def execution_wait_status() -> Dict[str, Any]:
-        """Return compact status for the active or last execution wait job."""
-        return _runtime_call(runtime.execution_wait_status)
+    def execution_wait_status(
+        wait_seconds: float = 0.0,
+        poll_interval_seconds: float = 0.25,
+    ) -> Dict[str, Any]:
+        """Return compact execution wait status, optionally waiting up to wait_seconds first."""
+        return _runtime_call(
+            runtime.execution_wait_status,
+            wait_seconds=wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+        )
 
     @mcp.tool()
     def cancel_execution_wait() -> Dict[str, Any]:
@@ -909,6 +1264,13 @@ def parse_args(argv=None):
         help="Allow raw set_system_state writes.",
     )
     parser.add_argument(
+        "--allow-large-state-tools",
+        action="store_true",
+        default=os.environ.get("DROPLOGIC_MCP_ALLOW_LARGE_STATE_TOOLS", "").lower()
+        in {"1", "true", "yes"},
+        help="Allow raw reads of large state values such as the full electrode matrix.",
+    )
+    parser.add_argument(
         "--snapshots-dir",
         default=os.environ.get("DROPLOGIC_MCP_SNAPSHOTS_DIR"),
         help="Directory for visualizer snapshot files.",
@@ -928,6 +1290,7 @@ def main(argv=None):
         log_level=args.log_level,
         allow_real_hardware=args.allow_real_hardware,
         allow_unsafe_tools=args.allow_unsafe_tools,
+        allow_large_state_tools=args.allow_large_state_tools,
         snapshots_dir=args.snapshots_dir,
         context_dir=args.context_dir,
     )

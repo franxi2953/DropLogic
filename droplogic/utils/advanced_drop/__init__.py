@@ -307,6 +307,252 @@ class AdvancedDrop:
         # Update frame_count
         self.plan.frame_count = len(self.plan.frames)
 
+    def trim_plan_tail(self, keep_frames: int, protect_executed: bool = True) -> Dict[str, Any]:
+        """
+        Delete unexecuted tail frames from the active plan.
+
+        This is the reusable Python API for timeline editing. MCP/dashboard callers
+        should use this method instead of reimplementing plan mutation rules.
+
+        Args:
+            keep_frames: Number of leading frames to keep. Must be at least 1.
+            protect_executed: When True, refuse to remove frames that the executor
+                has already reached or applied.
+
+        Returns:
+            A dict with trim metadata plus the updated plan and executor status.
+        """
+        keep_frames = int(keep_frames)
+        if keep_frames < 1:
+            raise ValueError("keep_frames must be at least 1.")
+
+        executor = getattr(self, "executor", None)
+        executor_lock = getattr(executor, "execution_lock", None)
+        if executor_lock is not None:
+            with executor_lock:
+                return self._trim_plan_tail_locked(keep_frames, protect_executed)
+        return self._trim_plan_tail_locked(keep_frames, protect_executed)
+
+    def _trim_plan_tail_locked(self, keep_frames: int, protect_executed: bool) -> Dict[str, Any]:
+        plan = getattr(self, "plan", None)
+        if plan is None:
+            raise RuntimeError("No plan is available to trim.")
+
+        frames = list(getattr(plan, "frames", []) or [])
+        frame_count = len(frames)
+        if frame_count <= 0:
+            raise RuntimeError("The current plan has no frames.")
+
+        executor = getattr(self, "executor", None)
+        executor_status = executor.status() if executor is not None else {}
+        if bool(executor_status.get("is_executing")):
+            raise RuntimeError("Cannot trim plan frames while the executor is running.")
+
+        protected_frames = 1
+        if protect_executed:
+            current_frame = int(executor_status.get("current_frame") or 0)
+            protected_frames = max(protected_frames, current_frame)
+            applied = executor_status.get("last_applied_frame")
+            applied_index = None
+            if isinstance(applied, dict) and applied.get("index") is not None:
+                try:
+                    applied_index = int(applied.get("index"))
+                except Exception:
+                    applied_index = None
+            if applied_index is not None:
+                protected_frames = max(protected_frames, applied_index + 1)
+
+        if keep_frames < protected_frames:
+            raise RuntimeError(
+                "Cannot trim already executed/applied frames. "
+                f"Requested keep_frames={keep_frames}, protected_frames={protected_frames}."
+            )
+
+        if keep_frames >= frame_count:
+            return {
+                "ok": True,
+                "trimmed": False,
+                "keep_frames": frame_count,
+                "removed_frames": 0,
+                "protected_frames": protected_frames,
+                "plan": plan,
+                "executor_status": executor_status,
+            }
+
+        removed_frames = frame_count - keep_frames
+        plan.frames = frames[:keep_frames]
+        plan.frame_count = len(plan.frames)
+        plan.active_droplets_per_frame = list(
+            getattr(plan, "active_droplets_per_frame", []) or []
+        )[:keep_frames]
+        plan.event_id_per_frame = list(getattr(plan, "event_id_per_frame", []) or [])[:keep_frames]
+
+        trajectories = getattr(plan, "droplet_trajectories", {}) or {}
+        for droplet_id, trajectory in list(trajectories.items()):
+            if trajectory is None:
+                continue
+            trajectories[droplet_id] = list(trajectory)[:keep_frames]
+        plan.droplet_trajectories = trajectories
+
+        trimmed_events = []
+        for event in list(getattr(plan, "events", []) or []):
+            if not isinstance(event, (list, tuple)) or len(event) < 2:
+                continue
+            try:
+                frame_number = int(event[0])
+            except Exception:
+                continue
+            if frame_number >= keep_frames:
+                continue
+
+            event_type = event[1]
+            event_data = dict(event[2]) if len(event) >= 3 and isinstance(event[2], dict) else {}
+            span = event_data.get("frame_span")
+            if isinstance(span, (list, tuple)) and len(span) >= 2:
+                try:
+                    start = int(span[0])
+                    end = int(span[1])
+                except Exception:
+                    start = frame_number
+                    end = frame_number
+                if start >= keep_frames:
+                    continue
+                event_data["frame_span"] = (start, min(end, keep_frames - 1))
+            trimmed_events.append((frame_number, event_type, event_data))
+        plan.events = trimmed_events
+
+        conflicts = []
+        for conflict in list(getattr(plan, "conflicts_resolved", []) or []):
+            if not isinstance(conflict, dict):
+                conflicts.append(conflict)
+                continue
+            frame = conflict.get("frame")
+            if frame is None:
+                conflicts.append(conflict)
+                continue
+            try:
+                if int(frame) < keep_frames:
+                    conflicts.append(conflict)
+            except Exception:
+                conflicts.append(conflict)
+        plan.conflicts_resolved = conflicts
+
+        final_positions = {}
+        for droplet_id, trajectory in trajectories.items():
+            if trajectory:
+                final_positions[int(droplet_id)] = tuple(trajectory[-1])
+
+        droplets = getattr(self, "droplets", None)
+        if droplets is not None:
+            for droplet in droplets:
+                droplet_id = int(getattr(droplet, "id", -1))
+                if droplet_id not in final_positions:
+                    continue
+                position = final_positions[droplet_id]
+                droplet.origin_corner = position
+                if hasattr(droplet, "target_corner"):
+                    droplet.target_corner = position
+
+        plan.targets_reached = {droplet_id: True for droplet_id in final_positions}
+        plan.planning_success = True
+
+        if executor is not None:
+            try:
+                executor.current_plan = plan
+                executor.state.total_frames = keep_frames
+                if int(executor.state.current_frame or 0) > keep_frames:
+                    executor.state.current_frame = keep_frames
+                if int(getattr(executor.state, "frames_executed", 0) or 0) > keep_frames:
+                    executor.state.frames_executed = keep_frames
+                filtered_breakpoints = set()
+                for breakpoint_frame in getattr(executor, "breakpoints", set()):
+                    try:
+                        if int(breakpoint_frame) < keep_frames:
+                            filtered_breakpoints.add(breakpoint_frame)
+                    except Exception:
+                        continue
+                executor.breakpoints = filtered_breakpoints
+                executor_status = executor.status()
+            except Exception:
+                executor_status = {}
+
+        return {
+            "ok": True,
+            "trimmed": True,
+            "keep_frames": keep_frames,
+            "removed_frames": removed_frames,
+            "protected_frames": protected_frames,
+            "plan": plan,
+            "executor_status": executor_status,
+        }
+
+    def _remove_duplicate_frames(self, plan: DropletPlan) -> None:
+        """Remove adjacent duplicate frames from a plan while preserving metadata."""
+        frames = list(getattr(plan, "frames", []) or [])
+        if len(frames) <= 1:
+            plan.frame_count = len(frames)
+            return
+
+        keep_indices = [0]
+        for index in range(1, len(frames)):
+            previous_kept = keep_indices[-1]
+            try:
+                duplicate = np.array_equal(frames[index], frames[previous_kept])
+            except Exception:
+                duplicate = False
+            if duplicate:
+                if index == len(frames) - 1:
+                    keep_indices[-1] = index
+                continue
+            keep_indices.append(index)
+
+        if len(keep_indices) == len(frames):
+            plan.frame_count = len(frames)
+            return
+
+        def map_index(value):
+            try:
+                old = int(value)
+            except Exception:
+                old = 0
+            old = max(0, min(len(frames) - 1, old))
+            mapped = 0
+            for new_index, kept in enumerate(keep_indices):
+                if kept <= old:
+                    mapped = new_index
+                else:
+                    break
+            return mapped
+
+        plan.frames = [frames[index] for index in keep_indices]
+        if getattr(plan, "active_droplets_per_frame", None):
+            active = list(plan.active_droplets_per_frame)
+            if len(active) >= len(frames):
+                plan.active_droplets_per_frame = [active[index] for index in keep_indices]
+        if getattr(plan, "event_id_per_frame", None):
+            event_ids = list(plan.event_id_per_frame)
+            if len(event_ids) >= len(frames):
+                plan.event_id_per_frame = [event_ids[index] for index in keep_indices]
+        for droplet_id, trajectory in list((getattr(plan, "droplet_trajectories", {}) or {}).items()):
+            if trajectory is not None and len(trajectory) >= len(frames):
+                plan.droplet_trajectories[droplet_id] = [trajectory[index] for index in keep_indices]
+
+        remapped_events = []
+        for event in list(getattr(plan, "events", []) or []):
+            if not isinstance(event, (list, tuple)) or len(event) < 2:
+                continue
+            frame_idx = map_index(event[0])
+            event_type = event[1]
+            data = event[2] if len(event) >= 3 else {}
+            if isinstance(data, dict):
+                data = dict(data)
+                frame_span = data.get("frame_span")
+                if isinstance(frame_span, (list, tuple)) and len(frame_span) >= 2:
+                    data["frame_span"] = (map_index(frame_span[0]), map_index(frame_span[1]))
+            remapped_events.append((frame_idx, event_type, data))
+        plan.events = remapped_events
+        plan.frame_count = len(plan.frames)
+
     def move(self, mode="sipp", remove_duplicate_frames: bool = False, merge_on_failure: bool = True, **kwargs):
         """Plan coordinated movement for current droplets using the specified mode."""
         if not self.droplets:
@@ -335,6 +581,7 @@ class AdvancedDrop:
                             planning_matrix[x, y] = 0
 
         # Get new plan from core planning function
+        kwargs.setdefault("add_events", True)
         new_plan = move(self.droplets, planning_matrix, mode=mode, existing_plan=self.plan, **kwargs)
 
         if not merge_on_failure and not new_plan.planning_success:
@@ -613,7 +860,12 @@ class AdvancedDrop:
                     # If all positions are None, set to None (shouldn't happen normally)
                     d.origin_corner = None
 
-        combined_planning_success = all(combined_targets_reached.values()) if combined_targets_reached else False
+        targets_success = all(combined_targets_reached.values()) if combined_targets_reached else True
+        combined_planning_success = (
+            bool(getattr(existing_plan, "planning_success", True))
+            and bool(getattr(new_plan, "planning_success", True))
+            and targets_success
+        )
 
         # ---------- build combined plan ----------
         combined_plan = DropletPlan(
@@ -715,6 +967,7 @@ class AdvancedDrop:
         """
         # Capture original IDs before updating
         original_ids = {d.id for d in self.droplets}
+        event_id = kwargs.pop("event_id", None)
 
         # Execute the extraction - get new plan
         # Forward any extra keyword args (e.g. linear_* parameters) to the lower-level implementation
@@ -732,9 +985,54 @@ class AdvancedDrop:
             **kwargs
         )
 
+        # Return IDs of newly created droplets
+        new_ids = [d.id for d in updated_droplets if d.id not in original_ids]
+        extraction_event_data = {
+            "primitive": "reservoir_extraction",
+            "split_mode": split_mode,
+            "reservoir_droplet_id": reservoir_droplet_id,
+            "new_droplet_ids": new_ids,
+            "steps": steps,
+            "split_size": split_size,
+            "new_droplet_id": new_droplet_id,
+            "halo_size": halo_size,
+            "separation_steps": separation_steps,
+            "linear_drops_number": linear_drops_number,
+            "linear_offset": linear_offset,
+            "linear_space_per_col": linear_space_per_col,
+            "linear_space_per_row": linear_space_per_row,
+            "linear_drop_shape": linear_drop_shape,
+            "linear_direction": linear_direction,
+            "linear_vital_space": linear_vital_space,
+        }
+        extraction_event_data = {
+            key: value for key, value in extraction_event_data.items() if value is not None
+        }
+
+        if new_plan.frames:
+            if new_plan.events:
+                for index, (frame_idx, event_type, data) in enumerate(new_plan.events):
+                    event_data = dict(data) if isinstance(data, dict) else {}
+                    event_data = {**event_data, **extraction_event_data}
+                    new_plan.events[index] = (frame_idx, event_id or event_type, event_data)
+            else:
+                plan_event_id = next_event_id(new_plan)
+                tag_frame_span(
+                    new_plan,
+                    start_idx=0,
+                    count=new_plan.frame_count or len(new_plan.frames),
+                    event_id=plan_event_id,
+                    event_type=event_id or "reservoir_extraction",
+                    data=extraction_event_data,
+                )
+
         # Extend existing plan if one exists
         if self.plan and len(self.plan.frames) > 0:
-            self.plan = self.extend_plan(self.plan, new_plan, remove_duplicate_frames=remove_duplicate_frames)      
+            self.plan = self.extend_plan(
+                self.plan,
+                new_plan,
+                remove_duplicate_frames=remove_duplicate_frames,
+            )
         else:
             self.plan = new_plan
 
@@ -745,8 +1043,6 @@ class AdvancedDrop:
         self.droplets.extend(updated_droplets)
 
        
-        # Return IDs of newly created droplets
-        new_ids = [d.id for d in updated_droplets if d.id not in original_ids]
         self.system.logger.info(f"Extraction completed: created droplets {new_ids}")
 
         return new_ids
@@ -900,6 +1196,29 @@ class AdvancedDrop:
 
         # Snapshot pre-merge IDs to identify a newly created droplet
         pre_ids = {d.id for d in self.droplets}
+        pre_droplets = list(self.droplets)
+        pre_snapshot = {
+            d.id: {
+                "origin_corner": d.origin_corner,
+                "target_corner": d.target_corner,
+                "shape": set(d.shape),
+                "electrode_count": getattr(d, "electrode_count", None),
+            }
+            for d in pre_droplets
+        }
+
+        def _restore_pre_merge_state() -> None:
+            for droplet in pre_droplets:
+                snapshot = pre_snapshot.get(droplet.id)
+                if not snapshot:
+                    continue
+                droplet.origin_corner = snapshot["origin_corner"]
+                droplet.target_corner = snapshot["target_corner"]
+                droplet.shape = set(snapshot["shape"])
+                if snapshot["electrode_count"] is not None:
+                    droplet.electrode_count = snapshot["electrode_count"]
+            self.droplets.clear()
+            self.droplets.extend(pre_droplets)
 
         # Total electrodes from inputs (for diagnostics)
         total_individual_electrodes = 0
@@ -960,37 +1279,36 @@ class AdvancedDrop:
         
         
         # Execute merge (passes existing plan so routing starts from current end-state)
-        updated_droplets, new_plan = merge(
-            self.droplets,
-            planning_matrix,
-            droplet_ids,
-            target,
-            self.system.logger,
-            self.plan,
-            forced_width=forced_width,
-            forced_height=forced_height,
-            hold_final_position=hold_final_position
-        )
+        try:
+            updated_droplets, new_plan = merge(
+                self.droplets,
+                planning_matrix,
+                droplet_ids,
+                target,
+                self.system.logger,
+                self.plan,
+                forced_width=forced_width,
+                forced_height=forced_height,
+                hold_final_position=hold_final_position
+            )
+        except Exception:
+            _restore_pre_merge_state()
+            raise
 
-        # Splice plan
-        if self.plan and self.plan.frames:
-            self.plan = self.extend_plan(self.plan, new_plan, event_type=event_id or "merge", event_data={"droplet_ids": droplet_ids, "target": target}, remove_duplicate_frames=remove_duplicate_frames)
-        else:
-            self.plan = new_plan
-
-        # Replace internal droplet list with the updated one (preserve type). 
-        # This is needed in case of merge at a target (x,y) where a new droplet is created.
-        self.droplets.clear()
-        self.droplets.extend(updated_droplets)
+        if not getattr(new_plan, "planning_success", True):
+            _restore_pre_merge_state()
+            self.system.logger.warning("Merge failed to create a valid merged product; plan was not appended")
+            return None
 
         # Determine merged droplet id robustly
         merged_id = None
         merged_droplet = None
         if isinstance(target, int):
             merged_id = target
-            merged_droplet = next((d for d in self.droplets if d.id == merged_id), None)
+            merged_droplet = next((d for d in updated_droplets if d.id == merged_id), None)
             if merged_droplet is None:
                 # Merge may have failed to commit (e.g., not all arrivals); no merged object produced
+                _restore_pre_merge_state()
                 self.system.logger.warning(
                     f"Merge into existing droplet {target} did not produce a merged object; returning None"
                 )
@@ -1000,15 +1318,16 @@ class AdvancedDrop:
             hub = target
             # Prefer a droplet at the hub with an id not in pre-merge set
             candidate = next(
-                (d for d in self.droplets if d.origin_corner == hub and d.id not in pre_ids),
+                (d for d in updated_droplets if d.origin_corner == hub and d.id not in pre_ids),
                 None
             )
             if candidate is None:
                 # Fallback: pick the droplet not in pre_ids with the largest electrode_count/shape
-                new_only = [d for d in self.droplets if d.id not in pre_ids]
+                new_only = [d for d in updated_droplets if d.id not in pre_ids]
                 if new_only:
                     candidate = max(new_only, key=lambda d: getattr(d, "electrode_count", len(d.shape)))
             if candidate is None:
+                _restore_pre_merge_state()
                 self.system.logger.warning(
                     "Merge did not create a new droplet at the requested hub; returning None"
                 )
@@ -1016,6 +1335,15 @@ class AdvancedDrop:
             merged_droplet = candidate
             merged_id = candidate.id
 
+        # Splice plan only after a concrete merged droplet product exists.
+        if self.plan and self.plan.frames:
+            self.plan = self.extend_plan(self.plan, new_plan, event_type=event_id or "merge", event_data={"droplet_ids": droplet_ids, "target": target, "merged_droplet_id": merged_id}, remove_duplicate_frames=remove_duplicate_frames)
+        else:
+            self.plan = new_plan
+
+        # Replace internal droplet list with the updated one (preserve type).
+        self.droplets.clear()
+        self.droplets.extend(updated_droplets)
 
         self.system.logger.debug(f"Merge completed: merged droplets {droplet_ids} into droplet {merged_id}")
         return merged_id
@@ -1087,7 +1415,7 @@ class AdvancedDrop:
                           debug: bool = False,
                           fluo_exposure: int = 2000000,
                           fluo_light: int = 99,
-                          brightfield_exposure: int = 3000,
+                          brightfield_exposure: int = 3600,
                           brightfield_light: int = 30) -> Tuple[Dict[Tuple[float, float], List], Optional[np.ndarray]]:
         """
         Detect condensates in droplets using computer vision.
@@ -1249,7 +1577,7 @@ class AdvancedDrop:
                     self.system,
                     channel="FAM",
                     exposure_time=fluo_exposure,
-                    gain=12,
+                    gain=0,
                     coaxial_intensity=fluo_light,
                     ring_intensity=0,
                     frame_wait=0.2,
@@ -1273,7 +1601,7 @@ class AdvancedDrop:
                     self.system,
                     channel="Brightfield",
                     exposure_time=brightfield_exposure,
-                    gain=12,
+                    gain=0,
                     coaxial_intensity=brightfield_light,
                     ring_intensity=0,
                     frame_wait=0.2,
@@ -1606,13 +1934,20 @@ class AdvancedDrop:
             event_type: Type of event for this frame (default: "push")
             event_data: Optional metadata dictionary for the event
         """
-        if not self.plan.frames:
-            self.system.logger.warning("No existing frames in plan to push from")
-            return
+        if self.plan is None:
+            self.clear()
 
-        # Get the last frame and active droplets
-        last_frame = self.plan.frames[-1]
-        last_active = self.plan.active_droplets_per_frame[-1] if self.plan.active_droplets_per_frame else []
+        has_existing_frames = bool(self.plan.frames)
+        if has_existing_frames:
+            last_frame = self.plan.frames[-1]
+            last_active = (
+                self.plan.active_droplets_per_frame[-1]
+                if self.plan.active_droplets_per_frame
+                else []
+            )
+        else:
+            last_frame = self.matrix
+            last_active = [d.id for d in self.droplets if hasattr(d, "id")]
 
         # Create new frame starting from zeros (or copy last frame and clear droplet positions)
         new_frame = np.zeros_like(last_frame)
@@ -1636,7 +1971,7 @@ class AdvancedDrop:
         self.plan.active_droplets_per_frame.append(last_active.copy())
 
         # Extend trajectories
-        for droplet_id in self.plan.droplet_trajectories:
+        for droplet_id in list(self.plan.droplet_trajectories):
             traj = self.plan.droplet_trajectories[droplet_id]
             if traj:
                 last_pos = traj[-1]
@@ -1653,6 +1988,9 @@ class AdvancedDrop:
         eid = next_event_id(self.plan)
         self.plan.events.append((len(self.plan.frames) - 1, event_type, event_data))
         self.plan.event_id_per_frame.append(eid)
+        self.plan.planning_success = True
+
+        return self.plan
 
     # Add other advanced drop methods here as they are developed
     # def merge_droplets(self, ...): ...

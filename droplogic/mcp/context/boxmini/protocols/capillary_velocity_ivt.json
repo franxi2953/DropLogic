@@ -9,7 +9,7 @@
     "monitoring": {
       "channel": "Brightfield",
       "auto_exposure": false,
-      "exposure_time_us": 3000,
+      "exposure_time_us": 3600,
       "coaxial_intensity": 5,
       "ring_intensity": 0
     },
@@ -18,8 +18,8 @@
   "brightfield_verification": {
     "channel": "Brightfield",
     "auto_exposure": false,
-    "exposure_time_us": 60000,
-    "gain": 12,
+    "exposure_time_us": 72000,
+    "gain": 0,
     "coaxial_intensity": 4,
     "ring_intensity": 0
   },
@@ -29,16 +29,16 @@
     "fluorescence": {
       "channel": "FAM",
       "auto_exposure": false,
-      "exposure_time_us": 4000000,
-      "gain": 12,
+      "exposure_time_us": 4800000,
+      "gain": 0,
       "coaxial_intensity": 99,
       "ring_intensity": 0
     },
     "brightfield_crop": {
       "channel": "Brightfield",
       "auto_exposure": false,
-      "exposure_time_us": 60000,
-      "gain": 12,
+      "exposure_time_us": 72000,
+      "gain": 0,
       "coaxial_intensity": 4,
       "ring_intensity": 0
     },

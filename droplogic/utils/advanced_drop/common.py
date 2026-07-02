@@ -95,16 +95,101 @@ class DropletList(list):
 
         return droplet
 
-    def delete_droplet(self, droplet_id: int) -> bool:
-        """Delete a droplet by ID."""
+    def delete_droplet(self, droplet_id: int, persist_electrodes: bool = False) -> bool:
+        """Delete a droplet by ID.
+
+        If a plan exists, append a metadata/cleanup frame. When
+        persist_electrodes is False, the deleted droplet footprint is cleared
+        from that new frame; when True, the electrical state is preserved while
+        the logical droplet is removed from the active set.
+        """
         for i, droplet in enumerate(self):
             if droplet.id == droplet_id:
                 self.pop(i)
+                self._append_delete_frame(droplet, persist_electrodes=persist_electrodes)
                 self.system.logger.info(f"Deleted droplet {droplet_id}")
                 # Note: Plan is not reset - use move() to replan for remaining droplets
                 return True
         self.system.logger.warning(f"Droplet {droplet_id} not found")
         return False
+
+    def _append_delete_frame(self, droplet: Droplet, persist_electrodes: bool = False) -> None:
+        plan = getattr(self.parent, "plan", None)
+        if plan is None or not getattr(plan, "frames", None):
+            return
+
+        new_frame = plan.frames[-1].copy()
+        last_active = (
+            list(plan.active_droplets_per_frame[-1])
+            if getattr(plan, "active_droplets_per_frame", None)
+            else [d.id for d in self]
+        )
+        deleted_id = int(droplet.id)
+
+        def same_id(value) -> bool:
+            try:
+                return int(value) == deleted_id
+            except Exception:
+                return value == droplet.id
+
+        new_active = [active_id for active_id in last_active if not same_id(active_id)]
+
+        trajectories = getattr(plan, "droplet_trajectories", {}) or {}
+        deleted_trajectory = trajectories.get(deleted_id) or trajectories.get(str(deleted_id)) or []
+        deleted_position = deleted_trajectory[-1] if deleted_trajectory else droplet.origin_corner
+
+        if not persist_electrodes and deleted_position is not None:
+            remaining_positions = set()
+            remaining_active_ids = set()
+            for active_id in new_active:
+                try:
+                    remaining_active_ids.add(int(active_id))
+                except Exception:
+                    continue
+
+            for remaining in self:
+                if int(remaining.id) not in remaining_active_ids:
+                    continue
+                trajectory = trajectories.get(remaining.id) or trajectories.get(str(remaining.id)) or []
+                position = trajectory[-1] if trajectory else remaining.origin_corner
+                if position is not None:
+                    remaining_positions.update(get_droplet_positions(remaining, position))
+
+            for row, col in get_droplet_positions(droplet, deleted_position) - remaining_positions:
+                if 0 <= row < new_frame.shape[0] and 0 <= col < new_frame.shape[1]:
+                    if new_frame[row, col] == 1:
+                        new_frame[row, col] = 0
+
+        plan.frames.append(new_frame)
+        if getattr(plan, "active_droplets_per_frame", None) is None:
+            plan.active_droplets_per_frame = []
+        plan.active_droplets_per_frame.append(new_active)
+
+        new_frame_count = len(plan.frames)
+        for trajectory in (getattr(plan, "droplet_trajectories", {}) or {}).values():
+            if trajectory:
+                trajectory.append(trajectory[-1])
+            else:
+                trajectory.append(deleted_position)
+
+        if getattr(plan, "targets_reached", None):
+            plan.targets_reached.pop(deleted_id, None)
+            plan.targets_reached.pop(str(deleted_id), None)
+
+        plan.frame_count = new_frame_count
+        event_id = next_event_id(plan)
+        tag_frame_span(
+            plan,
+            new_frame_count - 1,
+            1,
+            event_id,
+            "delete",
+            {
+                "droplet_id": deleted_id,
+                "persist_electrodes": bool(persist_electrodes),
+                "deleted_position": deleted_position,
+            },
+        )
 
     def update_droplet_target(self, droplet_id: int, new_target) -> bool:
         """Update the target position of a droplet."""
@@ -172,8 +257,16 @@ class DropletList(list):
 
     def get_droplets_summary(self):
         """Get a summary of all current droplets and their status."""
+        active_ids = set()
+        plan = getattr(self.parent, "plan", None)
+        if plan is not None and getattr(plan, "active_droplets_per_frame", None):
+            try:
+                active_ids = set(plan.active_droplets_per_frame[-1] or [])
+            except Exception:
+                active_ids = set()
         summary = {
             'total_droplets': len(self),
+            'active_droplet_ids': sorted(active_ids),
             'droplets': [],
             'has_plan': self.parent.plan is not None
         }
@@ -181,6 +274,7 @@ class DropletList(list):
         for droplet in self:
             droplet_info = {
                 'id': droplet.id,
+                'active': droplet.id in active_ids,
                 'current_position': droplet.origin_corner,
                 'target_position': droplet.target_corner,
                 'at_target': droplet.origin_corner == droplet.target_corner,

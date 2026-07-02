@@ -6,6 +6,8 @@ serialization live here.
 """
 
 import base64
+import copy
+import hashlib
 import inspect
 import json
 import logging
@@ -16,11 +18,17 @@ import threading
 import time
 import uuid
 from dataclasses import asdict, is_dataclass
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from datetime import datetime
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
+import cv2
 import numpy as np
 
 from .context_store import DropLogicMCPContextStore
+from droplogic.utils.drop_vision.imaging_capture import (
+    capture_channel_frame,
+    snapshot_capture_settings,
+)
 from droplogic.utils.window_manager import get_window_status
 
 
@@ -57,6 +65,35 @@ class DropLogicMCPRuntime:
         "get_droplet_position",
         "merge_sequential_events",
         "push_frame",
+        "trim_plan_tail",
+    }
+
+    PLAN_MOVE_OPTION_KEYS = {
+        "max_frames",
+        "planning_timeout",
+        "debug_visualization",
+        "max_threads",
+        "max_iterations",
+        "retry_attempts",
+        "ignore_vital_space_pairs",
+        "all_active_droplets",
+        "reserve_final_positions",
+        "merge_hub",
+        "hub_ignore_pairs",
+        "hub_ignore_from_frame",
+        "reservation_horizon",
+        "max_path_frames",
+        "add_events",
+        "merge_on_failure",
+        "return_full_result",
+    }
+
+    PLAN_PRIMITIVE_METHODS = {
+        "move",
+        "reservoir_extraction",
+        "isometric_split",
+        "mix",
+        "merge",
     }
 
     MODULE_METHODS = {
@@ -185,6 +222,13 @@ class DropLogicMCPRuntime:
     REAL_SYSTEMS = {"dmlite", "boxmini", "box_mini", "box_mini1"}
     ADVANCED_DROP_SYNC_MOVE_MAX_ACTIVE = 5
     ADVANCED_DROP_SYNC_MOVE_MAX_TIMEOUT = 45.0
+    EXECUTE_SEGMENT_INLINE_WAIT_MAX_SECONDS = 75.0
+    EXECUTE_SEGMENT_INLINE_WAIT_MARGIN_SECONDS = 8.0
+    EXECUTION_WAIT_STATUS_MAX_WAIT_SECONDS = 30.0
+    EXECUTION_WAIT_STATUS_MIN_WAIT_SECONDS = 2.0
+    LARGE_STATE_PATHS = {
+        "electrode_matrix.matrix",
+    }
 
     def __init__(
         self,
@@ -192,6 +236,7 @@ class DropLogicMCPRuntime:
         log_level: str = "INFO",
         allow_real_hardware: bool = False,
         allow_unsafe_tools: bool = False,
+        allow_large_state_tools: bool = False,
         snapshots_dir: Optional[str] = None,
         context_dir: Optional[str] = None,
     ):
@@ -199,6 +244,7 @@ class DropLogicMCPRuntime:
         self.log_level = log_level
         self.allow_real_hardware = allow_real_hardware
         self.allow_unsafe_tools = allow_unsafe_tools
+        self.allow_large_state_tools = allow_large_state_tools
         self.snapshots_dir = os.path.abspath(
             snapshots_dir
             or os.path.join(tempfile.gettempdir(), "droplogic_mcp_snapshots")
@@ -227,6 +273,35 @@ class DropLogicMCPRuntime:
         self._real_hardware_lock_handle = None
         self._real_hardware_lock_path: Optional[str] = None
         self._real_hardware_lock_system: Optional[str] = None
+        self.dashboard_scene_path = os.environ.get("DROPLOGIC_DASHBOARD_SCENE_PATH")
+        self._dashboard_scene_write_lock = threading.RLock()
+        self._dashboard_timeline_cache_key: Optional[Tuple[Any, ...]] = None
+        self._dashboard_timeline_cache: Optional[Dict[str, Any]] = None
+
+    def _runtime_mode(self) -> Dict[str, Any]:
+        cockpit_mode = str(os.environ.get("DROPLOGIC_COCKPIT_MODE", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        visualizer_headless = str(os.environ.get("DROPLOGIC_VISUALIZER_HEADLESS", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        return {
+            "cockpit": cockpit_mode,
+            "visualizer_windows": not (cockpit_mode or visualizer_headless),
+            "visualizer_delivery": "cockpit_frames" if cockpit_mode else "opencv_windows",
+            "agent_note": (
+                "Cockpit mode is active: the browser renders matrix and streamer frames. "
+                "Do not bring OpenCV visualizer windows to front unless the user explicitly asks."
+                if cockpit_mode
+                else None
+            ),
+        }
 
     # ---------------------------------------------------------------------
     # System lifecycle
@@ -291,6 +366,7 @@ class DropLogicMCPRuntime:
                 raise
 
             self._namespace_visualizer_windows(self.system)
+            self._attach_dashboard_scene_writer(self.system)
             self._set_context_system(self.system_name)
             self.config_file = config_file
             self.log_level = log_level
@@ -329,6 +405,7 @@ class DropLogicMCPRuntime:
 
             system = self.system
             if system is not None:
+                self._detach_dashboard_scene_writer(system)
                 for visualizer_name in ("streamer", "matrix"):
                     instance = self._get_visualizer_instance(system, visualizer_name)
                     stop = getattr(instance, "stop", None)
@@ -372,11 +449,37 @@ class DropLogicMCPRuntime:
             raise DropLogicMCPError("Loaded system does not expose a PlanExecutor.")
         return executor
 
+    def _attach_dashboard_scene_writer(self, system: Any) -> None:
+        if not self.dashboard_scene_path:
+            return
+        executor = getattr(getattr(system, "advanced_drop", None), "executor", None)
+        if executor is None:
+            return
+
+        def _write_scene(_event: Optional[Dict[str, Any]] = None) -> None:
+            self.write_dashboard_scene_snapshot()
+
+        try:
+            executor.on_frame_applied = _write_scene
+        except Exception:
+            pass
+
+    def _detach_dashboard_scene_writer(self, system: Any) -> None:
+        executor = getattr(getattr(system, "advanced_drop", None), "executor", None)
+        if executor is None:
+            return
+        try:
+            if getattr(executor, "on_frame_applied", None) is not None:
+                executor.on_frame_applied = None
+        except Exception:
+            pass
+
     # ---------------------------------------------------------------------
     # Read/observe
 
-    def status(self) -> Dict[str, Any]:
+    def status(self, detail: str = "compact") -> Dict[str, Any]:
         """Return a compact runtime status."""
+        detail = str(detail or "compact").lower()
         with self._lock:
             system = self.system
             system_status = {
@@ -394,7 +497,7 @@ class DropLogicMCPRuntime:
                         ),
                     }
                 )
-                if hasattr(system, "get_queue_status"):
+                if detail == "full" and hasattr(system, "get_queue_status"):
                     system_status["queues"] = self.to_jsonable(system.get_queue_status())
 
             visualizer_status = None
@@ -417,8 +520,9 @@ class DropLogicMCPRuntime:
                 if droplets is not None and hasattr(droplets, "get_droplets_summary"):
                     droplet_summary = self.to_jsonable(droplets.get_droplets_summary())
 
-            return {
+            status = {
                 "session_id": self.session_id,
+                "runtime_mode": self._runtime_mode(),
                 "allow_real_hardware": self.allow_real_hardware,
                 "allow_unsafe_tools": self.allow_unsafe_tools,
                 "config_file": self.config_file,
@@ -433,6 +537,155 @@ class DropLogicMCPRuntime:
                     self.last_visualizer_prepare_result
                 ),
             }
+            if detail != "full":
+                status["executor"] = self._compact_executor_status(executor_status)
+                status["plan"] = self._compact_plan_status(plan_summary)
+                status["droplets"] = self._compact_droplets_status(droplet_summary)
+                status["visualizers"] = self._compact_visualizer_status(visualizer_status)
+                status.pop("last_visualizer_prepare_result", None)
+            return status
+
+    def _compact_executor_status(self, status: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not isinstance(status, dict):
+            return status
+        last_frame = status.get("last_frame") if isinstance(status.get("last_frame"), dict) else {}
+        last_applied = (
+            status.get("last_applied_frame")
+            if isinstance(status.get("last_applied_frame"), dict)
+            else {}
+        )
+        return {
+            "is_executing": status.get("is_executing"),
+            "current_frame": status.get("current_frame"),
+            "total_frames": status.get("total_frames"),
+            "frames_executed": status.get("frames_executed"),
+            "frame_delay": status.get("frame_delay"),
+            "progress": status.get("progress"),
+            "breakpoints": status.get("breakpoints"),
+            "breakpoint_reached": status.get("breakpoint_reached"),
+            "last_frame": {
+                "index": last_frame.get("index"),
+                "error": last_frame.get("error"),
+                "duration_seconds": last_frame.get("duration_seconds"),
+            },
+            "last_applied_frame": {
+                "index": last_applied.get("index"),
+                "plan_frame_count": last_applied.get("plan_frame_count"),
+                "active_droplet_ids": last_applied.get("active_droplet_ids"),
+            },
+        }
+
+    def _compact_execution_wait_status(self, status: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not isinstance(status, dict):
+            return status
+        compact = {
+            "wait_id": status.get("wait_id"),
+            "running": status.get("running"),
+            "completed": status.get("completed"),
+            "ok": status.get("ok"),
+            "thread_alive": status.get("thread_alive"),
+            "cancel_requested": status.get("cancel_requested"),
+            "timeout_seconds": status.get("timeout_seconds"),
+            "poll_interval_seconds": status.get("poll_interval_seconds"),
+            "target_frame": status.get("target_frame"),
+            "resume_if_paused": status.get("resume_if_paused"),
+            "wait_mode": status.get("wait_mode"),
+            "timed_out": status.get("timed_out"),
+            "reason": status.get("reason"),
+            "error": status.get("error"),
+            "elapsed_seconds": status.get("elapsed_seconds"),
+            "remaining_timeout_seconds": status.get("remaining_timeout_seconds"),
+            "recommended_wait_seconds": status.get("recommended_wait_seconds"),
+            "next_check_after_seconds": status.get("next_check_after_seconds"),
+            "recommended_status_call": status.get("recommended_status_call"),
+            "status_wait": status.get("status_wait"),
+        }
+        if compact.get("running"):
+            recommended_wait_seconds = compact.get("recommended_wait_seconds")
+            if recommended_wait_seconds is None:
+                recommended_wait_seconds = self._execution_wait_recommended_wait_seconds(
+                    status=compact
+                )
+            compact["recommended_wait_seconds"] = recommended_wait_seconds
+            compact["next_check_after_seconds"] = recommended_wait_seconds
+            compact["recommended_status_call"] = {
+                "tool": "execution_wait_status",
+                "arguments": {"wait_seconds": recommended_wait_seconds},
+            }
+        if "executor_status" in status:
+            compact["executor_status"] = self._compact_executor_status(
+                status.get("executor_status")
+            )
+        if "executor_status_error" in status:
+            compact["executor_status_error"] = status.get("executor_status_error")
+        return compact
+
+    def _compact_plan_status(self, plan: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not isinstance(plan, dict):
+            return plan
+        return {
+            "available": plan.get("available"),
+            "frame_count": plan.get("frame_count"),
+            "planning_success": plan.get("planning_success"),
+            "active_droplet_ids": plan.get("active_droplet_ids"),
+            "targets_reached": plan.get("targets_reached"),
+            "event_count": len(plan.get("events") or []),
+            "trajectories": plan.get("trajectories"),
+        }
+
+    def _compact_droplets_status(self, droplets: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not isinstance(droplets, dict):
+            return droplets
+        compact: Dict[str, Any] = {
+            "total_droplets": droplets.get("total_droplets"),
+            "active_droplet_ids": droplets.get("active_droplet_ids"),
+            "has_plan": droplets.get("has_plan"),
+        }
+        entries = []
+        for droplet in droplets.get("droplets") or []:
+            if not isinstance(droplet, dict):
+                entries.append(self._summarize_state_value(droplet))
+                continue
+            entries.append(
+                {
+                    key: droplet.get(key)
+                    for key in (
+                        "id",
+                        "active",
+                        "current_position",
+                        "target_position",
+                        "at_target",
+                        "shape_size",
+                        "priority",
+                        "vital_space",
+                    )
+                    if key in droplet
+                }
+            )
+        compact["droplets"] = entries
+        return compact
+
+    def _compact_visualizer_status(self, visualizers: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not isinstance(visualizers, dict):
+            return visualizers
+        compact: Dict[str, Any] = {}
+        for name, entry in visualizers.items():
+            if not isinstance(entry, dict):
+                compact[name] = entry
+                continue
+            compact[name] = {
+                "available": entry.get("available"),
+                "is_running": entry.get("is_running"),
+                "window_enabled": entry.get("window_enabled"),
+                "window_mode": entry.get("window_mode"),
+                "headless_active": entry.get("headless_active"),
+                "display_active": entry.get("display_active"),
+                "source": entry.get("source"),
+                "frame_sources": entry.get("frame_sources"),
+                "last_exit_reason": entry.get("last_exit_reason"),
+                "last_display_error": entry.get("last_display_error"),
+            }
+        return compact
 
     def health_check(self) -> Dict[str, Any]:
         """Return a health snapshot for agent supervision."""
@@ -487,18 +740,43 @@ class DropLogicMCPRuntime:
                 reset_matrix=reset_matrix,
             )
 
-    def read_state(self, path: Optional[str] = None) -> Dict[str, Any]:
-        """Read the DropSystem state or a dotted state path."""
+    def read_state(
+        self,
+        path: Optional[str] = None,
+        include_large_values: bool = False,
+    ) -> Dict[str, Any]:
+        """Read a DropSystem state path, guarding raw large values by default."""
         system = self.require_system()
         state = system.state
         if not path:
-            return {"path": None, "value": self.to_jsonable(state)}
+            return {
+                "path": None,
+                "value": self._safe_state_for_agents(state),
+                "large_values_omitted": True,
+                "message": (
+                    "Full raw state is guarded because it can include very large values "
+                    "such as the 128 x 128 electrode matrix. Use state_summary(), "
+                    "matrix_summary(), or read_state(path=...) for exact small paths."
+                ),
+            }
 
-        current = state
-        for key in path.split("."):
-            if not isinstance(current, dict) or key not in current:
-                raise DropLogicMCPError(f"State path not found: {path}")
-            current = current[key]
+        normalized_path = self._normalize_state_path(path)
+        if self._is_large_state_path(normalized_path) and not include_large_values:
+            return {
+                "path": path,
+                "large_value_guarded": True,
+                "message": (
+                    f"Raw state path '{path}' is large and guarded for agent context safety. "
+                    "Use matrix_summary() for exact compact active ranges, "
+                    "state_summary(path='electrode_matrix.matrix') for a summary, or "
+                    "read_large_state(path='electrode_matrix.matrix') only with large-state access enabled."
+                ),
+                "summary": self.matrix_summary(source="state", include_ranges=True),
+            }
+        if self._is_large_state_path(normalized_path):
+            self._require_large_state_access(path)
+
+        current = self._resolve_state_path(state, path)
         return {"path": path, "value": self.to_jsonable(current)}
 
     def state_summary(self, path: Optional[str] = None) -> Dict[str, Any]:
@@ -507,19 +785,506 @@ class DropLogicMCPRuntime:
         state = system.state
         current = state
         if path:
-            for key in path.split("."):
-                if not isinstance(current, dict) or key not in current:
-                    raise DropLogicMCPError(f"State path not found: {path}")
-                current = current[key]
+            current = self._resolve_state_path(state, path)
 
         return {
             "path": path,
             "value": self._summarize_state_value(current),
         }
 
+    def read_large_state(self, path: str) -> Dict[str, Any]:
+        """Read an explicitly large state value when large-state tools are enabled."""
+        normalized_path = self._normalize_state_path(path)
+        if not self._is_large_state_path(normalized_path):
+            raise DropLogicMCPError(
+                f"read_large_state is only for guarded large paths. Use read_state(path='{path}') instead."
+            )
+        self._require_large_state_access(path)
+        system = self.require_system()
+        current = self._resolve_state_path(system.state, path)
+        return {
+            "path": path,
+            "large_state_access": True,
+            "warning": (
+                "This raw value can be very large and should not be sent back to an LLM context "
+                "unless the user explicitly requested the literal data."
+            ),
+            "value": self.to_jsonable(current),
+        }
+
+    def matrix_summary(
+        self,
+        source: str = "state",
+        include_ranges: bool = True,
+        include_active_cells: bool = False,
+        active_cells_limit: int = 512,
+        include_hash: bool = True,
+    ) -> Dict[str, Any]:
+        """Return an exact compact representation of the latest electrode matrix."""
+        matrix = self._get_matrix_for_summary(source)
+        return self._matrix_compact_representation(
+            matrix,
+            source=source,
+            include_ranges=include_ranges,
+            include_active_cells=include_active_cells,
+            active_cells_limit=active_cells_limit,
+            include_hash=include_hash,
+        )
+
+    def set_matrix_cells(
+        self,
+        value: int,
+        cells: Optional[List[List[int]]] = None,
+        rectangles: Optional[List[Dict[str, int]]] = None,
+        row_min: Optional[int] = None,
+        row_max: Optional[int] = None,
+        col_min: Optional[int] = None,
+        col_max: Optional[int] = None,
+        wait_for_queue: bool = False,
+        queue_timeout_seconds: float = 5.0,
+    ) -> Dict[str, Any]:
+        """Set logical electrode matrix cells for planning/UI overlays.
+
+        Values are -1 forbidden/not allowed, 0 clean/off, and 1 permanent ON.
+        Hardware drivers receive their normal binary projection, where -1 stays off.
+        """
+        matrix_value = int(value)
+        if matrix_value not in {-1, 0, 1}:
+            raise DropLogicMCPError("value must be -1 (forbidden), 0 (clean), or 1 (active).")
+
+        system = self.require_system()
+        state = system.state
+        matrix = (state.get("electrode_matrix") or {}).get("matrix")
+        if matrix is None:
+            raise DropLogicMCPError("No electrode_matrix.matrix found in system.state.")
+
+        array = np.asarray(matrix).astype(int).copy()
+        if array.ndim != 2:
+            raise DropLogicMCPError("electrode_matrix.matrix must be 2-dimensional.")
+        before = array.copy()
+        rows, cols = array.shape
+
+        normalized_rectangles: List[Dict[str, int]] = []
+        raw_rectangles = list(rectangles or [])
+        if None not in (row_min, row_max, col_min, col_max):
+            raw_rectangles.append(
+                {
+                    "row_min": int(row_min),
+                    "row_max": int(row_max),
+                    "col_min": int(col_min),
+                    "col_max": int(col_max),
+                }
+            )
+
+        for rect in raw_rectangles:
+            if not isinstance(rect, dict):
+                continue
+            r0 = int(rect.get("row_min", rect.get("row0", rect.get("r0", 0))))
+            r1 = int(rect.get("row_max", rect.get("row1", rect.get("r1", r0))))
+            c0 = int(rect.get("col_min", rect.get("col0", rect.get("c0", 0))))
+            c1 = int(rect.get("col_max", rect.get("col1", rect.get("c1", c0))))
+            r_start = max(0, min(rows - 1, min(r0, r1)))
+            r_end = max(0, min(rows - 1, max(r0, r1)))
+            c_start = max(0, min(cols - 1, min(c0, c1)))
+            c_end = max(0, min(cols - 1, max(c0, c1)))
+            if r_start > r_end or c_start > c_end:
+                continue
+            array[r_start : r_end + 1, c_start : c_end + 1] = matrix_value
+            normalized_rectangles.append(
+                {
+                    "row_min": int(r_start),
+                    "row_max": int(r_end),
+                    "col_min": int(c_start),
+                    "col_max": int(c_end),
+                }
+            )
+
+        normalized_cells: List[List[int]] = []
+        for cell in cells or []:
+            if not isinstance(cell, (list, tuple)) or len(cell) < 2:
+                continue
+            row = int(cell[0])
+            col = int(cell[1])
+            if 0 <= row < rows and 0 <= col < cols:
+                array[row, col] = matrix_value
+                normalized_cells.append([int(row), int(col)])
+
+        if not normalized_rectangles and not normalized_cells:
+            raise DropLogicMCPError("Provide cells, rectangles, or row_min/row_max/col_min/col_max.")
+
+        changed_cells = int(np.count_nonzero(array != before))
+        result = system.update_state("electrode_matrix.matrix", array.tolist())
+        persisted_runtime_state = False
+        persistence_error = None
+        try:
+            persist_value = getattr(system, "_record_runtime_persistent_value", None)
+            if callable(persist_value):
+                persist_value("electrode_matrix.matrix", array.tolist())
+                flush_state = getattr(system, "flush_state", None)
+                if callable(flush_state):
+                    flush_state()
+                persisted_runtime_state = True
+        except Exception as exc:
+            persistence_error = str(exc)
+        queue_wait = None
+        if wait_for_queue:
+            queue_wait = self._wait_for_hardware_queue_empty(
+                timeout_seconds=queue_timeout_seconds,
+                poll_interval=0.05,
+            )
+
+        return {
+            "ok": True,
+            "value": matrix_value,
+            "changed_cells": changed_cells,
+            "rectangles": normalized_rectangles,
+            "cells": normalized_cells[:256],
+            "cells_truncated": len(normalized_cells) > 256,
+            "update_state": self.to_jsonable(result),
+            "persisted_runtime_state": persisted_runtime_state,
+            "persistence_error": persistence_error,
+            "wait_for_hardware_queue": queue_wait,
+            "matrix": self._matrix_compact_representation(
+                array,
+                source="state",
+                include_ranges=True,
+                include_active_cells=False,
+                include_hash=True,
+            ),
+        }
+
+    def set_calibration(self, calibration: Dict[str, Any]) -> Dict[str, Any]:
+        """Update the loaded system's calibration mapping without enqueuing hardware."""
+        if not isinstance(calibration, dict):
+            raise DropLogicMCPError("calibration must be an object.")
+        chip_origin = calibration.get("chip_origin")
+        mapping = calibration.get("electrode_mapping")
+        if not isinstance(chip_origin, dict) or not isinstance(mapping, dict):
+            raise DropLogicMCPError("calibration needs chip_origin and electrode_mapping objects.")
+        system = self.require_system()
+        if hasattr(system, "set_cached_state"):
+            result = system.set_cached_state("calibration", copy.deepcopy(calibration))
+        else:
+            with getattr(system, "_state_lock", threading.RLock()):
+                system._state["calibration"] = copy.deepcopy(calibration)
+            result = {"success": True, "key": "calibration", "cached_only": True}
+        return {
+            "ok": True,
+            "result": self.to_jsonable(result),
+            "calibration": self.to_jsonable(calibration),
+        }
+
+    def execution_status_summary(
+        self,
+        include_matrix: bool = True,
+        include_plan: bool = True,
+        include_droplets: bool = True,
+        include_visualizers: bool = False,
+        include_planning_job: bool = True,
+        include_execution_wait: bool = True,
+    ) -> Dict[str, Any]:
+        """Return one compact status snapshot for normal agent decisions."""
+        status = self.status(detail="compact")
+        system_status = status.get("system") if isinstance(status, dict) else {}
+        summary: Dict[str, Any] = {
+            "surface": "execution_status_summary",
+            "updated_at": time.time(),
+            "runtime_mode": status.get("runtime_mode"),
+            "last_error": status.get("last_error"),
+            "system": system_status,
+            "executor": status.get("executor"),
+        }
+        if include_plan:
+            summary["plan"] = status.get("plan")
+        if include_droplets:
+            summary["droplets"] = status.get("droplets")
+        if include_visualizers:
+            summary["visualizers"] = status.get("visualizers")
+
+        system_loaded = bool(
+            isinstance(system_status, dict) and system_status.get("loaded")
+        )
+        if include_matrix:
+            if system_loaded:
+                try:
+                    summary["matrix"] = self.matrix_summary(
+                        source="state",
+                        include_ranges=True,
+                        include_active_cells=False,
+                        include_hash=True,
+                    )
+                except Exception as exc:
+                    summary["matrix"] = {"error": str(exc)}
+            else:
+                summary["matrix"] = {"available": False, "reason": "no_system_loaded"}
+
+        if include_planning_job:
+            try:
+                planning_job = self.advanced_drop_job_status()
+                summary["planning_job"] = self._compact_job_for_status_summary(
+                    planning_job,
+                    plan_included=include_plan,
+                    droplets_included=include_droplets,
+                )
+            except Exception as exc:
+                summary["planning_job"] = {"error": str(exc)}
+
+        if include_execution_wait:
+            try:
+                summary["execution_wait"] = self.execution_wait_status()
+            except Exception as exc:
+                summary["execution_wait"] = {"error": str(exc)}
+
+        return self.to_jsonable(summary)
+
+    def _compact_job_for_status_summary(
+        self,
+        job: Optional[Dict[str, Any]],
+        plan_included: bool = True,
+        droplets_included: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        """Remove fields duplicated by execution_status_summary top-level sections."""
+        if not isinstance(job, dict):
+            return job
+        compact = dict(job)
+        if plan_included and "plan" in compact:
+            compact.pop("plan", None)
+            compact["plan_ref"] = "top_level_plan"
+        if droplets_included and "droplets" in compact:
+            compact.pop("droplets", None)
+            compact["droplets_ref"] = "top_level_droplets"
+        result = compact.get("result")
+        if isinstance(result, dict):
+            result = dict(result)
+            if result.get("next_step") == compact.get("next_step"):
+                result.pop("next_step", None)
+            if result.get("visualizer_recovery") == {"needed": False}:
+                result.pop("visualizer_recovery", None)
+            compact["result"] = result
+        if compact.get("completed") and compact.get("ok") and compact.get("result"):
+            compact["result_ref"] = "planning_job_status"
+            compact.pop("result", None)
+        if compact.get("completed") and compact.get("ok") and compact.get("next_step"):
+            compact["next_step"] = "execution complete; use top-level executor/plan/droplet state for the next decision."
+        return compact
+
+    def _resolve_state_path(self, state: Any, path: str) -> Any:
+        """Resolve dotted dict keys, with numeric indexes for list-like values."""
+        current = state
+        full_path = str(path or "")
+        for key in path.split("."):
+            if isinstance(current, dict):
+                if key not in current:
+                    raise DropLogicMCPError(self._state_path_not_found_message(full_path, key))
+                current = current[key]
+                continue
+            if isinstance(current, (list, tuple, np.ndarray)):
+                try:
+                    index = int(key)
+                except ValueError as exc:
+                    raise DropLogicMCPError(self._state_path_not_found_message(full_path, key)) from exc
+                try:
+                    current = current[index]
+                except IndexError as exc:
+                    raise DropLogicMCPError(f"State path index out of range: {path}") from exc
+                continue
+            raise DropLogicMCPError(self._state_path_not_found_message(full_path, key))
+        return current
+
+    def _state_path_not_found_message(self, path: str, missing_key: str) -> str:
+        if path == "advanced_drop" or path.startswith("advanced_drop."):
+            return (
+                "State path not found: advanced_drop. AdvancedDrop is not part of system.state; "
+                "use droplets_summary, plan_summary, executor_status, planning_job_status, "
+                "or the planning primitive tools instead."
+            )
+        if missing_key == "advanced_drop":
+            return (
+                f"State path not found: {path}. AdvancedDrop is not exposed through read_state/state_summary; "
+                "use droplets_summary, plan_summary, executor_status, or planning_job_status instead."
+            )
+        return f"State path not found: {path}"
+
+    def _normalize_state_path(self, path: str) -> str:
+        return ".".join(part for part in str(path or "").strip().split(".") if part)
+
+    def _is_large_state_path(self, path: str) -> bool:
+        return self._normalize_state_path(path) in self.LARGE_STATE_PATHS
+
+    def _require_large_state_access(self, path: str) -> None:
+        if self.allow_large_state_tools:
+            return
+        raise DropLogicMCPError(
+            f"Raw access to large state path '{path}' is disabled. Restart the MCP server with "
+            "--allow-large-state-tools only when the user explicitly needs the literal full matrix. "
+            "Use matrix_summary() or state_summary(path='electrode_matrix.matrix') for normal agent work."
+        )
+
+    def _safe_state_for_agents(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        safe = {}
+        for key, value in state.items():
+            if key == "electrode_matrix" and isinstance(value, dict):
+                matrix = value.get("matrix")
+                safe_matrix = {
+                    sub_key: self._summarize_state_value(sub_value)
+                    for sub_key, sub_value in value.items()
+                    if sub_key != "matrix"
+                }
+                if matrix is not None:
+                    safe_matrix["matrix"] = self._matrix_compact_representation(
+                        matrix,
+                        source="state",
+                        include_ranges=True,
+                        include_active_cells=False,
+                        include_hash=True,
+                    )
+                safe[key] = safe_matrix
+                continue
+            safe[str(key)] = self._summarize_state_value(value)
+        return safe
+
+    def _get_matrix_for_summary(self, source: str = "state") -> Any:
+        source_key = (source or "state").strip().lower()
+        system = self.require_system()
+        if source_key in {"state", "current", "active"}:
+            matrix = (system.state.get("electrode_matrix") or {}).get("matrix")
+            if matrix is None:
+                raise DropLogicMCPError("No electrode_matrix.matrix found in system.state.")
+            return matrix
+        if source_key in {"executor_last_frame", "last_frame"}:
+            executor = self.require_executor()
+            last_frame = getattr(executor, "last_frame", None)
+            if isinstance(last_frame, dict):
+                for key in ("matrix", "frame", "state"):
+                    if last_frame.get(key) is not None:
+                        return last_frame[key]
+            if last_frame is not None and hasattr(last_frame, "matrix"):
+                return getattr(last_frame, "matrix")
+            raise DropLogicMCPError("Executor does not expose a last-frame matrix.")
+        raise DropLogicMCPError("source must be 'state' or 'executor_last_frame'.")
+
+    def _matrix_compact_representation(
+        self,
+        matrix: Any,
+        source: str = "state",
+        include_ranges: bool = True,
+        include_active_cells: bool = False,
+        active_cells_limit: int = 512,
+        include_hash: bool = True,
+    ) -> Dict[str, Any]:
+        array = np.asarray(matrix)
+        if array.ndim != 2:
+            return {
+                "type": "matrix_summary",
+                "source": source,
+                "shape": list(array.shape),
+                "error": "matrix is not 2-dimensional",
+            }
+
+        active_mask = array != 0
+        active_positions = np.argwhere(active_mask)
+        active_count = int(active_positions.shape[0])
+        result: Dict[str, Any] = {
+            "type": "matrix_summary",
+            "source": source,
+            "shape": [int(array.shape[0]), int(array.shape[1])],
+            "dtype": str(array.dtype),
+            "active_count": active_count,
+            "zero_count": int(array.size - active_count),
+            "encoding": "active_ranges_by_row" if include_ranges else "summary",
+            "zeros_are_implicit": True,
+        }
+        if include_hash:
+            contiguous = np.ascontiguousarray(active_mask.astype(np.uint8))
+            result["active_mask_sha256"] = hashlib.sha256(contiguous.tobytes()).hexdigest()
+            try:
+                value_bytes = np.ascontiguousarray(array).tobytes()
+                result["matrix_values_sha256"] = hashlib.sha256(value_bytes).hexdigest()
+            except Exception:
+                pass
+
+        if active_count == 0:
+            if include_ranges:
+                result["rows"] = {}
+                result["values"] = {}
+            if include_active_cells:
+                result["active_cells"] = []
+            return result
+
+        rows = active_positions[:, 0]
+        cols = active_positions[:, 1]
+        result["active_bbox"] = {
+            "row_min": int(rows.min()),
+            "row_max": int(rows.max()),
+            "col_min": int(cols.min()),
+            "col_max": int(cols.max()),
+        }
+
+        if include_ranges:
+            row_ranges: Dict[str, List[List[int]]] = {}
+            for row_index in np.unique(rows):
+                active_cols = np.flatnonzero(active_mask[int(row_index)])
+                row_ranges[str(int(row_index))] = self._integer_ranges(active_cols)
+            result["rows"] = row_ranges
+
+            values: Dict[str, Dict[str, Any]] = {}
+            value_counts: Dict[str, int] = {}
+            for raw_value in np.unique(array[active_mask]):
+                value_mask = array == raw_value
+                positions = np.argwhere(value_mask)
+                value_rows = positions[:, 0] if positions.size else []
+                key = self._matrix_value_key(raw_value)
+                value_counts[key] = int(positions.shape[0])
+                ranges_by_row: Dict[str, List[List[int]]] = {}
+                for row_index in np.unique(value_rows):
+                    value_cols = np.flatnonzero(value_mask[int(row_index)])
+                    ranges_by_row[str(int(row_index))] = self._integer_ranges(value_cols)
+                values[key] = {
+                    "count": int(positions.shape[0]),
+                    "rows": ranges_by_row,
+                }
+            result["value_counts"] = value_counts
+            result["values"] = values
+
+        if include_active_cells:
+            limit = max(0, int(active_cells_limit))
+            cells = [[int(row), int(col)] for row, col in active_positions[:limit]]
+            result["active_cells"] = cells
+            result["active_cells_truncated"] = active_count > limit
+            if active_count > limit:
+                result["active_cells_total"] = active_count
+
+        return result
+
+    def _matrix_value_key(self, value: Any) -> str:
+        try:
+            number = float(value)
+            if number.is_integer():
+                return str(int(number))
+        except Exception:
+            pass
+        return str(self.to_jsonable(value))
+
+    def _integer_ranges(self, values: Iterable[int]) -> List[List[int]]:
+        values = [int(value) for value in values]
+        if not values:
+            return []
+        ranges: List[List[int]] = []
+        start = previous = values[0]
+        for value in values[1:]:
+            if value == previous + 1:
+                previous = value
+                continue
+            ranges.append([start, previous])
+            start = previous = value
+        ranges.append([start, previous])
+        return ranges
+
     def context_status(self) -> Dict[str, Any]:
         """Return the active agent context summary."""
-        return self.context.status()
+        status = self.context.status()
+        status["runtime_mode"] = self._runtime_mode()
+        return status
 
     def list_context_files(self) -> Dict[str, Any]:
         """Return the merged context file list."""
@@ -566,16 +1331,140 @@ class DropLogicMCPRuntime:
         return {
             "system_loaded": system is not None,
             "system": self.system_name,
+            "runtime_mode": self._runtime_mode(),
             "context": self.context_status(),
-            "advanced_drop": self.list_advanced_drop_methods()
-            if system is not None and hasattr(system, "advanced_drop")
-            else {},
-            "advanced_drop_tools": [
-                "advanced_drop_call",
-                "start_advanced_drop_call",
-                "advanced_drop_job_status",
-                "cancel_advanced_drop_job",
+            "advanced_drop": {
+                "available": system is not None and hasattr(system, "advanced_drop"),
+                "agent_interface": "planning_primitives",
+                "raw_methods_exposed": bool(self.allow_unsafe_tools),
+                "raw_methods": self.list_advanced_drop_methods()
+                if (
+                    self.allow_unsafe_tools
+                    and system is not None
+                    and hasattr(system, "advanced_drop")
+                )
+                else {},
+            },
+            "tool_categories": {
+                "session": [
+                    "load_system",
+                    "close_system",
+                    "restart_system",
+                    "runtime_status",
+                    "health_check",
+                    "capabilities",
+                    "emergency_stop",
+                ],
+                "context": [
+                    "context_status",
+                    "list_context_files",
+                    "read_context_file",
+                ],
+                "state_observation": [
+                    "state_summary",
+                    "read_state",
+                    "matrix_summary",
+                    "execution_status_summary",
+                    "execution_scene",
+                ],
+                "visualization": [
+                    "prepare_visualizers",
+                    "set_streamer_source",
+                    "set_execution_view_mode",
+                    "visualizer_status",
+                    "start_visualizer",
+                    "stop_visualizer",
+                    "bring_visualizer_to_front",
+                    "visualizer_frame",
+                ],
+                "stage_light_imaging": [
+                    "move_stage",
+                    "set_light_state",
+                    "light_off",
+                    "configure_microscope_imaging",
+                    "capture_droplet_images",
+                ],
+                "temperature": [
+                    "temperature_hold",
+                    "start_temperature_routine",
+                    "temperature_routine_status",
+                    "cancel_temperature_routine",
+                ],
+                "droplets": [
+                    "create_droplet",
+                    "add_droplets",
+                    "delete_droplet",
+                    "update_droplet_target",
+                    "update_droplet_targets",
+                    "update_droplet_position",
+                    "droplets_summary",
+                ],
+                "planning_primitives": [
+                    "plan_activation_frame",
+                    "plan_move",
+                    "plan_reservoir_extraction",
+                    "plan_isometric_split",
+                    "plan_mix",
+                    "plan_merge",
+                    "planning_job_status",
+                    "cancel_planning_job",
+                    "plan_summary",
+                    "save_protocol",
+                ],
+                "execution": [
+                    "start_plan",
+                    "set_execution_view_mode",
+                    "pause_plan",
+                    "resume_plan",
+                    "stop_plan",
+                    "executor_status",
+                    "add_breakpoint",
+                    "remove_breakpoint",
+                    "clear_breakpoints",
+                    "execute_segment_to_breakpoint",
+                    "start_execute_until_breakpoint",
+                    "execution_wait_status",
+                    "cancel_execution_wait",
+                ],
+                "vision_feedback": [
+                    "verify_droplets",
+                    "detect_condensates",
+                ],
+                "low_level_debug": [
+                    "list_system_modules",
+                    "module_busy_status",
+                    "module_call",
+                ],
+            },
+            "planning_primitive_tools": [
+                "plan_activation_frame",
+                "plan_move",
+                "plan_reservoir_extraction",
+                "plan_isometric_split",
+                "plan_mix",
+                "plan_merge",
+                "planning_job_status",
+                "cancel_planning_job",
             ],
+            "debug_tools": {
+                "always_available": [
+                    "list_system_modules",
+                    "module_busy_status",
+                    "module_call",
+                ],
+                "requires_allow_unsafe_tools": [
+                    "set_system_state",
+                    "system_call",
+                    "list_advanced_drop_methods",
+                    "advanced_drop_call",
+                    "start_advanced_drop_call",
+                    "advanced_drop_job_status",
+                    "cancel_advanced_drop_job",
+                ],
+                "requires_allow_large_state_tools": [
+                    "read_large_state",
+                ],
+            },
             "executor": {
                 "available": system is not None and hasattr(getattr(system, "advanced_drop", None), "executor"),
                 "methods": [
@@ -587,7 +1476,7 @@ class DropLogicMCPRuntime:
                     "add_breakpoint",
                     "remove_breakpoint",
                     "clear_breakpoints",
-                    "execute_until_breakpoint",
+                    "execute_segment_to_breakpoint",
                     "start_execute_until_breakpoint",
                     "execution_wait_status",
                     "cancel_execution_wait",
@@ -604,19 +1493,55 @@ class DropLogicMCPRuntime:
                 "stop_visualizer",
                 "bring_visualizer_to_front",
                 "visualizer_frame",
-                "visualizer_snapshot",
-                "visualizer_call",
+            ],
+            "stage_tools": [
+                "move_stage",
+                "set_execution_view_mode",
             ],
             "imaging_tools": [
                 "configure_microscope_imaging",
+                "capture_droplet_images",
+            ],
+            "light_tools": [
+                "set_light_state",
+                "light_off",
             ],
             "temperature_tools": [
                 "temperature_hold",
-                "temperature_sweep",
                 "start_temperature_routine",
                 "temperature_routine_status",
                 "cancel_temperature_routine",
             ],
+            "state_tools": {
+                "safe_by_default": True,
+                "large_state_paths_guarded": sorted(self.LARGE_STATE_PATHS),
+                "tools": [
+                    "state_summary",
+                    "read_state",
+                    "matrix_summary",
+                    "execution_status_summary",
+                    "execution_scene",
+                ],
+                "matrix_access": {
+                    "default": "matrix_summary returns exact compact active_ranges_by_row",
+                    "raw_requires_allow_large_state_tools": True,
+                    "allow_large_state_tools": self.allow_large_state_tools,
+                },
+                "status_summary": {
+                    "default": (
+                        "execution_status_summary returns compact runtime, executor, "
+                        "matrix, droplet, plan, planning-job, and execution-wait state "
+                        "for normal agent decisions."
+                    ),
+                },
+                "scene_access": {
+                    "default": (
+                        "execution_scene returns compact plan/executor/matrix/droplet state "
+                        "for reasoning or external rendering; raw zeros are implicit."
+                    ),
+                    "dashboard_file_surface": bool(self.dashboard_scene_path),
+                },
+            },
             "system_methods": self._describe_methods(system, self.SYSTEM_METHODS)
             if system is not None
             else {},
@@ -624,6 +1549,7 @@ class DropLogicMCPRuntime:
             "safety": {
                 "allow_real_hardware": self.allow_real_hardware,
                 "allow_unsafe_tools": self.allow_unsafe_tools,
+                "allow_large_state_tools": self.allow_large_state_tools,
                 "unsafe_module_methods_require_flag": [
                     f"{module}.{method}"
                     for module, method in sorted(self.UNSAFE_MODULE_METHODS)
@@ -754,13 +1680,15 @@ class DropLogicMCPRuntime:
                 "available": True,
                 "frame_sources": self._visualizer_frame_sources(instance),
                 "window_name": getattr(instance, "window_name", None),
+                "window_enabled": getattr(instance, "window_enabled", None),
                 "window_mode": getattr(instance, "_window_mode", None),
+                "headless_active": bool(getattr(instance, "_headless_active", False)),
                 "display_active": bool(getattr(instance, "_display_active", False)),
                 "last_exit_reason": getattr(instance, "last_exit_reason", None),
                 "last_display_error": getattr(instance, "last_display_error", None),
             }
             window_name = item["window_name"]
-            if window_name:
+            if window_name and item.get("window_enabled", True):
                 item["os_window"] = get_window_status(window_name)
             for thread_name in ("thread", "capture_thread", "display_thread"):
                 thread = getattr(instance, thread_name, None)
@@ -944,11 +1872,144 @@ class DropLogicMCPRuntime:
             "status": self.visualizer_status().get("streamer"),
         }
 
+    def _validate_light_intensity(self, name: str, value: Any) -> int:
+        try:
+            intensity = int(value)
+        except (TypeError, ValueError) as exc:
+            raise DropLogicMCPError(f"{name} must be an integer from 0 to 99.") from exc
+        if not 0 <= intensity <= 99:
+            raise DropLogicMCPError(f"{name} must be between 0 and 99.")
+        return intensity
+
+    def _light_state_snapshot(self) -> Dict[str, Any]:
+        system = self.require_system()
+        state = getattr(system, "state", {}) or {}
+        light_settings = state.get("light_settings", {}) if isinstance(state, dict) else {}
+        module_state = None
+        light = getattr(system, "light", None)
+        get_state = getattr(light, "get_state", None)
+        if get_state is not None:
+            try:
+                module_state = self.to_jsonable(get_state())
+            except Exception as exc:
+                module_state = {"error": str(exc)}
+        return {
+            "state": self.to_jsonable(light_settings),
+            "module_state": module_state,
+        }
+
+    def set_light_state(
+        self,
+        light_on: Optional[bool] = None,
+        coaxial_intensity: Optional[int] = None,
+        ring_intensity: Optional[int] = None,
+        wait_for_queue: bool = True,
+        queue_timeout_seconds: float = 10.0,
+    ) -> Dict[str, Any]:
+        """Set BoxMini light master/coaxial/ring state through queued hardware paths."""
+        system = self.require_system()
+        state = getattr(system, "state", {}) or {}
+        if not isinstance(state, dict) or "light_settings" not in state:
+            raise DropLogicMCPError(
+                "Loaded system has no light_settings state. Use this tool only on systems with a light module."
+            )
+
+        coaxial = None
+        ring = None
+        if coaxial_intensity is not None:
+            coaxial = self._validate_light_intensity("coaxial_intensity", coaxial_intensity)
+        if ring_intensity is not None:
+            ring = self._validate_light_intensity("ring_intensity", ring_intensity)
+
+        if light_on is None and ((coaxial is not None and coaxial > 0) or (ring is not None and ring > 0)):
+            light_on = True
+        if (
+            light_on is None
+            and coaxial is not None
+            and ring is not None
+            and coaxial == 0
+            and ring == 0
+        ):
+            light_on = False
+        if light_on is False:
+            coaxial = 0
+            ring = 0
+
+        updates = []
+        if light_on is True:
+            updates.append(("light_settings.light_on", True))
+        if coaxial is not None:
+            updates.append(("light_settings.coaxial_intensity", coaxial))
+        if ring is not None:
+            updates.append(("light_settings.ring_intensity", ring))
+        if light_on is False:
+            updates.append(("light_settings.light_on", False))
+
+        if not updates:
+            return {
+                "ok": True,
+                "changed": False,
+                "message": "No light settings were requested.",
+                "light": self._light_state_snapshot(),
+            }
+
+        actions = []
+        with self._lock:
+            for path, value in updates:
+                try:
+                    result = system.update_state(path, value)
+                    actions.append({
+                        "path": path,
+                        "value": value,
+                        "ok": bool(result.get("success", True)) if isinstance(result, dict) else True,
+                        "result": self.to_jsonable(result),
+                    })
+                except Exception as exc:
+                    actions.append({
+                        "path": path,
+                        "value": value,
+                        "ok": False,
+                        "error": str(exc),
+                    })
+
+            queue_wait = None
+            if wait_for_queue:
+                queue_wait = self._wait_for_hardware_queue_empty(
+                    timeout_seconds=queue_timeout_seconds,
+                    poll_interval=0.05,
+                )
+
+        ok = all(action.get("ok", True) is not False for action in actions)
+        if queue_wait is not None:
+            ok = ok and bool(queue_wait.get("ok"))
+
+        return {
+            "ok": ok,
+            "changed": True,
+            "actions": actions,
+            "wait_for_hardware_queue": queue_wait,
+            "light": self._light_state_snapshot(),
+        }
+
+    def light_off(
+        self,
+        wait_for_queue: bool = True,
+        queue_timeout_seconds: float = 10.0,
+    ) -> Dict[str, Any]:
+        """Turn all BoxMini illumination off: coaxial=0, ring=0, master=false."""
+        return self.set_light_state(
+            light_on=False,
+            coaxial_intensity=0,
+            ring_intensity=0,
+            wait_for_queue=wait_for_queue,
+            queue_timeout_seconds=queue_timeout_seconds,
+        )
+
     def configure_microscope_imaging(
         self,
         channel: str = "Brightfield",
-        exposure_time: int = 60000,
-        gain: int = 12,
+        exposure_time: int = 72000,
+        gain: int = 0,
         coaxial_intensity: int = 4,
         ring_intensity: int = 0,
         auto_exposure: bool = False,
@@ -976,14 +2037,17 @@ class DropLogicMCPRuntime:
             except Exception as exc:
                 actions.append({"stop_visualizer": "streamer", "ok": False, "error": str(exc)})
 
-        updates = [
+        updates = []
+        if int(coaxial_intensity) > 0 or int(ring_intensity) > 0:
+            updates.append(("light_settings.light_on", True))
+        updates.extend([
             ("microscope_settings.current_channel", channel),
             ("microscope_settings.auto_exposure", bool(auto_exposure)),
             ("microscope_settings.exposure_time", int(exposure_time)),
             ("microscope_settings.gain", int(gain)),
             ("light_settings.coaxial_intensity", int(coaxial_intensity)),
             ("light_settings.ring_intensity", int(ring_intensity)),
-        ]
+        ])
         for path, value in updates:
             try:
                 actions.append({"update_state": path, "result": system.update_state(path, value)})
@@ -1026,6 +2090,263 @@ class DropLogicMCPRuntime:
             "actions": self.to_jsonable(actions),
             "visualizers": self.visualizer_status(),
         }
+
+    def configure_camera_imaging(
+        self,
+        exposure_time: int = 72000,
+        gain: int = 0,
+        auto_exposure: bool = False,
+        queue_timeout_seconds: float = 10.0,
+    ) -> Dict[str, Any]:
+        """Safely configure the primary camera exposure/gain state."""
+        system = self.require_system()
+        actions = []
+        updates = [
+            ("camera_settings.auto_exposure", bool(auto_exposure)),
+            ("camera_settings.exposure_time", int(exposure_time)),
+            ("camera_settings.gain", int(gain)),
+        ]
+        for path, value in updates:
+            try:
+                actions.append({"update_state": path, "result": system.update_state(path, value)})
+            except Exception as exc:
+                actions.append({"update_state": path, "ok": False, "error": str(exc)})
+
+        queue_wait = self._wait_for_hardware_queue_empty(
+            timeout_seconds=queue_timeout_seconds,
+            poll_interval=0.05,
+        )
+        actions.append({"wait_for_hardware_queue": queue_wait})
+        return {
+            "ok": all(action.get("ok", True) is not False for action in actions),
+            "exposure_time": int(exposure_time),
+            "gain": int(gain),
+            "auto_exposure": bool(auto_exposure),
+            "actions": self.to_jsonable(actions),
+        }
+
+    def capture_droplet_images(
+        self,
+        droplet_ids: Optional[List[int]] = None,
+        channels: Optional[List[Any]] = None,
+        output_dir: Optional[str] = None,
+        temperature_label: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        capture_source: str = "streamer",
+        restart_streamer: bool = True,
+        restore_low_light: bool = True,
+        image_format: str = "png",
+        wait_before_check: float = 0.5,
+        wait_after_check: float = 0.5,
+    ) -> Dict[str, Any]:
+        """Move to droplets and save images for one or more channel profiles."""
+        system = self.require_system()
+        advanced_drop = self.require_advanced_drop()
+
+        capture_source = (capture_source or "streamer").lower()
+        if capture_source not in {"pause_streamer", "streamer"}:
+            raise DropLogicMCPError("capture_source must be 'pause_streamer' or 'streamer'.")
+
+        ext = (image_format or "png").lstrip(".").lower()
+        if ext == "jpeg":
+            ext = "jpg"
+        if ext not in {"png", "jpg"}:
+            raise DropLogicMCPError("image_format must be png, jpg, or jpeg.")
+
+        if droplet_ids is None:
+            droplet_ids = [
+                int(droplet.id)
+                for droplet in advanced_drop.droplets
+                if hasattr(droplet, "id")
+            ]
+        droplet_ids = [int(droplet_id) for droplet_id in droplet_ids]
+        if not droplet_ids:
+            raise DropLogicMCPError("capture_droplet_images requires at least one droplet id.")
+
+        channel_profiles = self._normalize_imaging_channels(channels)
+        if not channel_profiles:
+            raise DropLogicMCPError("capture_droplet_images requires at least one channel.")
+
+        if output_dir is None:
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_dir = os.path.abspath(os.path.join("results", f"droplet_imaging_{stamp}"))
+        else:
+            output_dir = os.path.abspath(os.fspath(output_dir))
+        os.makedirs(output_dir, exist_ok=True)
+
+        streamer = self._get_visualizer_instance(system, "streamer")
+        streamer_was_running = False
+        if streamer is not None and hasattr(streamer, "is_running"):
+            try:
+                streamer_was_running = bool(streamer.is_running())
+            except Exception:
+                streamer_was_running = False
+
+        stopped_streamer = False
+        if capture_source == "pause_streamer" and streamer is not None and hasattr(streamer, "stop"):
+            try:
+                streamer.stop()
+                stopped_streamer = True
+            except Exception as exc:
+                raise DropLogicMCPError(
+                    "Could not stop streamer before direct/full-resolution capture: "
+                    f"{exc}"
+                ) from exc
+        elif capture_source == "streamer":
+            try:
+                self.set_streamer_source(
+                    source="microscope",
+                    electrode_overlay=True,
+                    bring_to_front=False,
+                )
+                if streamer is not None:
+                    self.start_visualizer("streamer")
+            except Exception as exc:
+                raise DropLogicMCPError(
+                    "Could not prepare streamer before batch image capture: "
+                    f"{exc}"
+                ) from exc
+
+        captures = []
+        errors = []
+        started_at = datetime.now().isoformat()
+        try:
+            for droplet_id in droplet_ids:
+                droplet_entry = {
+                    "droplet_id": droplet_id,
+                    "moved": False,
+                    "captures": [],
+                    "errors": [],
+                }
+                try:
+                    moved = advanced_drop.move_to_droplet_center(
+                        droplet_id,
+                        wait_before_check=wait_before_check,
+                        wait_after_check=wait_after_check,
+                    )
+                    droplet_entry["moved"] = bool(moved)
+                    if not moved:
+                        droplet_entry["errors"].append("move_to_droplet_center returned false")
+                except Exception as exc:
+                    droplet_entry["errors"].append(f"move_to_droplet_center failed: {exc}")
+                    errors.append({"droplet_id": droplet_id, "error": str(exc)})
+                    captures.append(droplet_entry)
+                    continue
+
+                for profile in channel_profiles:
+                    channel_name = profile["channel"]
+                    safe_channel = "".join(
+                        char if char.isalnum() or char in ("-", "_") else "_"
+                        for char in channel_name
+                    )
+                    tag_parts = []
+                    if temperature_label:
+                        tag_parts.append(str(temperature_label))
+                    if profile.get("label"):
+                        tag_parts.append(str(profile["label"]))
+                    tag = "_".join(tag_parts)
+                    filename_parts = [f"droplet{droplet_id:03d}", safe_channel]
+                    if tag:
+                        filename_parts.append(tag)
+                    filename_parts.append(datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+                    droplet_dir = os.path.join(output_dir, f"droplet{droplet_id:03d}", safe_channel)
+                    os.makedirs(droplet_dir, exist_ok=True)
+                    image_path = os.path.join(droplet_dir, "_".join(filename_parts) + f".{ext}")
+
+                    try:
+                        frame = capture_channel_frame(
+                            system,
+                            channel=channel_name,
+                            exposure_time=int(profile["exposure_time"]),
+                            gain=int(profile.get("gain", 12)),
+                            coaxial_intensity=int(profile.get("coaxial_intensity", 0)),
+                            ring_intensity=int(profile.get("ring_intensity", 0)),
+                            frame_wait=float(profile.get("frame_wait", 0.2)),
+                            timeout_per_frame=float(profile.get("timeout_per_frame", 10.0)),
+                            mode=str(profile.get("mode", "brightfield")),
+                            use_streamer=(capture_source == "streamer"),
+                            queue_timeout=float(profile.get("queue_timeout", 10.0)),
+                        )
+                        if frame is None or getattr(frame, "size", 0) == 0:
+                            raise RuntimeError("capture returned an empty frame")
+                        settings_snapshot = snapshot_capture_settings(system)
+                        ok = cv2.imwrite(image_path, frame)
+                        if not ok:
+                            raise RuntimeError(f"cv2.imwrite returned false for {image_path}")
+                        droplet_entry["captures"].append(
+                            {
+                                "channel": channel_name,
+                                "path": image_path,
+                                "shape": list(getattr(frame, "shape", [])),
+                                "profile": self.to_jsonable(profile),
+                                "settings_snapshot": self.to_jsonable(settings_snapshot),
+                            }
+                        )
+                    except Exception as exc:
+                        error = {
+                            "droplet_id": droplet_id,
+                            "channel": channel_name,
+                            "error": str(exc),
+                        }
+                        droplet_entry["errors"].append(error)
+                        errors.append(error)
+
+                if restore_low_light:
+                    try:
+                        system.update_state("light_settings.coaxial_intensity", 0)
+                        system.update_state("light_settings.ring_intensity", 0)
+                        system.update_state("light_settings.light_on", False)
+                        self._wait_for_hardware_queue_empty(
+                            timeout_seconds=10.0,
+                            poll_interval=0.05,
+                        )
+                    except Exception:
+                        pass
+
+                captures.append(droplet_entry)
+        finally:
+            if restore_low_light:
+                try:
+                    system.update_state("light_settings.coaxial_intensity", 0)
+                    system.update_state("light_settings.ring_intensity", 0)
+                    system.update_state("light_settings.light_on", False)
+                    self._wait_for_hardware_queue_empty(
+                        timeout_seconds=10.0,
+                        poll_interval=0.05,
+                    )
+                except Exception:
+                    pass
+            if restart_streamer and (streamer_was_running or stopped_streamer):
+                try:
+                    self.set_streamer_source(
+                        source="microscope",
+                        electrode_overlay=True,
+                        bring_to_front=False,
+                    )
+                    self.start_visualizer("streamer")
+                except Exception as exc:
+                    errors.append({"scope": "restart_streamer", "error": str(exc)})
+
+        payload = {
+            "ok": not errors,
+            "output_dir": output_dir,
+            "started_at": started_at,
+            "finished_at": datetime.now().isoformat(),
+            "temperature_label": temperature_label,
+            "metadata": self.to_jsonable(metadata or {}),
+            "capture_source": capture_source,
+            "streamer_was_running": streamer_was_running,
+            "streamer_stopped_for_capture": stopped_streamer,
+            "channels": self.to_jsonable(channel_profiles),
+            "captures": self.to_jsonable(captures),
+            "errors": self.to_jsonable(errors),
+        }
+
+        metadata_path = os.path.join(output_dir, "metadata.json")
+        with open(metadata_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, default=str)
+        payload["metadata_path"] = metadata_path
+        return payload
 
     def temperature_hold(
         self,
@@ -1354,7 +2675,8 @@ class DropLogicMCPRuntime:
         if not isinstance(droplets, list):
             raise DropLogicMCPError(
                 "add_droplets expects a list of droplet objects. "
-                "Each object needs id or droplet_id plus origin=[row, col]."
+                "Each object needs id or droplet_id plus origin=[row, col]; "
+                "include target=[row, col] for planned moves."
             )
 
         existing_ids = {
@@ -1423,8 +2745,9 @@ class DropLogicMCPRuntime:
             try:
                 payload["id"] = droplet_id
                 payload["origin"] = self._pair(payload["origin"], f"droplets[{index}].origin")
+                target_value = payload["origin"] if payload.get("target") is None else payload["target"]
                 payload["target"] = self._pair(
-                    payload.get("target", payload["origin"]),
+                    target_value,
                     f"droplets[{index}].target",
                 )
                 if payload.get("shape") is not None:
@@ -1477,15 +2800,24 @@ class DropLogicMCPRuntime:
                 "plan": self.plan_summary(advanced_drop.plan),
             }
 
-    def delete_droplet(self, droplet_id: int) -> Dict[str, Any]:
+    def delete_droplet(
+        self,
+        droplet_id: int,
+        persist_electrodes: bool = False,
+    ) -> Dict[str, Any]:
         advanced_drop = self.require_advanced_drop()
         with self._lock:
-            deleted = advanced_drop.droplets.delete_droplet(droplet_id)
+            deleted = advanced_drop.droplets.delete_droplet(
+                droplet_id,
+                persist_electrodes=bool(persist_electrodes),
+            )
             return {
                 "deleted": bool(deleted),
+                "persist_electrodes": bool(persist_electrodes),
                 "droplets": self.to_jsonable(
                     advanced_drop.droplets.get_droplets_summary()
                 ),
+                "plan": self.plan_summary(advanced_drop.plan),
             }
 
     def update_droplet_target(
@@ -1603,20 +2935,282 @@ class DropLogicMCPRuntime:
         self, droplet_id: int, position: Iterable[int]
     ) -> Dict[str, Any]:
         advanced_drop = self.require_advanced_drop()
+        position_pair = self._pair(position, "position")
         with self._lock:
-            updated = advanced_drop.droplets.update_droplet_position(
-                droplet_id, self._pair(position, "position")
-            )
+            if hasattr(advanced_drop, "correct_droplet_position"):
+                advanced_drop.correct_droplet_position(int(droplet_id), position_pair)
+                droplet = advanced_drop.droplets.get_droplet(int(droplet_id))
+                updated = droplet is not None and tuple(getattr(droplet, "origin_corner", ())) == tuple(position_pair)
+            else:
+                updated = advanced_drop.droplets.update_droplet_position(
+                    droplet_id, position_pair
+                )
+            if updated:
+                try:
+                    self.write_dashboard_scene_snapshot()
+                except Exception:
+                    pass
             return {
                 "updated": bool(updated),
+                "position": self.to_jsonable(position_pair),
                 "droplets": self.to_jsonable(
                     advanced_drop.droplets.get_droplets_summary()
                 ),
+                "plan": self.plan_summary(advanced_drop.plan),
+            }
+
+    def trim_plan_tail(self, keep_frames: int) -> Dict[str, Any]:
+        """Delete planned frames after keep_frames without crossing executed frames."""
+        advanced_drop = self.require_advanced_drop()
+
+        with self._lock:
+            try:
+                result = advanced_drop.trim_plan_tail(int(keep_frames))
+            except (ValueError, RuntimeError) as exc:
+                raise DropLogicMCPError(str(exc)) from exc
+            plan = result.get("plan", getattr(advanced_drop, "plan", None))
+            executor_status = self.to_jsonable(result.get("executor_status") or {})
+            try:
+                self.write_dashboard_scene_snapshot()
+            except Exception:
+                pass
+
+            return {
+                "ok": True,
+                "trimmed": bool(result.get("trimmed")),
+                "keep_frames": int(result.get("keep_frames") or 0),
+                "removed_frames": int(result.get("removed_frames") or 0),
+                "protected_frames": int(result.get("protected_frames") or 0),
+                "plan": self.plan_summary(plan),
+                "executor": self._compact_executor_status(executor_status),
             }
 
     def droplets_summary(self) -> Dict[str, Any]:
         advanced_drop = self.require_advanced_drop()
         return self.to_jsonable(advanced_drop.droplets.get_droplets_summary())
+
+    def _plan_advanced_drop_primitive(
+        self,
+        primitive: str,
+        arguments: Optional[Dict[str, Any]] = None,
+        background: bool = False,
+    ) -> Dict[str, Any]:
+        """Plan one named AdvancedDrop primitive without executing hardware."""
+        arguments = dict(arguments or {})
+        arguments.pop("background", None)
+        if background:
+            result = self.start_advanced_drop_call(primitive, arguments)
+            result["primitive"] = primitive
+            result["background"] = True
+            return result
+
+        result = self.advanced_drop_call(primitive, arguments)
+        result["primitive"] = primitive
+        result["background"] = False
+        return result
+
+    def plan_activation_frame(
+        self,
+        event_type: str = "activation",
+        event_data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Append one activation frame for current droplets; does not execute hardware."""
+        return self._plan_advanced_drop_primitive(
+            "push_frame",
+            {
+                "event_type": event_type,
+                "event_data": event_data or {},
+            },
+            background=False,
+        )
+
+    def plan_move(
+        self,
+        mode: str = "sipp",
+        remove_duplicate_frames: bool = False,
+        planning_timeout: Optional[float] = None,
+        background: bool = False,
+        allow_long_sync: bool = False,
+        options: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Plan movement for current droplet targets; does not execute hardware."""
+        planner_options, ignored_options = self._sanitize_plan_move_options(
+            options=options,
+            extra=kwargs,
+        )
+        arguments = {
+            "mode": mode,
+            "remove_duplicate_frames": bool(remove_duplicate_frames),
+            "allow_long_sync": bool(allow_long_sync),
+            **planner_options,
+        }
+        if planning_timeout is not None:
+            arguments["planning_timeout"] = planning_timeout
+        result = self._plan_advanced_drop_primitive(
+            "move",
+            arguments,
+            background=background,
+        )
+        if ignored_options:
+            note = (
+                "Ignored plan_move options that are metadata or not documented "
+                "AdvancedDrop.move planner options."
+            )
+            result["ignored_options"] = ignored_options
+            result["option_note"] = note
+            job_id = result.get("job_id")
+            if background and job_id:
+                self._update_advanced_drop_job_status(
+                    str(job_id),
+                    ignored_options=ignored_options,
+                    option_note=note,
+                )
+        return result
+
+    def _sanitize_plan_move_options(
+        self,
+        options: Optional[Dict[str, Any]] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Keep only documented planner options and report ignored metadata."""
+        planner_options: Dict[str, Any] = {}
+        ignored_options: Dict[str, Any] = {}
+        for source_name, source in (("options", options), ("kwargs", extra)):
+            if source is None:
+                continue
+            if not isinstance(source, dict):
+                ignored_options[source_name] = self.to_jsonable(source)
+                continue
+            for raw_key, value in source.items():
+                key = str(raw_key)
+                if key in self.PLAN_MOVE_OPTION_KEYS:
+                    planner_options[key] = value
+                else:
+                    ignored_options[key] = self.to_jsonable(value)
+        return planner_options, ignored_options
+
+    def plan_reservoir_extraction(
+        self,
+        reservoir_droplet_id: int,
+        split_mode: str = "linear",
+        steps: Optional[Iterable[int]] = None,
+        split_size: Optional[Any] = None,
+        new_droplet_id: Optional[int] = None,
+        halo_size: int = 0,
+        separation_steps: int = 3,
+        linear_drops_number: Optional[int] = None,
+        linear_offset: Optional[int] = None,
+        linear_space_per_col: Optional[int] = None,
+        linear_space_per_row: Optional[int] = None,
+        linear_drop_shape: Optional[Any] = None,
+        linear_direction: Optional[Iterable[int]] = None,
+        linear_vital_space: Optional[int] = None,
+        remove_duplicate_frames: bool = False,
+        background: bool = False,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Plan extraction from a reservoir; does not execute hardware."""
+        arguments = {
+            "reservoir_droplet_id": int(reservoir_droplet_id),
+            "split_mode": split_mode,
+            "steps": steps,
+            "split_size": split_size,
+            "new_droplet_id": new_droplet_id,
+            "halo_size": int(halo_size),
+            "separation_steps": int(separation_steps),
+            "linear_drops_number": linear_drops_number,
+            "linear_offset": linear_offset,
+            "linear_space_per_col": linear_space_per_col,
+            "linear_space_per_row": linear_space_per_row,
+            "linear_drop_shape": linear_drop_shape,
+            "linear_direction": linear_direction,
+            "linear_vital_space": linear_vital_space,
+            "remove_duplicate_frames": bool(remove_duplicate_frames),
+            **kwargs,
+        }
+        return self._plan_advanced_drop_primitive(
+            "reservoir_extraction",
+            arguments,
+            background=background,
+        )
+
+    def plan_isometric_split(
+        self,
+        droplet_id: int,
+        steps: Iterable[Iterable[int]],
+        simultaneous: bool = True,
+        new_droplet_id: Optional[int] = None,
+        event_id: Optional[str] = None,
+        remove_duplicate_frames: bool = False,
+        background: bool = False,
+    ) -> Dict[str, Any]:
+        """Plan an isometric split; does not execute hardware."""
+        return self._plan_advanced_drop_primitive(
+            "isometric_split",
+            {
+                "droplet_id": int(droplet_id),
+                "steps": steps,
+                "simultaneous": bool(simultaneous),
+                "new_droplet_id": new_droplet_id,
+                "event_id": event_id,
+                "remove_duplicate_frames": bool(remove_duplicate_frames),
+            },
+            background=background,
+        )
+
+    def plan_mix(
+        self,
+        droplet_id: int,
+        mode: str = "split_recombine",
+        split_area: Optional[Iterable[Iterable[int]]] = None,
+        mixing_area_size: Optional[int] = None,
+        cycles: int = 5,
+        event_id: Optional[str] = None,
+        remove_duplicate_frames: bool = False,
+        background: bool = False,
+    ) -> Dict[str, Any]:
+        """Plan droplet mixing; does not execute hardware."""
+        return self._plan_advanced_drop_primitive(
+            "mix",
+            {
+                "droplet_id": int(droplet_id),
+                "mode": mode,
+                "split_area": split_area,
+                "mixing_area_size": mixing_area_size,
+                "cycles": int(cycles),
+                "event_id": event_id,
+                "remove_duplicate_frames": bool(remove_duplicate_frames),
+            },
+            background=background,
+        )
+
+    def plan_merge(
+        self,
+        droplet_ids: Any,
+        target: Any,
+        forced_width: Optional[int] = None,
+        forced_height: Optional[int] = None,
+        hold_final_position: bool = False,
+        event_id: Optional[str] = None,
+        remove_duplicate_frames: bool = False,
+        background: bool = False,
+    ) -> Dict[str, Any]:
+        """Plan merging droplets into one target; does not execute hardware."""
+        arguments = {
+            "droplet_ids": droplet_ids,
+            "target": target,
+            "forced_width": forced_width,
+            "forced_height": forced_height,
+            "hold_final_position": bool(hold_final_position),
+            "event_id": event_id,
+            "remove_duplicate_frames": bool(remove_duplicate_frames),
+        }
+        return self._plan_advanced_drop_primitive(
+            "merge",
+            arguments,
+            background=background,
+        )
 
     def list_advanced_drop_methods(self) -> Dict[str, Any]:
         """List public AdvancedDrop methods exposed through advanced_drop_call."""
@@ -1698,7 +3292,134 @@ class DropLogicMCPRuntime:
                 }
             thread = self._advanced_drop_job_thread
             status["thread_alive"] = bool(thread is not None and thread.is_alive())
-            return self.to_jsonable(status)
+        return self.to_jsonable(self._compact_advanced_drop_job_status(status))
+
+    def _compact_advanced_drop_job_status(
+        self,
+        status: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(status, dict):
+            return status
+        method = status.get("method")
+        result = status.get("result")
+        result_plan = result.get("plan") if isinstance(result, dict) else None
+        result_droplets = result.get("droplets") if isinstance(result, dict) else None
+        compact: Dict[str, Any] = {
+            "job_id": status.get("job_id"),
+            "method": method,
+            "running": status.get("running"),
+            "completed": status.get("completed"),
+            "cancel_requested": status.get("cancel_requested"),
+            "ok": status.get("ok"),
+            "thread_alive": status.get("thread_alive"),
+            "started_at": status.get("started_at"),
+            "finished_at": status.get("finished_at"),
+            "error": status.get("error"),
+            "arguments": self._compact_advanced_drop_arguments(
+                method,
+                status.get("arguments"),
+            ),
+            "plan": self._compact_plan_status(status.get("plan") or result_plan),
+            "droplets": self._compact_droplets_status(
+                status.get("droplets") or result_droplets
+            ),
+        }
+        if status.get("ignored_options"):
+            compact["ignored_options"] = status.get("ignored_options")
+        if status.get("option_note"):
+            compact["option_note"] = status.get("option_note")
+        if status.get("notes"):
+            compact["notes"] = status.get("notes")
+        if status.get("next_step"):
+            compact["next_step"] = status.get("next_step")
+        elif isinstance(result, dict) and result.get("next_step"):
+            compact["next_step"] = result.get("next_step")
+        if isinstance(result, dict):
+            compact["result"] = self._compact_advanced_drop_job_result(result)
+        elif result is not None:
+            compact["result"] = self._summarize_state_value(result)
+        return compact
+
+    def _compact_advanced_drop_arguments(
+        self,
+        method: Any,
+        arguments: Any,
+    ) -> Any:
+        if not isinstance(arguments, dict):
+            return self._summarize_state_value(arguments)
+        compact: Dict[str, Any] = {}
+        preferred_keys = (
+            "mode",
+            "remove_duplicate_frames",
+            "planning_timeout",
+            "allow_long_sync",
+            "merge_on_failure",
+            "max_frames",
+            "max_threads",
+            "max_iterations",
+            "retry_attempts",
+            "reserve_final_positions",
+            "reservation_horizon",
+            "max_path_frames",
+            "add_events",
+        )
+        for key in preferred_keys:
+            if key in arguments:
+                compact[key] = self._summarize_state_value(arguments.get(key))
+        for key, value in arguments.items():
+            key = str(key)
+            if key in compact:
+                continue
+            compact[key] = self._summarize_state_value(value)
+        return compact
+
+    def _compact_advanced_drop_job_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        compact: Dict[str, Any] = {}
+        for key in (
+            "method",
+            "ok",
+            "result_compact",
+            "next_step",
+            "move_validation",
+        ):
+            if key in result:
+                compact[key] = self._summarize_state_value(result.get(key))
+        visualizer_recovery = result.get("visualizer_recovery")
+        if visualizer_recovery != {"needed": False}:
+            compact["visualizer_recovery"] = self._summarize_state_value(
+                visualizer_recovery
+            )
+        if "result" in result:
+            compact["result"] = self._compact_advanced_drop_job_result_value(
+                result.get("result")
+            )
+        if "plan" in result:
+            compact["plan_ref"] = "top_level_plan"
+        if "droplets" in result:
+            compact["droplets_ref"] = "top_level_droplets"
+        return compact
+
+    def _compact_advanced_drop_job_result_value(self, value: Any) -> Any:
+        if isinstance(value, list):
+            return [
+                self._compact_advanced_drop_job_result_value(item)
+                for item in value[:10]
+            ]
+        if not isinstance(value, dict):
+            return self._summarize_state_value(value)
+        compact: Dict[str, Any] = {}
+        for key, item in value.items():
+            key = str(key)
+            if key == "plan":
+                compact["plan_ref"] = "top_level_plan"
+                continue
+            if key == "note":
+                continue
+            if key in {"frames", "droplet_trajectories", "active_droplets_per_frame"}:
+                compact[key] = self._summarize_state_value(item)
+                continue
+            compact[key] = self._summarize_state_value(item)
+        return compact
 
     def cancel_advanced_drop_job(self) -> Dict[str, Any]:
         """Request cancellation of the active AdvancedDrop background job."""
@@ -1747,28 +3468,95 @@ class DropLogicMCPRuntime:
             raise DropLogicMCPError(f"AdvancedDrop has no method '{method}'.")
         with self._lock:
             matrix_was_running = self._visualizer_running_safely("matrix")
+            rollback_on_invalid_plan = method in self.PLAN_PRIMITIVE_METHODS
+            plan_snapshot = None
+            droplets_snapshot = None
+            if rollback_on_invalid_plan:
+                plan_snapshot = copy.deepcopy(getattr(advanced_drop, "plan", None))
+                droplets_snapshot = [
+                    copy.deepcopy(droplet)
+                    for droplet in list(getattr(advanced_drop, "droplets", []) or [])
+                ]
             call_arguments = dict(arguments)
             call_arguments.pop("allow_long_sync", None)
             return_full_result = bool(call_arguments.pop("return_full_result", False))
             if return_full_result and allow_full_result_override:
                 compact_result = False
-            result = func(**call_arguments)
+            try:
+                result = func(**call_arguments)
+            except Exception:
+                if rollback_on_invalid_plan:
+                    self._restore_advanced_drop_planning_snapshot(
+                        advanced_drop,
+                        plan_snapshot,
+                        droplets_snapshot,
+                    )
+                raise
             visualizer_recovery = self._recover_visualizer_if_needed(
                 "matrix",
                 was_running=matrix_was_running,
             )
-            return {
+            result_plan = result if self._looks_like_droplet_plan(result) else advanced_drop.plan
+            plan_summary = self.plan_summary(result_plan)
+            droplets_summary = self.to_jsonable(
+                advanced_drop.droplets.get_droplets_summary()
+            )
+            response = {
                 "method": method,
                 "result": self._compact_advanced_drop_result(method, result)
                 if compact_result
                 else self.to_jsonable(result),
                 "result_compact": bool(compact_result),
                 "visualizer_recovery": visualizer_recovery,
-                "droplets": self.to_jsonable(
-                    advanced_drop.droplets.get_droplets_summary()
-                ),
-                "plan": self.plan_summary(advanced_drop.plan),
+                "droplets": droplets_summary,
+                "plan": plan_summary,
             }
+            if method == "move":
+                move_validation = self._validate_move_result(
+                    droplets_summary,
+                    plan_summary,
+                )
+                response["ok"] = bool(move_validation.get("ok"))
+                response["move_validation"] = move_validation
+            elif method in self.PLAN_PRIMITIVE_METHODS:
+                primitive_validation = self._validate_planning_primitive_result(
+                    method,
+                    response.get("result"),
+                    plan_summary,
+                )
+                response["ok"] = bool(primitive_validation.get("ok"))
+                response["primitive_validation"] = primitive_validation
+            if rollback_on_invalid_plan and response.get("ok") is False:
+                self._restore_advanced_drop_planning_snapshot(
+                    advanced_drop,
+                    plan_snapshot,
+                    droplets_snapshot,
+                )
+                response["rolled_back_failed_plan"] = True
+                response["failed_plan"] = plan_summary
+                response["plan"] = self.plan_summary(getattr(advanced_drop, "plan", None))
+                response["droplets"] = self.to_jsonable(
+                    advanced_drop.droplets.get_droplets_summary()
+                )
+            next_step = (
+                self._planning_next_step(method, plan_summary)
+                if response.get("ok", True)
+                else None
+            )
+            if next_step:
+                response["next_step"] = next_step
+            return response
+
+    def _restore_advanced_drop_planning_snapshot(
+        self,
+        advanced_drop: Any,
+        plan_snapshot: Any,
+        droplets_snapshot: Optional[List[Any]],
+    ) -> None:
+        advanced_drop.plan = plan_snapshot
+        if droplets_snapshot is not None and hasattr(advanced_drop, "droplets"):
+            advanced_drop.droplets.clear()
+            advanced_drop.droplets.extend(droplets_snapshot)
 
     def _update_advanced_drop_job_status(self, job_id: str, **updates: Any) -> None:
         with self._advanced_drop_job_lock:
@@ -1798,8 +3586,7 @@ class DropLogicMCPRuntime:
             raise DropLogicMCPError(
                 "Refusing blocking AdvancedDrop move because it may exceed the "
                 "MCP client request timeout and restart the server. Use "
-                'start_advanced_drop_call(method="move", arguments={...}) and '
-                "poll advanced_drop_job_status(). "
+                "plan_move(..., background=true) and poll planning_job_status(). "
                 f"active_moving_droplets={active_count}, "
                 f"planning_timeout={planning_timeout:g}s, "
                 f"sync_limits={self.ADVANCED_DROP_SYNC_MOVE_MAX_ACTIVE} droplets/"
@@ -1819,6 +3606,184 @@ class DropLogicMCPRuntime:
             )
         except Exception:
             return 0
+
+    def _validate_move_result(
+        self,
+        droplets_summary: Optional[Dict[str, Any]],
+        plan_summary: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        droplets = []
+        if isinstance(droplets_summary, dict):
+            droplets = [
+                item
+                for item in droplets_summary.get("droplets") or []
+                if isinstance(item, dict)
+            ]
+        plan = plan_summary if isinstance(plan_summary, dict) else {}
+        targets_reached = plan.get("targets_reached") if isinstance(plan, dict) else {}
+        if not isinstance(targets_reached, dict):
+            targets_reached = {}
+        trajectories = plan.get("trajectories") if isinstance(plan, dict) else {}
+        if not isinstance(trajectories, dict):
+            trajectories = {}
+        active_ids = set()
+        active_ids_known = "active_droplet_ids" in plan
+        for item in plan.get("active_droplet_ids") or []:
+            try:
+                active_ids.add(int(item))
+            except Exception:
+                continue
+
+        pending = [
+            droplet
+            for droplet in droplets
+            if droplet.get("current_position") is not None
+            and droplet.get("target_position") is not None
+            and droplet.get("current_position") != droplet.get("target_position")
+        ]
+        moving = []
+        for droplet in droplets:
+            try:
+                droplet_id = int(droplet.get("id"))
+            except Exception:
+                droplet_id = None
+            if active_ids_known and droplet_id not in active_ids:
+                continue
+            if (
+                droplet.get("current_position") is not None
+                and droplet.get("target_position") is not None
+                and droplet.get("current_position") != droplet.get("target_position")
+            ):
+                moving.append(droplet)
+        moving_ids = [droplet.get("id") for droplet in moving]
+        pending_ids = [droplet.get("id") for droplet in pending]
+        failed_targets = [
+            key for key, reached in targets_reached.items() if reached is False
+        ]
+        reached_targets = [
+            key for key, reached in targets_reached.items() if reached is True
+        ]
+        stationary_unreached = []
+        for droplet in moving:
+            droplet_id = droplet.get("id")
+            trajectory = trajectories.get(str(droplet_id)) or trajectories.get(droplet_id)
+            if not isinstance(trajectory, dict):
+                continue
+            if (
+                int(trajectory.get("length") or 0) <= 1
+                or trajectory.get("start") == trajectory.get("end")
+            ):
+                stationary_unreached.append(droplet_id)
+
+        planning_success = plan.get("planning_success")
+        no_active_plan_for_pending_targets = bool(active_ids_known and not active_ids and pending)
+        no_reported_target_results_for_pending_targets = bool(not targets_reached and pending)
+        if no_active_plan_for_pending_targets or no_reported_target_results_for_pending_targets:
+            return {
+                "ok": False,
+                "reason": "move_appended_no_target_progress",
+                "message": (
+                    "AdvancedDrop move returned no target progress while droplets still "
+                    "have pending targets; treat this planned move as failed and do not execute it."
+                ),
+                "unreached_droplet_ids": pending_ids,
+                "failed_target_ids": failed_targets,
+                "stationary_unreached_droplet_ids": pending_ids,
+                "reached_target_ids": reached_targets,
+                "planning_success": planning_success,
+            }
+        if not moving and planning_success is not False:
+            return {
+                "ok": True,
+                "reason": "all_droplets_at_target",
+                "unreached_droplet_ids": [],
+                "stationary_unreached_droplet_ids": [],
+                "reached_target_ids": reached_targets,
+            }
+
+        if planning_success is False or moving:
+            reason = (
+                "planning_success_false"
+                if planning_success is False
+                else "droplets_still_not_at_target"
+            )
+            message = (
+                "AdvancedDrop move did not reach all active droplet targets; treat "
+                "this planned move as failed and do not execute it as a successful segment."
+            )
+            return {
+                "ok": False,
+                "reason": reason,
+                "message": message,
+                "unreached_droplet_ids": moving_ids,
+                "failed_target_ids": failed_targets,
+                "stationary_unreached_droplet_ids": stationary_unreached,
+                "reached_target_ids": reached_targets,
+                "planning_success": planning_success,
+            }
+
+        return {
+            "ok": True,
+            "reason": "targets_reached",
+            "unreached_droplet_ids": [],
+            "stationary_unreached_droplet_ids": [],
+            "reached_target_ids": reached_targets,
+        }
+
+    def _validate_planning_primitive_result(
+        self,
+        method: str,
+        result: Any,
+        plan_summary: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        plan = plan_summary if isinstance(plan_summary, dict) else {}
+        planning_success = plan.get("planning_success")
+        targets_reached = plan.get("targets_reached")
+        failed_targets = []
+        reached_targets = []
+        if isinstance(targets_reached, dict):
+            failed_targets = [
+                key for key, reached in targets_reached.items() if reached is False
+            ]
+            reached_targets = [
+                key for key, reached in targets_reached.items() if reached is True
+            ]
+
+        if planning_success is False:
+            return {
+                "ok": False,
+                "reason": "planning_success_false",
+                "message": (
+                    f"AdvancedDrop {method} produced planning_success=false; "
+                    "treat this planned primitive as failed and do not execute it "
+                    "or use it as goal-completion evidence."
+                ),
+                "failed_target_ids": failed_targets,
+                "reached_target_ids": reached_targets,
+                "planning_success": planning_success,
+            }
+
+        if method == "merge" and result is None:
+            return {
+                "ok": False,
+                "reason": "merge_returned_no_product",
+                "message": (
+                    "AdvancedDrop merge did not produce a merged droplet id; "
+                    "treat this merge as failed and choose a different merge "
+                    "target or stage blockers away first."
+                ),
+                "failed_target_ids": failed_targets,
+                "reached_target_ids": reached_targets,
+                "planning_success": planning_success,
+            }
+
+        return {
+            "ok": True,
+            "reason": "primitive_plan_valid",
+            "failed_target_ids": failed_targets,
+            "reached_target_ids": reached_targets,
+            "planning_success": planning_success,
+        }
 
     def _compact_advanced_drop_result(self, method: str, result: Any) -> Any:
         if self._looks_like_droplet_plan(result):
@@ -1875,6 +3840,24 @@ class DropLogicMCPRuntime:
                 compact_result=True,
                 allow_full_result_override=False,
             )
+            if method == "move" and isinstance(result, dict):
+                move_validation = result.get("move_validation")
+                if isinstance(move_validation, dict) and not move_validation.get("ok", True):
+                    raise DropLogicMCPError(
+                        str(
+                            move_validation.get("message")
+                            or "AdvancedDrop move did not reach all droplet targets."
+                        )
+                    )
+            elif method in self.PLAN_PRIMITIVE_METHODS and isinstance(result, dict):
+                primitive_validation = result.get("primitive_validation")
+                if isinstance(primitive_validation, dict) and not primitive_validation.get("ok", True):
+                    raise DropLogicMCPError(
+                        str(
+                            primitive_validation.get("message")
+                            or f"AdvancedDrop {method} primitive planning failed."
+                        )
+                    )
             ok = True
         except Exception as exc:
             error = self.to_jsonable(
@@ -1883,13 +3866,24 @@ class DropLogicMCPRuntime:
                     "message": str(exc),
                 }
             )
+            if isinstance(result, dict) and result.get("move_validation"):
+                error["move_validation"] = self.to_jsonable(
+                    result.get("move_validation")
+                )
+            if isinstance(result, dict) and result.get("primitive_validation"):
+                error["primitive_validation"] = self.to_jsonable(
+                    result.get("primitive_validation")
+                )
             self._record_error(f"advanced_drop_job:{method}", exc)
         finally:
             plan = None
             droplets = None
             try:
                 advanced_drop = self.require_advanced_drop()
-                plan = self.plan_summary(getattr(advanced_drop, "plan", None))
+                if isinstance(result, dict) and isinstance(result.get("plan"), dict):
+                    plan = result.get("plan")
+                else:
+                    plan = self.plan_summary(getattr(advanced_drop, "plan", None))
                 droplets = self.to_jsonable(
                     advanced_drop.droplets.get_droplets_summary()
                 )
@@ -1905,7 +3899,23 @@ class DropLogicMCPRuntime:
                 error=error,
                 plan=plan,
                 droplets=droplets,
+                next_step=self._planning_next_step(method, plan) if ok else None,
             )
+
+    def _planning_next_step(self, method: str, plan_summary: Optional[Dict[str, Any]]) -> Optional[str]:
+        if method not in {"push_frame", "move", "reservoir_extraction", "isometric_split", "mix", "merge"}:
+            return None
+        if not isinstance(plan_summary, dict) or not plan_summary.get("available"):
+            return None
+        if plan_summary.get("planning_success") is False:
+            return "Planning did not fully succeed; inspect plan_summary and fix the plan before executing."
+        frame_count = plan_summary.get("frame_count")
+        frame_text = f"frame {int(frame_count) - 1}" if isinstance(frame_count, int) and frame_count > 0 else "the segment target frame"
+        return (
+            "For real hardware/dry electrode tests, add a breakpoint at "
+            f"{frame_text}, execute this planned segment, wait until it stops, "
+            "and inspect before retargeting or planning the next segment."
+        )
 
     def verify_droplets(
         self,
@@ -1939,7 +3949,7 @@ class DropLogicMCPRuntime:
         debug: bool = False,
         fluo_exposure: int = 2000000,
         fluo_light: int = 99,
-        brightfield_exposure: int = 3000,
+        brightfield_exposure: int = 3600,
         brightfield_light: int = 30,
     ) -> Dict[str, Any]:
         """Run condensate detection through AdvancedDrop."""
@@ -2109,9 +4119,18 @@ class DropLogicMCPRuntime:
                 f"Unknown module '{module}'. Known modules: {sorted(self.MODULE_METHODS)}"
             )
         if method not in allowed_methods:
+            hint = ""
+            if module_key == "xy_stage":
+                hint = (
+                    " The XY stage has no generic move_to/move method in MCP. "
+                    "Use top-level move_stage(preset=... or position=...) for stage moves, "
+                    "set_execution_view_mode(...) for whole-chip/follow-droplet viewing, "
+                    "or module_call(module='xy_stage', method='move_axis_to_position', "
+                    "arguments={'axis': 'Y', 'target_position': 47000}) only as a low-level fallback."
+                )
             raise DropLogicMCPError(
                 f"Module method '{module}.{method}' is not exposed through MCP. "
-                f"Allowed methods: {sorted(allowed_methods)}"
+                f"Allowed methods: {sorted(allowed_methods)}.{hint}"
             )
         if (module_key, method) in self.UNSAFE_MODULE_METHODS and not self.allow_unsafe_tools:
             raise DropLogicMCPError(
@@ -2195,6 +4214,7 @@ class DropLogicMCPRuntime:
         prepare_execution_view: bool = True,
         execution_view_timeout_seconds: float = 60.0,
         restart_from_beginning: bool = False,
+        allow_failed_plan: bool = False,
     ) -> Dict[str, Any]:
         executor = self.require_executor()
         with self._lock:
@@ -2208,6 +4228,16 @@ class DropLogicMCPRuntime:
                     "continue from the current frame, or call start_plan("
                     "restart_from_beginning=true) only when the user explicitly "
                     "wants to replay the plan from the beginning."
+                )
+
+            plan_summary = self.plan_summary(getattr(self.system.advanced_drop, "plan", None))
+            if plan_summary.get("planning_success") is False and not allow_failed_plan:
+                raise DropLogicMCPError(
+                    "The current plan is marked planning_success=false. "
+                    "Do not execute it yet. Inspect the failed planning result, "
+                    "reduce the batch size or add waypoints, then replan. "
+                    "Use allow_failed_plan=true only for explicit supervised "
+                    "debugging."
                 )
 
             view_mode = self._normalize_execution_view_mode(execution_view_mode)
@@ -2380,20 +4410,148 @@ class DropLogicMCPRuntime:
             "visualizers": self.visualizer_status(),
         }
 
+    def move_stage(
+        self,
+        position: Optional[Any] = None,
+        preset: Optional[str] = None,
+        wait_timeout_seconds: float = 20.0,
+        poll_interval: float = 0.1,
+    ) -> Dict[str, Any]:
+        """Move the XY stage using a named preset or explicit X/Y/Z axis values."""
+        system = self.require_system()
+        if position is not None and preset is not None:
+            raise DropLogicMCPError("Use either position or preset, not both.")
+
+        resolved_preset = None
+        if preset is not None:
+            resolved_preset = self._get_stage_move_preset(preset)
+            position = resolved_preset.get("position")
+
+        target_position = self._normalize_stage_axis_update(position)
+        xy_stage = getattr(system, "xy_stage", None)
+        actual_before = self._read_stage_position(xy_stage)
+        stage_idle = True
+        if xy_stage is not None and hasattr(xy_stage, "is_motion_complete"):
+            try:
+                stage_idle = all(xy_stage.is_motion_complete(axis) for axis in ("X", "Y", "Z"))
+            except Exception:
+                stage_idle = False
+
+        if (
+            xy_stage is not None
+            and stage_idle
+            and self._stage_positions_close(target_position, actual_before)
+        ):
+            queue_summary = self._hardware_queue_summary()
+            return {
+                "ok": True,
+                "preset": preset,
+                "resolved_preset": self.to_jsonable(resolved_preset),
+                "target_position": target_position,
+                "actual_position": actual_before,
+                "motion_complete": True,
+                "skipped": "already_at_target",
+                "queue_wait": {
+                    "ok": True,
+                    "timed_out": False,
+                    "pending_commands": queue_summary.get("pending_commands", 0),
+                    "queues": queue_summary.get("queues", {}),
+                },
+            }
+
+        result = system.update_state("xy_stage.position", dict(target_position))
+        queue_wait = self._wait_for_hardware_queue_empty(
+            timeout_seconds=max(float(wait_timeout_seconds), 1.0),
+            poll_interval=0.05,
+        )
+
+        if xy_stage is None or type(system).__name__ == "Simulator":
+            actual_position = self._read_stage_position(xy_stage) or target_position
+            return {
+                "ok": bool(queue_wait.get("ok", True)),
+                "preset": preset,
+                "resolved_preset": self.to_jsonable(resolved_preset),
+                "target_position": target_position,
+                "actual_position": actual_position,
+                "update_result": self.to_jsonable(result),
+                "queue_wait": queue_wait,
+                "motion_complete": True,
+            }
+
+        deadline = time.time() + max(0.0, float(wait_timeout_seconds))
+        time.sleep(0.2)
+        while time.time() < deadline:
+            try:
+                if all(xy_stage.is_motion_complete(axis) for axis in ("X", "Y", "Z")):
+                    actual_position = self._read_stage_position(xy_stage)
+                    ok = bool(queue_wait.get("ok", True)) and self._stage_positions_close(
+                        target_position,
+                        actual_position,
+                    )
+                    return {
+                        "ok": ok,
+                        "preset": preset,
+                        "resolved_preset": self.to_jsonable(resolved_preset),
+                        "target_position": target_position,
+                        "actual_position": actual_position,
+                        "update_result": self.to_jsonable(result),
+                        "queue_wait": queue_wait,
+                        "motion_complete": True,
+                    }
+            except Exception as exc:
+                actual_position = self._read_stage_position(xy_stage)
+                return {
+                    "ok": False,
+                    "preset": preset,
+                    "resolved_preset": self.to_jsonable(resolved_preset),
+                    "target_position": target_position,
+                    "actual_position": actual_position,
+                    "update_result": self.to_jsonable(result),
+                    "queue_wait": queue_wait,
+                    "motion_complete": False,
+                    "error": str(exc),
+                }
+            time.sleep(max(0.02, float(poll_interval)))
+
+        actual_position = self._read_stage_position(xy_stage)
+        return {
+            "ok": False,
+            "preset": preset,
+            "resolved_preset": self.to_jsonable(resolved_preset),
+            "target_position": target_position,
+            "actual_position": actual_position,
+            "update_result": self.to_jsonable(result),
+            "queue_wait": queue_wait,
+            "motion_complete": False,
+            "timed_out": True,
+        }
+
     def pause_plan(self) -> Dict[str, Any]:
         executor = self.require_executor()
         executor.pause()
         return self.to_jsonable(executor.status())
 
-    def resume_plan(self) -> Dict[str, Any]:
+    def resume_plan(self, allow_failed_plan: bool = False) -> Dict[str, Any]:
         executor = self.require_executor()
+        plan_summary = self.plan_summary(getattr(self.system.advanced_drop, "plan", None))
+        if plan_summary.get("planning_success") is False and not allow_failed_plan:
+            raise DropLogicMCPError(
+                "The current plan is marked planning_success=false. "
+                "Do not resume execution. Inspect the failed planning result, "
+                "reduce the batch size or add waypoints, then replan. "
+                "Use allow_failed_plan=true only for explicit supervised debugging."
+            )
         executor.resume()
         return self.to_jsonable(executor.status())
 
     def stop_plan(self) -> Dict[str, Any]:
         executor = self.require_executor()
+        before = self.to_jsonable(executor.status())
         executor.stop()
-        return self.to_jsonable(executor.status())
+        after = self.to_jsonable(executor.status())
+        after["already_stopped"] = not bool(before.get("is_executing"))
+        after["was_executing"] = bool(before.get("is_executing"))
+        return after
 
     def executor_status(self) -> Dict[str, Any]:
         return self.to_jsonable(self.require_executor().status())
@@ -2412,6 +4570,331 @@ class DropLogicMCPRuntime:
         executor = self.require_executor()
         executor.clear_breakpoints()
         return self.to_jsonable(executor.status())
+
+    def execute_segment_to_breakpoint(
+        self,
+        frame_number: Optional[int] = None,
+        timeout_seconds: Optional[float] = None,
+        poll_interval_seconds: float = 0.25,
+        resume_if_paused: bool = True,
+        clear_existing_breakpoints: bool = True,
+        allow_failed_plan: bool = False,
+        frame_delay: float = 1.0,
+        verify_positions: bool = False,
+        enable_visualizers: bool = False,
+        execution_view_mode: str = "follow_droplets",
+        fixed_stage_position: Optional[Any] = None,
+        prepare_execution_view: bool = True,
+        execution_view_timeout_seconds: float = 60.0,
+        wait_mode: str = "auto",
+        inline_wait_max_seconds: Optional[float] = None,
+        inline_wait_margin_seconds: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Arm a breakpoint, execute, and wait inline for short segments."""
+        wait_mode = self._normalize_execute_segment_wait_mode(wait_mode)
+        executor = self.require_executor()
+        with self._execution_wait_lock:
+            if (
+                self._execution_wait_thread is not None
+                and self._execution_wait_thread.is_alive()
+            ):
+                status = self.execution_wait_status()
+                raise DropLogicMCPError(
+                    "An execution wait job is already running. "
+                    f"Current wait id: {status.get('wait_id')}. "
+                    "Call execution_wait_status(wait_seconds=...) or cancel_execution_wait() "
+                    "before executing another segment."
+                )
+
+        plan_summary = self.plan_summary(getattr(self.system.advanced_drop, "plan", None))
+        if not plan_summary.get("available"):
+            raise DropLogicMCPError("No plan is available to execute.")
+        if plan_summary.get("planning_success") is False and not allow_failed_plan:
+            raise DropLogicMCPError(
+                "The current plan is marked planning_success=false. "
+                "Do not execute it yet. Inspect the failed planning result, "
+                "reduce the batch size or add waypoints, then replan. "
+                "Use allow_failed_plan=true only for explicit supervised debugging."
+            )
+
+        frame_count = int(plan_summary.get("frame_count") or 0)
+        if frame_count <= 0:
+            raise DropLogicMCPError("The current plan has no frames to execute.")
+        target_frame = frame_count - 1 if frame_number is None else int(frame_number)
+        if target_frame < 0 or target_frame >= frame_count:
+            raise DropLogicMCPError(
+                f"Breakpoint frame {target_frame} is outside the current plan "
+                f"range 0..{frame_count - 1}."
+            )
+
+        initial_status = self.to_jsonable(executor.status())
+        current_frame = int(initial_status.get("current_frame") or 0)
+        total_frames = int(initial_status.get("total_frames") or 0)
+        if current_frame >= frame_count:
+            return {
+                "ok": True,
+                "started_wait": False,
+                "reason": "plan_already_complete",
+                "breakpoint_frame": target_frame,
+                "plan": self._compact_plan_status(plan_summary),
+                "initial_executor_status": self._compact_executor_status(initial_status),
+                "executor_status": self._compact_executor_status(
+                    self.to_jsonable(executor.status())
+                ),
+                "next": "Plan is already complete; inspect/verify before planning another segment.",
+            }
+        if current_frame > target_frame:
+            raise DropLogicMCPError(
+                f"The executor is already at frame {current_frame}, past requested "
+                f"breakpoint frame {target_frame}. Inspect executor_status before "
+                "choosing another breakpoint."
+            )
+
+        if clear_existing_breakpoints:
+            executor.clear_breakpoints()
+        executor.add_breakpoint(target_frame)
+        breakpoint_status = self.to_jsonable(executor.status())
+
+        action = "start_plan"
+        if current_frame == 0 and total_frames == 0:
+            execution_result = self.start_plan(
+                frame_delay=frame_delay,
+                verify_positions=verify_positions,
+                enable_visualizers=enable_visualizers,
+                execution_view_mode=execution_view_mode,
+                fixed_stage_position=fixed_stage_position,
+                prepare_execution_view=prepare_execution_view,
+                execution_view_timeout_seconds=execution_view_timeout_seconds,
+                restart_from_beginning=False,
+                allow_failed_plan=allow_failed_plan,
+            )
+            if execution_result.get("started") is False:
+                return {
+                    "ok": False,
+                    "action": action,
+                    "started_wait": False,
+                    "breakpoint_frame": target_frame,
+                    "plan": self._compact_plan_status(plan_summary),
+                    "initial_executor_status": self._compact_executor_status(initial_status),
+                    "breakpoint_status": self._compact_executor_status(breakpoint_status),
+                    "execution_status": self._compact_executor_status(
+                        self.to_jsonable(execution_result)
+                    ),
+                    "reason": execution_result.get("reason") or "start_plan_failed",
+                    "execution_result": self.to_jsonable(execution_result),
+                    "next": "Resolve the execution start failure before waiting or planning another segment.",
+                }
+        else:
+            action = "resume_plan"
+            self._set_executor_frame_delay(executor, frame_delay)
+            if resume_if_paused:
+                execution_result = self.resume_plan(allow_failed_plan=allow_failed_plan)
+            else:
+                execution_result = self.to_jsonable(executor.status())
+
+        wait_timeout_seconds, wait_estimate = self._execute_segment_wait_timeout_seconds(
+            executor=executor,
+            target_frame=target_frame,
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            inline_wait_margin_seconds=inline_wait_margin_seconds,
+        )
+        inline_limit = (
+            self.EXECUTE_SEGMENT_INLINE_WAIT_MAX_SECONDS
+            if inline_wait_max_seconds is None
+            else max(0.0, float(inline_wait_max_seconds))
+        )
+        inline_wait = wait_mode == "inline" or (
+            wait_mode == "auto" and wait_timeout_seconds <= inline_limit
+        )
+
+        if inline_wait:
+            wait_status = self._execute_segment_inline_wait(
+                timeout_seconds=wait_timeout_seconds,
+                resume_if_paused=resume_if_paused,
+                poll_interval_seconds=poll_interval_seconds,
+                target_frame=target_frame,
+            )
+            ok = bool(wait_status.get("ok"))
+            return {
+                "ok": ok,
+                "action": action,
+                "wait_mode": "inline",
+                "background_wait_started": False,
+                "started_wait": False,
+                "breakpoint_frame": target_frame,
+                "plan": self._compact_plan_status(plan_summary),
+                "initial_executor_status": self._compact_executor_status(initial_status),
+                "breakpoint_status": self._compact_executor_status(breakpoint_status),
+                "execution_status": self._compact_executor_status(
+                    self.to_jsonable(execution_result)
+                ),
+                "wait_estimate": wait_estimate,
+                "wait_status": self._compact_execution_wait_status(wait_status),
+                "next": (
+                    "Execution reached the segment target; inspect/verify before planning the next segment."
+                    if ok
+                    else "Execution did not reach the segment target; inspect wait_status before planning another segment."
+                ),
+            }
+
+        wait_status = self.start_execute_until_breakpoint(
+            timeout_seconds=timeout_seconds,
+            resume_if_paused=resume_if_paused,
+            poll_interval_seconds=poll_interval_seconds,
+        )
+        recommended_wait_seconds = self._execution_wait_recommended_wait_seconds(
+            wait_estimate=wait_estimate
+        )
+        compact_wait_status = self._compact_execution_wait_status(wait_status)
+
+        return {
+            "ok": True,
+            "action": action,
+            "wait_mode": "background",
+            "background_wait_started": True,
+            "started_wait": True,
+            "recommended_wait_seconds": recommended_wait_seconds,
+            "next_check_after_seconds": recommended_wait_seconds,
+            "recommended_status_call": {
+                "tool": "execution_wait_status",
+                "arguments": {"wait_seconds": recommended_wait_seconds},
+            },
+            "breakpoint_frame": target_frame,
+            "plan": self._compact_plan_status(plan_summary),
+            "initial_executor_status": self._compact_executor_status(initial_status),
+            "breakpoint_status": self._compact_executor_status(breakpoint_status),
+            "execution_status": self._compact_executor_status(
+                self.to_jsonable(execution_result)
+            ),
+            "wait_estimate": wait_estimate,
+            "wait_status": compact_wait_status,
+            "next": (
+                "Background wait is running; call execution_wait_status(wait_seconds="
+                f"{recommended_wait_seconds}) once. If it still returns running=true, "
+                "repeat with the returned recommended_wait_seconds instead of immediate polling."
+            ),
+        }
+
+    def _normalize_execute_segment_wait_mode(self, wait_mode: str) -> str:
+        mode = str(wait_mode or "auto").strip().lower()
+        if mode not in {"auto", "inline", "background"}:
+            raise DropLogicMCPError(
+                "wait_mode must be 'auto', 'inline', or 'background'."
+            )
+        return mode
+
+    def _set_executor_frame_delay(self, executor: Any, frame_delay: float) -> None:
+        try:
+            executor.frame_delay = float(frame_delay)
+            sync = getattr(executor, "_sync_recording_fps_to_frame_delay", None)
+            if callable(sync):
+                sync()
+        except Exception as exc:
+            raise DropLogicMCPError(f"Could not set executor frame_delay={frame_delay}: {exc}")
+
+    def _execute_segment_wait_timeout_seconds(
+        self,
+        executor: Any,
+        target_frame: int,
+        timeout_seconds: Optional[float],
+        poll_interval_seconds: float,
+        inline_wait_margin_seconds: Optional[float],
+    ) -> Tuple[float, Dict[str, Any]]:
+        status = self.to_jsonable(executor.status())
+        current_frame = int(status.get("current_frame") or 0)
+        remaining_frames = max(0, int(target_frame) - current_frame + 1)
+        frame_delay = max(float(getattr(executor, "frame_delay", 1.0) or 0.0), 0.01)
+        margin = (
+            self.EXECUTE_SEGMENT_INLINE_WAIT_MARGIN_SECONDS
+            if inline_wait_margin_seconds is None
+            else max(0.0, float(inline_wait_margin_seconds))
+        )
+        estimated_seconds = (
+            remaining_frames * max(frame_delay, float(poll_interval_seconds), 0.05)
+            + margin
+        )
+        if timeout_seconds is None:
+            timeout = estimated_seconds
+        else:
+            timeout = max(0.05, float(timeout_seconds))
+        return timeout, {
+            "timeout_seconds": timeout,
+            "estimated_seconds": round(float(estimated_seconds), 3),
+            "remaining_frames": remaining_frames,
+            "frame_delay": frame_delay,
+            "margin_seconds": margin,
+            "target_frame": int(target_frame),
+            "current_frame": current_frame,
+        }
+
+    def _execution_wait_recommended_wait_seconds(
+        self,
+        wait_estimate: Optional[Dict[str, Any]] = None,
+        status: Optional[Dict[str, Any]] = None,
+    ) -> float:
+        candidates: List[float] = []
+        for container, keys in (
+            (wait_estimate, ("estimated_seconds", "timeout_seconds")),
+            (status, ("remaining_timeout_seconds", "timeout_seconds")),
+        ):
+            if not isinstance(container, dict):
+                continue
+            for key in keys:
+                try:
+                    value = float(container.get(key))
+                except (TypeError, ValueError):
+                    continue
+                if np.isfinite(value):
+                    candidates.append(max(0.0, value))
+
+        seconds = min(candidates) if candidates else self.EXECUTION_WAIT_STATUS_MAX_WAIT_SECONDS
+        max_wait = max(0.25, float(self.EXECUTION_WAIT_STATUS_MAX_WAIT_SECONDS))
+        min_wait = max(0.25, float(self.EXECUTION_WAIT_STATUS_MIN_WAIT_SECONDS))
+        if seconds <= 0.0:
+            return round(min_wait, 3)
+        if seconds < min_wait:
+            return round(seconds, 3)
+        return round(min(max_wait, max(min_wait, seconds)), 3)
+
+    def _execute_segment_inline_wait(
+        self,
+        timeout_seconds: float,
+        resume_if_paused: bool,
+        poll_interval_seconds: float,
+        target_frame: int,
+    ) -> Dict[str, Any]:
+        executor = self.require_executor()
+        initial_status = self.to_jsonable(executor.status())
+        wait_id = uuid.uuid4().hex[:12]
+        with self._execution_wait_lock:
+            self._execution_wait_cancel_event.clear()
+            self._execution_wait_status = {
+                "wait_id": wait_id,
+                "running": True,
+                "completed": False,
+                "ok": None,
+                "cancel_requested": False,
+                "started_at": time.time(),
+                "finished_at": None,
+                "timeout_seconds": float(timeout_seconds),
+                "poll_interval_seconds": max(0.05, float(poll_interval_seconds)),
+                "target_frame": target_frame,
+                "resume_if_paused": bool(resume_if_paused),
+                "wait_mode": "inline",
+                "timed_out": False,
+                "reason": None,
+                "error": None,
+                "executor_status": initial_status,
+            }
+        self._run_execution_wait_job(
+            wait_id,
+            float(timeout_seconds),
+            bool(resume_if_paused),
+            max(0.05, float(poll_interval_seconds)),
+            target_frame,
+        )
+        return self.execution_wait_status()
 
     def execute_until_breakpoint(
         self, timeout_seconds: Optional[float] = None, resume_if_paused: bool = True
@@ -2460,7 +4943,7 @@ class DropLogicMCPRuntime:
                 raise DropLogicMCPError(
                     "An execution wait job is already running. "
                     f"Current wait id: {status.get('wait_id')}. "
-                    "Poll execution_wait_status() or call cancel_execution_wait()."
+                    "Call execution_wait_status(wait_seconds=...) or cancel_execution_wait()."
                 )
 
             wait_id = uuid.uuid4().hex[:12]
@@ -2477,6 +4960,7 @@ class DropLogicMCPRuntime:
                 "poll_interval_seconds": max(0.05, float(poll_interval_seconds)),
                 "target_frame": target_frame,
                 "resume_if_paused": bool(resume_if_paused),
+                "wait_mode": "background",
                 "timed_out": False,
                 "reason": None,
                 "error": None,
@@ -2497,8 +4981,85 @@ class DropLogicMCPRuntime:
             self._execution_wait_thread.start()
             return self.execution_wait_status()
 
-    def execution_wait_status(self) -> Dict[str, Any]:
+    def execution_wait_status(
+        self,
+        wait_seconds: float = 0.0,
+        poll_interval_seconds: float = 0.25,
+    ) -> Dict[str, Any]:
         """Return compact status for the active or last execution wait job."""
+        wait_started_at = time.monotonic()
+        status_wait = self._execution_wait_status_timer_wait(
+            wait_seconds=wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+        )
+        status = self._execution_wait_status_snapshot()
+        if status_wait is not None:
+            status_wait["elapsed_seconds"] = round(
+                max(0.0, time.monotonic() - wait_started_at),
+                3,
+            )
+            status_wait["running_after_wait"] = bool(status.get("running"))
+            if not status_wait.get("started_running"):
+                status_wait["return_reason"] = "no_running_wait"
+            elif status.get("running"):
+                status_wait["return_reason"] = "timer_elapsed"
+            else:
+                status_wait["return_reason"] = "wait_completed"
+            status["status_wait"] = status_wait
+        return self._compact_execution_wait_status(status)
+
+    def _execution_wait_status_timer_wait(
+        self,
+        wait_seconds: float,
+        poll_interval_seconds: float,
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            requested_seconds = float(wait_seconds or 0.0)
+        except (TypeError, ValueError):
+            raise DropLogicMCPError("wait_seconds must be a finite number.")
+        if not np.isfinite(requested_seconds):
+            raise DropLogicMCPError("wait_seconds must be a finite number.")
+
+        max_wait_seconds = max(0.25, float(self.EXECUTION_WAIT_STATUS_MAX_WAIT_SECONDS))
+        effective_seconds = min(max(0.0, requested_seconds), max_wait_seconds)
+        if effective_seconds <= 0.0:
+            return None
+
+        try:
+            fallback_sleep_seconds = float(poll_interval_seconds or 0.25)
+        except (TypeError, ValueError):
+            fallback_sleep_seconds = 0.25
+        if not np.isfinite(fallback_sleep_seconds):
+            fallback_sleep_seconds = 0.25
+        fallback_sleep_seconds = min(
+            effective_seconds,
+            max(0.05, fallback_sleep_seconds),
+        )
+
+        with self._execution_wait_lock:
+            status = dict(self._execution_wait_status or {})
+            thread = self._execution_wait_thread
+            started_running = bool(status.get("running"))
+            wait_id = status.get("wait_id")
+
+        used_thread_join = False
+        if started_running:
+            if thread is not None and thread.is_alive():
+                used_thread_join = True
+                thread.join(timeout=effective_seconds)
+            else:
+                time.sleep(fallback_sleep_seconds)
+
+        return {
+            "wait_id": wait_id,
+            "requested_seconds": round(max(0.0, requested_seconds), 3),
+            "effective_seconds": round(effective_seconds, 3),
+            "max_wait_seconds": round(max_wait_seconds, 3),
+            "started_running": started_running,
+            "used_thread_join": used_thread_join,
+        }
+
+    def _execution_wait_status_snapshot(self) -> Dict[str, Any]:
         with self._execution_wait_lock:
             status = dict(self._execution_wait_status or {})
             if not status:
@@ -2510,6 +5071,38 @@ class DropLogicMCPRuntime:
                 }
             thread = self._execution_wait_thread
             status["thread_alive"] = bool(thread is not None and thread.is_alive())
+            try:
+                started_at = float(status.get("started_at"))
+            except (TypeError, ValueError):
+                started_at = None
+            if started_at is not None and np.isfinite(started_at):
+                try:
+                    finished_at = float(status.get("finished_at"))
+                except (TypeError, ValueError):
+                    finished_at = None
+                if finished_at is None or not np.isfinite(finished_at):
+                    finished_at = time.time()
+                elapsed_seconds = max(0.0, finished_at - started_at)
+                status["elapsed_seconds"] = round(elapsed_seconds, 3)
+                try:
+                    timeout_seconds = float(status.get("timeout_seconds"))
+                except (TypeError, ValueError):
+                    timeout_seconds = None
+                if timeout_seconds is not None and np.isfinite(timeout_seconds):
+                    status["remaining_timeout_seconds"] = round(
+                        max(0.0, timeout_seconds - elapsed_seconds),
+                        3,
+                    )
+            if status.get("running"):
+                recommended_wait_seconds = self._execution_wait_recommended_wait_seconds(
+                    status=status
+                )
+                status["recommended_wait_seconds"] = recommended_wait_seconds
+                status["next_check_after_seconds"] = recommended_wait_seconds
+                status["recommended_status_call"] = {
+                    "tool": "execution_wait_status",
+                    "arguments": {"wait_seconds": recommended_wait_seconds},
+                }
             try:
                 status["executor_status"] = self.to_jsonable(
                     self.require_executor().status()
@@ -2580,11 +5173,11 @@ class DropLogicMCPRuntime:
                     ok = True
                     reason = "breakpoint_reached"
                     break
-                if target_frame is not None and current_frame >= int(target_frame):
+                if target_frame is not None and current_frame > int(target_frame):
                     ok = True
                     reason = "target_frame_reached"
                     break
-                if total_frames > 0 and current_frame >= total_frames - 1:
+                if total_frames > 0 and current_frame >= total_frames:
                     ok = True
                     reason = "plan_complete"
                     break
@@ -2651,10 +5244,20 @@ class DropLogicMCPRuntime:
                     "end": self.to_jsonable(trajectory[-1]),
                 }
 
+        active_frames = getattr(plan, "active_droplets_per_frame", []) or []
+        active_droplet_ids = []
+        if active_frames:
+            for item in active_frames[-1] or []:
+                try:
+                    active_droplet_ids.append(int(item))
+                except Exception:
+                    continue
+
         return {
             "available": True,
             "frame_count": len(getattr(plan, "frames", []) or []),
             "planning_success": bool(getattr(plan, "planning_success", False)),
+            "active_droplet_ids": active_droplet_ids,
             "events": events,
             "targets_reached": self.to_jsonable(
                 getattr(plan, "targets_reached", {}) or {}
@@ -2664,6 +5267,1133 @@ class DropLogicMCPRuntime:
                 getattr(plan, "conflicts_resolved", []) or []
             ),
         }
+
+    def execution_scene(
+        self,
+        max_path_points: int = 64,
+        max_droplet_cells: int = 0,
+        include_droplet_cells: bool = False,
+        include_paths: bool = True,
+        include_action_paths: bool = False,
+    ) -> Dict[str, Any]:
+        """Return a compact structured scene for plan/executor visual inspection."""
+        system = self.system
+        if system is None:
+            return {
+                "available": False,
+                "reason": "no_system_loaded",
+                "system_loaded": False,
+                "scene_mode": "none",
+            }
+
+        coordinate_mapping = self._execution_scene_coordinate_mapping(system)
+        matrix_summary = None
+        try:
+            matrix_summary = self.matrix_summary(
+                source="state",
+                include_ranges=True,
+                include_active_cells=False,
+                include_hash=True,
+            )
+        except Exception as exc:
+            matrix_summary = {"error": str(exc)}
+
+        advanced_drop = getattr(system, "advanced_drop", None)
+        if advanced_drop is None:
+            return {
+                "available": False,
+                "reason": "no_advanced_drop",
+                "system_loaded": True,
+                "scene_mode": "matrix",
+                "matrix": matrix_summary,
+                "coordinate_mapping": coordinate_mapping,
+                "updated_at": time.time(),
+            }
+
+        executor = getattr(advanced_drop, "executor", None)
+        executor_status = self.to_jsonable(executor.status()) if executor is not None else None
+        executor_plan = getattr(executor, "current_plan", None) if executor is not None else None
+        plan = getattr(advanced_drop, "plan", None)
+        if plan is None:
+            plan = executor_plan
+        applied_plan = getattr(executor, "last_applied_frame_plan", None) if executor is not None else None
+        frame_plan = applied_plan if applied_plan is not None else plan
+
+        frames = list(getattr(frame_plan, "frames", []) or []) if frame_plan is not None else []
+        frame_count = len(frames)
+        frame_index, frame_matrix, frame_source = self._execution_scene_frame_source(
+            executor,
+            executor_status,
+            frames,
+            matrix_summary,
+        )
+        frame_summary = None
+        if frame_matrix is not None:
+            try:
+                frame_summary = self._matrix_compact_representation(
+                    frame_matrix,
+                    source=frame_source,
+                    include_ranges=True,
+                    include_active_cells=False,
+                    include_hash=True,
+                )
+            except Exception as exc:
+                frame_summary = {"error": str(exc), "index": frame_index, "source": frame_source}
+
+        droplets = self._execution_scene_droplets(
+            advanced_drop=advanced_drop,
+            plan=applied_plan,
+            frame_index=frame_index,
+            executed_frame=frame_source == "executor_last_applied_frame",
+            max_path_points=max_path_points,
+            max_droplet_cells=max_droplet_cells,
+            include_droplet_cells=include_droplet_cells,
+            include_paths=include_paths,
+        )
+        current_event = self._execution_scene_current_event(applied_plan, frame_index)
+        action_paths = (
+            self._execution_scene_action_paths(plan, max_path_points=max_path_points)
+            if include_paths and include_action_paths
+            else []
+        )
+        plan_summary = self.plan_summary(plan)
+        revision_payload = {
+            "system": self.system_name,
+            "matrix_hash": (
+                (matrix_summary or {}).get("matrix_values_sha256")
+                or (matrix_summary or {}).get("active_mask_sha256")
+            )
+            if isinstance(matrix_summary, dict)
+            else None,
+            "frame_hash": (
+                (frame_summary or {}).get("matrix_values_sha256")
+                or (frame_summary or {}).get("active_mask_sha256")
+            )
+            if isinstance(frame_summary, dict)
+            else None,
+            "frame_index": frame_index,
+            "frame_count": frame_count,
+            "executor_frame": (executor_status or {}).get("current_frame")
+            if isinstance(executor_status, dict)
+            else None,
+            "droplets": [
+                {
+                    "id": droplet.get("id"),
+                    "position": droplet.get("position"),
+                    "target": droplet.get("target"),
+                    "bbox": droplet.get("bbox"),
+                }
+                for droplet in droplets
+            ],
+            "coordinate_mapping": coordinate_mapping,
+            "actions": [
+                {
+                    "id": action.get("id"),
+                    "type": action.get("type"),
+                    "frame_span": action.get("frame_span"),
+                    "path_count": len(action.get("paths") or []),
+                }
+                for action in action_paths
+            ],
+        }
+        revision = hashlib.sha256(
+            json.dumps(
+                self.to_jsonable(revision_payload),
+                sort_keys=True,
+                ensure_ascii=True,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+
+        plan_payload = {
+            "available": bool(plan_summary.get("available")),
+            "planning_success": plan_summary.get("planning_success"),
+            "frame_count": plan_summary.get("frame_count"),
+            "targets_reached": plan_summary.get("targets_reached"),
+            "trajectory_count": len(plan_summary.get("trajectories") or {}),
+            "event_count": len(getattr(plan, "events", []) or []) if plan is not None else 0,
+            "current_event": current_event,
+            "scene_plan_source": "current_plan",
+            "frame_plan_source": "executor_last_applied_plan" if applied_plan is not None else "current_plan",
+            "droplets_source": "executor_last_applied_frame"
+            if frame_source == "executor_last_applied_frame"
+            else "none",
+        }
+        if include_action_paths:
+            plan_payload["actions"] = action_paths
+
+        return {
+            "available": True,
+            "surface": "execution_scene",
+            "system_loaded": True,
+            "system": self.system_name,
+            "scene_mode": "advanced_drop",
+            "updated_at": time.time(),
+            "revision": revision,
+            "matrix": matrix_summary,
+            "coordinate_mapping": coordinate_mapping,
+            "frame": {
+                "index": frame_index,
+                "count": frame_count,
+                "source": frame_source,
+                "synced_to_executor": frame_source == "executor_last_applied_frame",
+                "summary": frame_summary,
+            },
+            "executor": executor_status,
+            "plan": plan_payload,
+            "droplets": droplets,
+        }
+
+    def _execution_scene_coordinate_mapping(self, system: Any) -> Optional[Dict[str, Any]]:
+        """Return the electrode-to-stage affine calibration used by the dashboard."""
+        try:
+            state = getattr(system, "state", None)
+        except Exception:
+            return None
+        if not isinstance(state, dict):
+            return None
+
+        calibration = state.get("calibration")
+        if not isinstance(calibration, dict):
+            return None
+        raw_mapping = calibration.get("electrode_mapping")
+        chip_origin = calibration.get("chip_origin")
+        if not isinstance(raw_mapping, dict) or not isinstance(chip_origin, dict):
+            return None
+
+        def number(value: Any, default: Optional[float] = None) -> Optional[Any]:
+            if value is None:
+                return default
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                return default
+            if not np.isfinite(parsed):
+                return default
+            return int(parsed) if parsed.is_integer() else parsed
+
+        def vector(values: Any) -> List[Any]:
+            if not isinstance(values, (list, tuple)):
+                return []
+            parsed_values: List[Any] = []
+            for item in values:
+                parsed = number(item)
+                if parsed is None:
+                    return []
+                parsed_values.append(parsed)
+            return parsed_values
+
+        origin: Dict[str, Any] = {}
+        for axis in ("X", "Y", "Z"):
+            parsed = number(chip_origin.get(axis, chip_origin.get(axis.lower())))
+            if parsed is not None:
+                origin[axis] = parsed
+        if "X" not in origin or "Y" not in origin:
+            return None
+
+        inter_row = vector(raw_mapping.get("inter_row"))
+        inter_column = vector(raw_mapping.get("inter_column"))
+        if len(inter_row) < 2 or len(inter_column) < 2:
+            return None
+
+        offset: Dict[str, Any] = {
+            "X": number(raw_mapping.get("offset_x"), 0),
+            "Y": number(raw_mapping.get("offset_y"), 0),
+        }
+        offset_z = number(raw_mapping.get("offset_z"))
+        if offset_z is not None:
+            offset["Z"] = offset_z
+
+        electrode_config = state.get("electrode_matrix", {})
+        matrix_shape = None
+        if isinstance(electrode_config, dict):
+            rows = number(electrode_config.get("rows"))
+            columns = number(electrode_config.get("columns"))
+            if rows is not None and columns is not None:
+                matrix_shape = [int(rows), int(columns)]
+
+        return {
+            "kind": "electrode_to_stage_affine",
+            "units": "stage_steps",
+            "origin_electrode": [0, 0],
+            "matrix_shape": matrix_shape,
+            "chip_origin": origin,
+            "offset": offset,
+            "inter_row": inter_row,
+            "inter_column": inter_column,
+        }
+
+    def dashboard_scene(
+        self,
+        max_path_points: int = 256,
+        max_droplet_cells: int = 1024,
+    ) -> Dict[str, Any]:
+        """Return the internal dashboard scene, using the shared execution scene builder."""
+        scene = self.execution_scene(
+            max_path_points=max_path_points,
+            max_droplet_cells=max_droplet_cells,
+            include_droplet_cells=True,
+            include_paths=True,
+            include_action_paths=True,
+        )
+        scene["surface"] = "dashboard_internal"
+        scene["agent_visible"] = False
+        try:
+            scene["timeline"] = self._dashboard_scene_timeline()
+        except Exception as exc:
+            scene["timeline"] = {
+                "available": False,
+                "reason": "timeline_error",
+                "error": str(exc),
+            }
+        return scene
+
+    def _dashboard_scene_timeline(self) -> Dict[str, Any]:
+        """Return frame-indexed plan data for the browser timeline scrubber."""
+        system = self.system
+        advanced_drop = getattr(system, "advanced_drop", None) if system is not None else None
+        executor = getattr(advanced_drop, "executor", None) if advanced_drop is not None else None
+        plan = getattr(advanced_drop, "plan", None) if advanced_drop is not None else None
+        if plan is None and executor is not None:
+            plan = getattr(executor, "current_plan", None)
+        if plan is None and executor is not None:
+            plan = getattr(executor, "last_applied_frame_plan", None)
+        if plan is None:
+            return {"available": False, "reason": "no_plan"}
+
+        frames = list(getattr(plan, "frames", []) or [])
+        frame_count = len(frames)
+        if frame_count <= 0:
+            return {"available": False, "reason": "empty_plan", "frame_count": 0}
+
+        events = list(getattr(plan, "events", []) or [])
+        event_ids_by_frame = list(getattr(plan, "event_id_per_frame", []) or [])
+        active_by_frame = list(getattr(plan, "active_droplets_per_frame", []) or [])
+        trajectories = getattr(plan, "droplet_trajectories", {}) or {}
+        droplets = list(getattr(advanced_drop, "droplets", []) or [])
+        cache_key = self._dashboard_scene_timeline_cache_key(
+            plan,
+            frames,
+            events,
+            event_ids_by_frame,
+            active_by_frame,
+            droplets,
+            trajectories,
+        )
+        if self._dashboard_timeline_cache_key == cache_key and self._dashboard_timeline_cache is not None:
+            return self._dashboard_timeline_cache
+
+        event_type_by_id: Dict[str, str] = {}
+        timeline_events: List[Dict[str, Any]] = []
+
+        for index, event in enumerate(events):
+            if not isinstance(event, (list, tuple)) or len(event) < 2:
+                continue
+            try:
+                event_frame = int(event[0])
+            except Exception:
+                event_frame = 0
+            event_type = str(event[1] or "action")
+            data = event[2] if len(event) >= 3 and isinstance(event[2], dict) else {}
+            event_id = data.get("event_id")
+            if event_id is not None:
+                event_type_by_id[str(event_id)] = event_type
+            span = self._execution_scene_event_span(
+                data=data,
+                event_frame=event_frame,
+                event_id=event_id,
+                event_ids_by_frame=event_ids_by_frame,
+                frame_count=frame_count,
+            )
+            if span is None:
+                continue
+            start, end = span
+            event_key = str(event_id) if event_id is not None else f"{index + 1}:{event_type}:{start}-{end}"
+            timeline_events.append(
+                {
+                    "id": event_key,
+                    "event_id": self.to_jsonable(event_id),
+                    "index": index,
+                    "type": event_type,
+                    "label": f"{index + 1}. {event_type}",
+                    "frame_span": [start, end],
+                    "frame_count": end - start + 1,
+                    "droplet_ids": self._execution_scene_event_droplet_ids(data),
+                    "data": self._execution_scene_compact_event_data(data),
+                }
+            )
+
+        timeline_frames = []
+        for frame_index, frame_matrix in enumerate(frames):
+            event_id = event_ids_by_frame[frame_index] if frame_index < len(event_ids_by_frame) else None
+            active_ids: List[int] = []
+            if frame_index < len(active_by_frame):
+                for raw_id in active_by_frame[frame_index] or []:
+                    try:
+                        active_ids.append(int(raw_id))
+                    except Exception:
+                        continue
+            try:
+                summary = self._matrix_compact_representation(
+                    frame_matrix,
+                    source="timeline_frame",
+                    include_ranges=True,
+                    include_active_cells=False,
+                    include_hash=False,
+                )
+                summary = self._dashboard_scene_timeline_summary(summary)
+            except Exception as exc:
+                summary = {"source": "timeline_frame", "error": str(exc)}
+            timeline_frames.append(
+                {
+                    "index": frame_index,
+                    "event_id": self.to_jsonable(event_id),
+                    "event_type": event_type_by_id.get(str(event_id), None) if event_id is not None else None,
+                    "active_droplet_ids": sorted(set(active_ids)),
+                    "droplets": self._dashboard_scene_timeline_frame_droplets(
+                        droplets=droplets,
+                        trajectories=trajectories,
+                        active_ids=sorted(set(active_ids)),
+                        frame_index=frame_index,
+                    ),
+                    "summary": summary,
+                }
+            )
+
+        payload = {
+            "available": True,
+            "frame_count": frame_count,
+            "event_count": len(timeline_events),
+            "events": timeline_events,
+            "frames": timeline_frames,
+            "encoding": "per_frame_active_ranges",
+        }
+        self._dashboard_timeline_cache_key = cache_key
+        self._dashboard_timeline_cache = payload
+        return payload
+
+    def _dashboard_scene_timeline_cache_key(
+        self,
+        plan: Any,
+        frames: List[Any],
+        events: List[Any],
+        event_ids_by_frame: List[Any],
+        active_by_frame: List[Any],
+        droplets: List[Any],
+        trajectories: Dict[Any, Any],
+    ) -> Tuple[Any, ...]:
+        last_event = events[-1] if events else None
+        first_frame_id = id(frames[0]) if frames else None
+        last_frame_id = id(frames[-1]) if frames else None
+        droplet_key = []
+        for droplet in droplets:
+            try:
+                shape = tuple(sorted((int(row), int(col)) for row, col in (getattr(droplet, "shape", set()) or set())))
+                droplet_key.append(
+                    (
+                        int(getattr(droplet, "id")),
+                        self.to_jsonable(getattr(droplet, "origin_corner", None)),
+                        self.to_jsonable(getattr(droplet, "target_corner", None)),
+                        shape,
+                    )
+                )
+            except Exception:
+                continue
+        trajectory_key = []
+        for raw_id, trajectory in (trajectories or {}).items():
+            points = list(trajectory or [])
+            trajectory_key.append(
+                (
+                    self.to_jsonable(raw_id),
+                    len(points),
+                    self.to_jsonable(points[0]) if points else None,
+                    self.to_jsonable(points[-1]) if points else None,
+                )
+            )
+        return (
+            id(plan),
+            len(frames),
+            first_frame_id,
+            last_frame_id,
+            len(events),
+            self.to_jsonable(last_event),
+            len(event_ids_by_frame),
+            len(active_by_frame),
+            tuple(sorted(droplet_key)),
+            tuple(sorted(trajectory_key, key=lambda item: str(item[0]))),
+        )
+
+    def _dashboard_scene_timeline_summary(self, summary: Dict[str, Any]) -> Dict[str, Any]:
+        """Trim matrix summaries to the fields needed for dashboard replay."""
+        if not isinstance(summary, dict):
+            return {}
+        keep = {
+            "type",
+            "source",
+            "shape",
+            "active_count",
+            "active_bbox",
+            "encoding",
+            "zeros_are_implicit",
+            "rows",
+            "error",
+        }
+        return {key: summary[key] for key in keep if key in summary}
+
+    def _dashboard_scene_timeline_frame_droplets(
+        self,
+        droplets: List[Any],
+        trajectories: Dict[Any, Any],
+        active_ids: List[int],
+        frame_index: int,
+    ) -> List[Dict[str, Any]]:
+        """Return droplet shapes/positions for one timeline frame."""
+        if not active_ids:
+            return []
+
+        try:
+            from droplogic.utils.advanced_drop.common import get_droplet_positions
+        except Exception:
+            get_droplet_positions = None
+
+        droplets_by_id: Dict[int, Any] = {}
+        for droplet in droplets:
+            try:
+                droplets_by_id[int(getattr(droplet, "id"))] = droplet
+            except Exception:
+                continue
+
+        result: List[Dict[str, Any]] = []
+        for droplet_id in sorted(set(active_ids)):
+            droplet = droplets_by_id.get(int(droplet_id))
+            trajectory = self._execution_scene_trajectory(trajectories, int(droplet_id))
+            fallback_position = getattr(droplet, "origin_corner", None) if droplet is not None else None
+            position = self._execution_scene_position(trajectory, frame_index, fallback_position)
+            if position is None:
+                continue
+
+            fallback_target = getattr(droplet, "target_corner", None) if droplet is not None else None
+            target = self._execution_scene_target(trajectory, fallback_target) or position
+            shape = sorted(
+                [[int(row), int(col)] for row, col in (getattr(droplet, "shape", set()) or set())]
+            ) if droplet is not None else [[0, 0]]
+            if not shape:
+                shape = [[0, 0]]
+
+            cells = [[position[0] + offset[0], position[1] + offset[1]] for offset in shape]
+            if get_droplet_positions is not None and droplet is not None:
+                try:
+                    cells = sorted(
+                        [[int(row), int(col)] for row, col in get_droplet_positions(droplet, tuple(position))]
+                    )
+                except Exception:
+                    pass
+
+            result.append(
+                {
+                    "id": int(droplet_id),
+                    "position": self.to_jsonable(position),
+                    "origin": self.to_jsonable(fallback_position or position),
+                    "target": self.to_jsonable(target),
+                    "active": True,
+                    "shape": self.to_jsonable(shape),
+                    "shape_size": len(shape),
+                    "cells": self.to_jsonable(cells),
+                    "cells_truncated": False,
+                    "bbox": self._execution_scene_bbox(cells),
+                    "target_bbox": None,
+                    "path_length": len(trajectory),
+                }
+            )
+        return result
+
+    def _execution_scene_frame_index(
+        self,
+        executor_status: Optional[Dict[str, Any]],
+        frame_count: int,
+    ) -> Optional[int]:
+        if frame_count <= 0:
+            return None
+        status = executor_status if isinstance(executor_status, dict) else {}
+        last_frame = status.get("last_frame") if isinstance(status.get("last_frame"), dict) else {}
+        last_index = last_frame.get("index")
+        if isinstance(last_index, (int, float)) and 0 <= int(last_index) < frame_count:
+            return int(last_index)
+        current = status.get("current_frame", 0)
+        try:
+            current_index = int(current)
+        except Exception:
+            current_index = 0
+        return max(0, min(frame_count - 1, current_index))
+
+    def _execution_scene_frame_source(
+        self,
+        executor: Any,
+        executor_status: Optional[Dict[str, Any]],
+        frames: List[Any],
+        matrix_summary: Optional[Dict[str, Any]],
+    ) -> Tuple[Optional[int], Any, str]:
+        frame_count = len(frames)
+        status = executor_status if isinstance(executor_status, dict) else {}
+        applied = status.get("last_applied_frame") if isinstance(status.get("last_applied_frame"), dict) else {}
+        applied_index = applied.get("index")
+        applied_matrix = getattr(executor, "last_applied_frame_matrix", None) if executor is not None else None
+        if applied_matrix is not None and isinstance(applied_index, (int, float)) and int(applied_index) >= 0:
+            if (
+                isinstance(matrix_summary, dict)
+                and matrix_summary.get("error") is None
+                and not self._execution_scene_matrix_matches_summary(applied_matrix, matrix_summary)
+            ):
+                return None, None, "state"
+            return int(applied_index), applied_matrix, "executor_last_applied_frame"
+
+        # Before the executor has applied any frame, the only truthful matrix
+        # state is the live hardware/runtime state. Do not show future planned
+        # frames as if they had executed.
+        if isinstance(matrix_summary, dict) and matrix_summary.get("error") is None:
+            return None, None, "state"
+
+        frame_index = self._execution_scene_frame_index(executor_status, frame_count)
+        if frame_index is not None and 0 <= frame_index < frame_count:
+            return frame_index, frames[frame_index], "plan_frame_fallback"
+        return None, None, "none"
+
+    def _execution_scene_matrix_matches_summary(
+        self,
+        matrix: Any,
+        summary: Dict[str, Any],
+    ) -> bool:
+        expected_hash = summary.get("active_mask_sha256")
+        if not expected_hash:
+            return True
+        try:
+            array = np.asarray(matrix)
+            if array.ndim != 2:
+                return False
+            active_mask = array != 0
+            contiguous = np.ascontiguousarray(active_mask.astype(np.uint8))
+            return hashlib.sha256(contiguous.tobytes()).hexdigest() == expected_hash
+        except Exception:
+            return True
+
+    def _execution_scene_droplets(
+        self,
+        advanced_drop: Any,
+        plan: Any,
+        frame_index: Optional[int],
+        executed_frame: bool,
+        max_path_points: int,
+        max_droplet_cells: int,
+        include_droplet_cells: bool,
+        include_paths: bool,
+    ) -> List[Dict[str, Any]]:
+        if not executed_frame or frame_index is None:
+            return []
+
+        droplets = getattr(advanced_drop, "droplets", None) or []
+        trajectories = getattr(plan, "droplet_trajectories", {}) or {}
+        trajectory_ids = set()
+        for raw_id, trajectory in trajectories.items():
+            if not trajectory:
+                continue
+            try:
+                trajectory_ids.add(int(raw_id))
+            except Exception:
+                continue
+        active_by_frame = getattr(plan, "active_droplets_per_frame", []) or []
+        has_active_frame = frame_index is not None and 0 <= frame_index < len(active_by_frame)
+        active_ids = set()
+        if has_active_frame:
+            for item in active_by_frame[frame_index] or []:
+                try:
+                    active_ids.add(int(item))
+                except Exception:
+                    continue
+            if not active_ids:
+                return []
+        targets_reached = getattr(plan, "targets_reached", {}) or {}
+
+        try:
+            from droplogic.utils.advanced_drop.common import get_droplet_positions
+        except Exception:
+            get_droplet_positions = None
+
+        result = []
+        for droplet in droplets:
+            droplet_id = int(getattr(droplet, "id", len(result)))
+            trajectory = self._execution_scene_trajectory(trajectories, droplet_id)
+            if trajectory_ids and droplet_id not in trajectory_ids:
+                continue
+            if has_active_frame and droplet_id not in active_ids:
+                continue
+            position = self._execution_scene_position(
+                trajectory,
+                frame_index,
+                getattr(droplet, "origin_corner", None),
+            )
+            target = self._execution_scene_target(
+                trajectory,
+                getattr(droplet, "target_corner", None),
+            )
+            shape = sorted(
+                [[int(row), int(col)] for row, col in (getattr(droplet, "shape", set()) or set())]
+            )
+            cells = []
+            cells_truncated = False
+            bbox = None
+            target_bbox = None
+            if get_droplet_positions is not None and position is not None:
+                try:
+                    raw_cells = sorted(
+                        [[int(row), int(col)] for row, col in get_droplet_positions(droplet, tuple(position))]
+                    )
+                    if include_droplet_cells:
+                        limit = max(0, int(max_droplet_cells))
+                        cells = raw_cells[:limit]
+                        cells_truncated = len(raw_cells) > limit
+                    bbox = self._execution_scene_bbox(raw_cells)
+                except Exception:
+                    cells = []
+            if get_droplet_positions is not None and target is not None:
+                try:
+                    target_cells = sorted(
+                        [[int(row), int(col)] for row, col in get_droplet_positions(droplet, tuple(target))]
+                    )
+                    target_bbox = self._execution_scene_bbox(target_cells)
+                except Exception:
+                    target_bbox = None
+
+            at_target = bool(position is not None and target is not None and tuple(position) == tuple(target))
+            planned_target_reached = bool(
+                targets_reached.get(droplet_id) or targets_reached.get(str(droplet_id), False)
+            )
+
+            result.append(
+                {
+                    "id": droplet_id,
+                    "position": self.to_jsonable(position),
+                    "origin": self.to_jsonable(getattr(droplet, "origin_corner", None)),
+                    "target": self.to_jsonable(target),
+                    "active": True,
+                    "at_target": at_target,
+                    "target_reached": at_target,
+                    "planned_target_reached": planned_target_reached,
+                    "priority": self.to_jsonable(getattr(droplet, "priority", None)),
+                    "vital_space": self.to_jsonable(getattr(droplet, "vital_space", None)),
+                    "shape": shape,
+                    "shape_size": len(shape),
+                    "cells": cells,
+                    "cells_truncated": cells_truncated,
+                    "bbox": bbox,
+                    "target_bbox": target_bbox,
+                    "path": self._execution_scene_compact_path(trajectory, max_path_points=max_path_points)
+                    if include_paths
+                    else [],
+                    "path_included": bool(include_paths),
+                    "path_length": len(trajectory),
+                }
+            )
+        return result
+
+    def _execution_scene_action_paths(
+        self,
+        plan: Any,
+        max_path_points: int = 256,
+    ) -> List[Dict[str, Any]]:
+        if plan is None:
+            return []
+        events = list(getattr(plan, "events", []) or [])
+        trajectories = getattr(plan, "droplet_trajectories", {}) or {}
+
+        frame_count = len(getattr(plan, "frames", []) or [])
+        if frame_count <= 0:
+            try:
+                frame_count = max(len(list(trajectory or [])) for trajectory in trajectories.values())
+            except ValueError:
+                frame_count = 0
+        event_ids_by_frame = list(getattr(plan, "event_id_per_frame", []) or [])
+        actions: List[Dict[str, Any]] = []
+
+        for index, event in enumerate(events):
+            if not isinstance(event, (list, tuple)) or len(event) < 2:
+                continue
+            try:
+                event_frame = int(event[0])
+            except Exception:
+                event_frame = 0
+            event_type = str(event[1] or "action")
+            data = event[2] if len(event) >= 3 and isinstance(event[2], dict) else {}
+            event_id = data.get("event_id")
+            span = self._execution_scene_event_span(
+                data=data,
+                event_frame=event_frame,
+                event_id=event_id,
+                event_ids_by_frame=event_ids_by_frame,
+                frame_count=frame_count,
+            )
+            if span is None:
+                continue
+            start, end = span
+            mentioned_droplets = set(self._execution_scene_event_droplet_ids(data))
+            paths = []
+
+            for raw_id, trajectory in trajectories.items():
+                try:
+                    droplet_id = int(raw_id)
+                except Exception:
+                    continue
+                segment = self._execution_scene_trajectory_segment(
+                    list(trajectory or []),
+                    start,
+                    end,
+                )
+                path = self._execution_scene_compact_path(
+                    segment,
+                    max_path_points=max_path_points,
+                )
+                if not path:
+                    continue
+                moving = len(path) > 1
+                if not moving and droplet_id not in mentioned_droplets:
+                    continue
+                mentioned_droplets.add(droplet_id)
+                paths.append(
+                    {
+                        "key": f"{event_id if event_id is not None else index}:{droplet_id}",
+                        "droplet_id": droplet_id,
+                        "path": path,
+                        "path_length": len(segment),
+                        "start": path[0],
+                        "end": path[-1],
+                    }
+                )
+
+            action_id = str(event_id) if event_id is not None else f"{index + 1}:{event_type}:{start}-{end}"
+            actions.append(
+                {
+                    "id": action_id,
+                    "event_id": self.to_jsonable(event_id),
+                    "index": index,
+                    "type": event_type,
+                    "label": f"{index + 1}. {event_type}",
+                    "frame_span": [start, end],
+                    "frame_count": end - start + 1,
+                    "droplet_ids": sorted(mentioned_droplets),
+                    "paths": paths,
+                    "data": self._execution_scene_compact_event_data(data),
+                }
+            )
+
+        if actions:
+            return actions
+
+        fallback = self._execution_scene_trajectory_actions(
+            trajectories,
+            frame_count=frame_count,
+            max_path_points=max_path_points,
+        )
+        return fallback or actions
+
+    def _execution_scene_has_moving_action(self, actions: List[Dict[str, Any]]) -> bool:
+        for action in actions:
+            for path_info in action.get("paths") or []:
+                if len(self._execution_scene_distinct_points(path_info.get("path"))) > 1:
+                    return True
+        return False
+
+    def _execution_scene_trajectory_actions(
+        self,
+        trajectories: Dict[Any, Any],
+        frame_count: int,
+        max_path_points: int = 256,
+    ) -> List[Dict[str, Any]]:
+        paths = []
+        droplet_ids = []
+        for raw_id, trajectory in trajectories.items():
+            try:
+                droplet_id = int(raw_id)
+            except Exception:
+                continue
+            full_trajectory = list(trajectory or [])
+            path = self._execution_scene_compact_path(
+                full_trajectory,
+                max_path_points=max_path_points,
+            )
+            if len(self._execution_scene_distinct_points(path)) <= 1:
+                continue
+            droplet_ids.append(droplet_id)
+            paths.append(
+                {
+                    "key": f"trajectory:{droplet_id}",
+                    "droplet_id": droplet_id,
+                    "path": path,
+                    "path_length": len(full_trajectory),
+                    "start": path[0],
+                    "end": path[-1],
+                    "synthetic": True,
+                }
+            )
+
+        if not paths:
+            return []
+        end_frame = max(0, frame_count - 1)
+        return [
+            {
+                "id": "planned-trajectories",
+                "event_id": None,
+                "index": None,
+                "type": "trajectory",
+                "label": "Planned trajectories",
+                "frame_span": [0, end_frame],
+                "frame_count": end_frame + 1,
+                "droplet_ids": sorted(droplet_ids),
+                "paths": paths,
+                "data": {"synthetic": True, "source": "droplet_trajectories"},
+            }
+        ]
+
+    def _execution_scene_distinct_points(self, path: Any) -> List[List[int]]:
+        points = []
+        previous = None
+        for item in path or []:
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            try:
+                point = [int(item[0]), int(item[1])]
+            except Exception:
+                continue
+            if previous == point:
+                continue
+            points.append(point)
+            previous = point
+        return points
+
+    def _execution_scene_event_span(
+        self,
+        data: Dict[str, Any],
+        event_frame: int,
+        event_id: Any,
+        event_ids_by_frame: List[Any],
+        frame_count: int,
+    ) -> Optional[Tuple[int, int]]:
+        frame_span = data.get("frame_span") if isinstance(data, dict) else None
+        if isinstance(frame_span, (list, tuple)) and len(frame_span) >= 2:
+            try:
+                start = int(frame_span[0])
+                end = int(frame_span[1])
+                return self._clamp_execution_scene_span(start, end, frame_count)
+            except Exception:
+                pass
+
+        if event_id is not None and event_ids_by_frame:
+            matches = [
+                index
+                for index, item in enumerate(event_ids_by_frame)
+                if item == event_id or str(item) == str(event_id)
+            ]
+            if matches:
+                return self._clamp_execution_scene_span(min(matches), max(matches), frame_count)
+
+        return self._clamp_execution_scene_span(event_frame, event_frame, frame_count)
+
+    def _clamp_execution_scene_span(
+        self,
+        start: int,
+        end: int,
+        frame_count: int,
+    ) -> Optional[Tuple[int, int]]:
+        if frame_count <= 0:
+            return None
+        lo = max(0, min(int(start), int(end)))
+        hi = min(frame_count - 1, max(int(start), int(end)))
+        if lo > hi:
+            return None
+        return lo, hi
+
+    def _execution_scene_trajectory_segment(
+        self,
+        trajectory: List[Any],
+        start: int,
+        end: int,
+    ) -> List[Any]:
+        if not trajectory:
+            return []
+        lo = max(0, min(len(trajectory) - 1, int(start)))
+        hi = max(0, min(len(trajectory) - 1, int(end)))
+        if lo > hi:
+            lo, hi = hi, lo
+        return trajectory[lo : hi + 1]
+
+    def _execution_scene_event_droplet_ids(self, value: Any, key: str = "") -> List[int]:
+        found: List[int] = []
+        key_mentions_droplet = "droplet" in str(key).lower()
+        if key_mentions_droplet and isinstance(value, (int, float, str)):
+            try:
+                found.append(int(value))
+            except Exception:
+                pass
+        elif isinstance(value, dict):
+            for child_key, child_value in value.items():
+                found.extend(self._execution_scene_event_droplet_ids(child_value, str(child_key)))
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                found.extend(self._execution_scene_event_droplet_ids(item, key))
+        return sorted(set(found))
+
+    def _execution_scene_compact_event_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        compact: Dict[str, Any] = {}
+        for key, value in (data or {}).items():
+            if key in {"event_id", "frame_span"}:
+                continue
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                compact[str(key)] = value
+            elif isinstance(value, (list, tuple, set)) and len(value) <= 16:
+                compact[str(key)] = self.to_jsonable(value)
+            elif isinstance(value, dict) and len(value) <= 12:
+                compact[str(key)] = self.to_jsonable(value)
+            else:
+                compact[str(key)] = {
+                    "type": type(value).__name__,
+                    "omitted": True,
+                }
+        return compact
+
+    def _execution_scene_trajectory(self, trajectories: Dict[Any, Any], droplet_id: int) -> List[Any]:
+        trajectory = trajectories.get(droplet_id)
+        if trajectory is None:
+            trajectory = trajectories.get(str(droplet_id))
+        return list(trajectory or [])
+
+    def _execution_scene_position(
+        self,
+        trajectory: List[Any],
+        frame_index: Optional[int],
+        fallback: Any,
+    ) -> Optional[List[int]]:
+        value = None
+        if trajectory and frame_index is not None:
+            value = trajectory[max(0, min(len(trajectory) - 1, int(frame_index)))]
+        if value is None:
+            value = fallback
+        if value is None:
+            return None
+        items = list(value)
+        if len(items) < 2:
+            return None
+        return [int(items[0]), int(items[1])]
+
+    def _execution_scene_target(
+        self,
+        trajectory: List[Any],
+        fallback: Any,
+    ) -> Optional[List[int]]:
+        if trajectory:
+            return self._execution_scene_position(
+                trajectory,
+                len(trajectory) - 1,
+                fallback,
+            )
+        return self._execution_scene_position([], None, fallback)
+
+    def _execution_scene_bbox(self, cells: List[List[int]]) -> Optional[Dict[str, int]]:
+        if not cells:
+            return None
+        rows = [int(cell[0]) for cell in cells]
+        cols = [int(cell[1]) for cell in cells]
+        return {
+            "row_min": min(rows),
+            "row_max": max(rows),
+            "col_min": min(cols),
+            "col_max": max(cols),
+        }
+
+    def _execution_scene_compact_path(
+        self,
+        trajectory: List[Any],
+        max_path_points: int = 256,
+    ) -> List[List[int]]:
+        points = []
+        previous = None
+        for item in trajectory:
+            if item is None:
+                continue
+            values = list(item)
+            if len(values) < 2:
+                continue
+            point = [int(values[0]), int(values[1])]
+            if point != previous:
+                points.append(point)
+                previous = point
+        limit = max(2, int(max_path_points or 256))
+        if len(points) <= limit:
+            return points
+        if limit <= 2:
+            return [points[0], points[-1]]
+        keep = [points[0]]
+        interior_count = limit - 2
+        stride = max(1, int(np.ceil((len(points) - 2) / interior_count)))
+        keep.extend(points[1:-1:stride][:interior_count])
+        keep.append(points[-1])
+        return keep
+
+    def _execution_scene_current_event(self, plan: Any, frame_index: Optional[int]) -> Optional[Any]:
+        if plan is None or frame_index is None:
+            return None
+        event_id_per_frame = getattr(plan, "event_id_per_frame", []) or []
+        event_id = None
+        if 0 <= frame_index < len(event_id_per_frame):
+            event_id = event_id_per_frame[frame_index]
+        events = getattr(plan, "events", []) or []
+        if event_id is not None:
+            for event in events:
+                data = event[2] if len(event) >= 3 else {}
+                if isinstance(data, dict) and data.get("event_id") == event_id:
+                    return self.to_jsonable(event)
+        for event in events:
+            if not event:
+                continue
+            try:
+                event_frame = int(event[0])
+            except Exception:
+                continue
+            data = event[2] if len(event) >= 3 else {}
+            frame_span = data.get("frame_span") if isinstance(data, dict) else None
+            if isinstance(frame_span, (list, tuple)) and len(frame_span) >= 2:
+                if int(frame_span[0]) <= frame_index <= int(frame_span[1]):
+                    return self.to_jsonable(event)
+            if event_frame == frame_index:
+                return self.to_jsonable(event)
+        return None
+
+    def write_dashboard_scene_snapshot(self) -> None:
+        """Write an internal dashboard scene file without affecting MCP calls."""
+        path = (self.dashboard_scene_path or "").strip()
+        if not path:
+            return
+        output_path = os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
+        try:
+            scene = self.dashboard_scene()
+        except Exception:
+            scene = {
+                "available": False,
+                "reason": "scene_snapshot_error",
+                "updated_at": time.time(),
+            }
+        try:
+            output_dir = os.path.dirname(output_path)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+            temp_path = f"{output_path}.{os.getpid()}.tmp"
+            with open(temp_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    self.to_jsonable(scene),
+                    handle,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                )
+            os.replace(temp_path, output_path)
+        except Exception:
+            pass
 
     def save_protocol(self, output_path: str) -> Dict[str, Any]:
         """Save the current plan and droplets to a pickle protocol file."""
@@ -3151,6 +6881,64 @@ class DropLogicMCPRuntime:
             dotted = ".".join(("presets",) + keys)
             raise DropLogicMCPError(f"Config preset is not an object: {dotted}")
         return dict(current)
+
+    def _get_stage_move_preset(self, preset: str) -> Dict[str, Any]:
+        name = str(preset or "").strip().lower().replace("/", ".")
+        aliases = {
+            "inject": "stage.manual_injection",
+            "injection": "stage.manual_injection",
+            "load": "stage.manual_injection",
+            "loading": "stage.manual_injection",
+            "manual_injection": "stage.manual_injection",
+            "manual-injection": "stage.manual_injection",
+            "manual injection": "stage.manual_injection",
+            "camera_overview": "imaging.whole_chip_camera",
+            "overview": "imaging.whole_chip_camera",
+            "whole_chip": "imaging.whole_chip_camera",
+            "whole_chip_camera": "imaging.whole_chip_camera",
+            "whole-chip-camera": "imaging.whole_chip_camera",
+        }
+        dotted = aliases.get(name, name)
+        if dotted.startswith("presets."):
+            dotted = dotted[len("presets."):]
+        parts = [part for part in dotted.split(".") if part]
+        if len(parts) == 1:
+            # Stage presets are the common case for direct movement.
+            parts = ["stage", parts[0]]
+        if len(parts) != 2 or parts[0] not in {"stage", "imaging"}:
+            raise DropLogicMCPError(
+                "Stage preset must be a known preset such as manual_injection, "
+                "stage.manual_injection, whole_chip_camera, or imaging.whole_chip_camera."
+            )
+        preset_data = self._get_named_preset(parts[0], parts[1])
+        if not isinstance(preset_data.get("position"), dict):
+            raise DropLogicMCPError(f"Preset '{preset}' does not define a stage position.")
+        return preset_data
+
+    def _normalize_stage_axis_update(self, position: Any) -> Dict[str, int]:
+        if position is None:
+            raise DropLogicMCPError("move_stage requires either position or preset.")
+        if isinstance(position, dict):
+            normalized = {}
+            for key, value in position.items():
+                axis = str(key).upper()
+                if axis not in {"X", "Y", "Z"}:
+                    raise DropLogicMCPError(
+                        "Stage position keys must be X, Y, and/or Z."
+                    )
+                normalized[axis] = int(round(float(value)))
+            if not normalized:
+                raise DropLogicMCPError("Stage position cannot be empty.")
+            return normalized
+        if isinstance(position, (list, tuple)) and len(position) >= 3:
+            return {
+                "X": int(round(float(position[0]))),
+                "Y": int(round(float(position[1]))),
+                "Z": int(round(float(position[2]))),
+            }
+        raise DropLogicMCPError(
+            "Stage position must be a dict with X/Y/Z axes or a 3-item list."
+        )
 
     def _normalize_stage_position(self, position: Any) -> Dict[str, int]:
         if position is None:
@@ -3728,6 +7516,8 @@ class DropLogicMCPRuntime:
             sources.append("processed")
         if hasattr(instance, "get_raw_frame"):
             sources.append("raw")
+        if getattr(instance, "device", None) is not None:
+            sources.append("camera_raw")
         return sources
 
     def _resize_frame(
@@ -3795,16 +7585,38 @@ class DropLogicMCPRuntime:
             return instance.get_processed_frame()
         if source == "raw" and hasattr(instance, "get_raw_frame"):
             return instance.get_raw_frame()
+        if source in {"camera_raw", "device_raw", "capture_raw"}:
+            return self._capture_visualizer_device_frame(instance)
         raise DropLogicMCPError(
             f"Visualizer '{visualizer}' cannot provide frame source '{frame_source}'. "
             f"Available sources: {self._visualizer_frame_sources(instance)}"
         )
+
+    def _capture_visualizer_device_frame(self, instance):
+        device = getattr(instance, "device", None)
+        if device is None or not hasattr(device, "capture_image"):
+            raise DropLogicMCPError("Visualizer has no camera-like capture device.")
+        try:
+            if hasattr(device, "capture_lock"):
+                with device.capture_lock:
+                    frame = device.capture_image()
+            else:
+                frame = device.capture_image()
+        except TypeError:
+            frame = device.capture_image(display=False)
+        if frame is None:
+            raise DropLogicMCPError("Camera device returned no frame.")
+        return frame
 
     def _normalize_advanced_drop_arguments(
         self, method: str, arguments: Dict[str, Any]
     ) -> Dict[str, Any]:
         normalized = dict(arguments)
         if method == "move":
+            # For MCP/agent use, a failed planner result must not mutate the live
+            # AdvancedDrop plan by default. Agents can inspect the returned failed
+            # plan summary and retry with smaller batches or waypoints.
+            normalized.setdefault("merge_on_failure", False)
             return normalized
 
         if method == "reservoir_extraction":
@@ -3814,6 +7626,12 @@ class DropLogicMCPRuntime:
                 normalized["split_size"] = self._size_or_shape(
                     normalized["split_size"], "split_size"
                 )
+            if (
+                str(normalized.get("split_mode") or "").lower() == "linear"
+                and normalized.get("linear_drop_shape") is None
+                and normalized.get("split_size") is not None
+            ):
+                normalized["linear_drop_shape"] = normalized["split_size"]
             for key in ("linear_direction",):
                 if normalized.get(key) is not None:
                     normalized[key] = self._pair(normalized[key], key)
@@ -3834,8 +7652,19 @@ class DropLogicMCPRuntime:
             return normalized
 
         if method == "merge":
+            droplet_ids = normalized.get("droplet_ids")
+            if isinstance(droplet_ids, (int, float, str)):
+                normalized["droplet_ids"] = [int(droplet_ids)]
+            elif isinstance(droplet_ids, (list, tuple)):
+                normalized["droplet_ids"] = [int(item) for item in droplet_ids]
+            else:
+                raise DropLogicMCPError(
+                    "merge droplet_ids must be an integer or a list of integers."
+                )
             if isinstance(normalized.get("target"), list):
                 normalized["target"] = self._pair(normalized["target"], "target")
+            elif isinstance(normalized.get("target"), str):
+                normalized["target"] = int(normalized["target"])
             return normalized
 
         if method == "correct_droplet_position":
@@ -3854,6 +7683,60 @@ class DropLogicMCPRuntime:
             return normalized
 
         return normalized
+
+    def _normalize_imaging_channels(self, channels: Optional[List[Any]]) -> List[Dict[str, Any]]:
+        if channels is None:
+            channels = ["Brightfield", "FAM"]
+
+        profiles = []
+        defaults = {
+            "brightfield": {
+                "channel": "Brightfield",
+                "exposure_time": 72000,
+                "gain": 0,
+                "coaxial_intensity": 4,
+                "ring_intensity": 0,
+                "mode": "brightfield",
+            },
+            "fam": {
+                "channel": "FAM",
+                "exposure_time": 4800000,
+                "gain": 0,
+                "coaxial_intensity": 99,
+                "ring_intensity": 0,
+                "mode": "fluorescence",
+            },
+        }
+        for item in channels:
+            if isinstance(item, str):
+                key = item.lower()
+                profile = dict(defaults.get(key, {"channel": item, "mode": "brightfield"}))
+            elif isinstance(item, dict):
+                channel = str(item.get("channel", item.get("name", ""))).strip()
+                if not channel:
+                    raise DropLogicMCPError("Each imaging channel dict needs 'channel' or 'name'.")
+                key = channel.lower()
+                profile = dict(defaults.get(key, {"channel": channel, "mode": "brightfield"}))
+                profile.update(item)
+                profile["channel"] = channel
+            else:
+                raise DropLogicMCPError(
+                    "channels must contain strings or channel profile objects."
+                )
+
+            channel_key = str(profile.get("channel", "")).lower()
+            if channel_key == "fam":
+                profile["mode"] = "fluorescence"
+            else:
+                profile.setdefault("mode", "brightfield")
+
+            profile["exposure_time"] = int(profile.get("exposure_time", defaults.get(channel_key, {}).get("exposure_time", 72000)))
+            profile["gain"] = int(profile.get("gain", 0))
+            profile["coaxial_intensity"] = int(profile.get("coaxial_intensity", 0))
+            profile["ring_intensity"] = int(profile.get("ring_intensity", 0))
+            profiles.append(profile)
+
+        return profiles
 
     def _pair(self, value: Iterable[int], name: str) -> tuple:
         if value is None:
@@ -3884,6 +7767,14 @@ class DropLogicMCPRuntime:
             return value.item()
 
         if isinstance(value, np.ndarray):
+            if value.ndim == 2 and value.size > 512:
+                return self._matrix_compact_representation(
+                    value,
+                    source="state_summary",
+                    include_ranges=True,
+                    include_active_cells=False,
+                    include_hash=True,
+                )
             summary = {
                 "type": "ndarray",
                 "shape": list(value.shape),
@@ -3908,6 +7799,15 @@ class DropLogicMCPRuntime:
             return [self._summarize_state_value(item, max_list_items=max_list_items) for item in value]
 
         if isinstance(value, list):
+            matrix_array = self._list_matrix_array(value)
+            if matrix_array is not None:
+                return self._matrix_compact_representation(
+                    matrix_array,
+                    source="state_summary",
+                    include_ranges=True,
+                    include_active_cells=False,
+                    include_hash=True,
+                )
             if len(value) > max_list_items:
                 sample = value[: min(5, len(value))]
                 return {
@@ -3938,6 +7838,22 @@ class DropLogicMCPRuntime:
             return self._summarize_state_value(payload, max_list_items=max_list_items)
 
         return str(value)
+
+    def _list_matrix_array(self, value: List[Any]) -> Optional[np.ndarray]:
+        if len(value) < 16 or not all(isinstance(row, (list, tuple, np.ndarray)) for row in value):
+            return None
+        row_lengths = [len(row) for row in value]
+        if not row_lengths or min(row_lengths) < 16 or len(set(row_lengths)) != 1:
+            return None
+        try:
+            array = np.asarray(value)
+        except Exception:
+            return None
+        if array.ndim != 2 or array.size <= 512:
+            return None
+        if not np.issubdtype(array.dtype, np.number) and array.dtype != np.bool_:
+            return None
+        return array
 
     def to_jsonable(self, value: Any) -> Any:
         """Convert DropLogic/numpy objects into JSON-safe data."""

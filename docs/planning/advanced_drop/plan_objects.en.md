@@ -34,6 +34,10 @@ frame_10 = plan.frames[10]
 active_ids = plan.active_droplets_per_frame[10]
 ```
 
+## External App Snapshots
+
+Dashboards and other external apps can render plans from structured state instead of using OpenCV screenshots. Combine `PlanExecutor.status()` with `executor.current_plan` or `system.advanced_drop.plan`, and encode large matrices compactly as active row ranges or spans. See [Plan Executor](../plan_executor.en.md#plan-state-for-external-apps) for the recommended scene DTO and the `current_frame` versus `last_frame.index` rule.
+
 ## Get a Droplet Position
 
 `AdvancedDrop.get_droplet_position()` returns the final planned position.

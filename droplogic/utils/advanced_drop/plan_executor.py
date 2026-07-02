@@ -97,6 +97,7 @@ class PlanExecutor:
         self._owns_streamer_visualizer = False
         self._executor_synced_matrix_recorder = None
         self._executor_synced_streamer_recorder = None
+        self.on_frame_applied = None
 
         # Manual stage-follow override from matrix visualizer clicks
         self.stage_focus_cycle_length = 5
@@ -114,6 +115,13 @@ class PlanExecutor:
         self.last_frame_error = None
         self.last_matrix_queue_wait = None
         self._active_frame_started_at = None
+        self.last_applied_frame_index = None
+        self.last_applied_frame_matrix = None
+        self.last_applied_frame_plan = None
+        self.last_applied_frame_plan_id = None
+        self.last_applied_frame_plan_frame_count = None
+        self.last_applied_frame_active_droplet_ids = []
+        self.last_applied_frame_at = None
         self.matrix_update_attempts = 2
         self.matrix_update_retry_delay_seconds = 0.25
         
@@ -331,6 +339,7 @@ class PlanExecutor:
                 total_frames=len(self.current_plan.frames) if self.current_plan else 0,
                 last_update=time.time()
             )
+            self._clear_last_applied_frame()
 
             logger.info(f"Starting execution with plan: {len(self.current_plan.frames) if self.current_plan else 0} frames")
 
@@ -758,8 +767,19 @@ class PlanExecutor:
             if not self.state.is_executing:
                 # Reload plan from advanced_drop if available
                 if self.advanced_drop.plan is not None:
-                    self.current_plan = self.advanced_drop.plan
-                    self.state.total_frames = len(self.current_plan.frames) if self.current_plan else 0
+                    new_plan = self.advanced_drop.plan
+                    new_total_frames = len(new_plan.frames) if new_plan else 0
+                    current_frame = int(self.state.current_frame or 0)
+                    if current_frame > new_total_frames:
+                        logger.warning(
+                            "Clamping executor frame from %s to %s after plan reload",
+                            current_frame,
+                            new_total_frames,
+                        )
+                        current_frame = new_total_frames
+                        self.state.current_frame = current_frame
+                    self.current_plan = new_plan
+                    self.state.total_frames = new_total_frames
                     logger.info(f"Reloaded plan with {self.state.total_frames} frames")
 
                     # Update pkl file with new plan and droplets if save paths were set
@@ -793,6 +813,7 @@ class PlanExecutor:
                 'current_frame': self.state.current_frame,
                 'total_frames': self.state.total_frames,
                 'frames_executed': self.state.frames_executed,
+                'frame_delay': self.frame_delay,
                 'execution_time': self.state.execution_time,
                 'progress': (self.state.frames_executed / self.state.total_frames * 100) if self.state.total_frames > 0 else 0,
                 'last_update': self.state.last_update,
@@ -809,6 +830,13 @@ class PlanExecutor:
                     'duration_seconds': self.last_frame_duration_seconds,
                     'error': self.last_frame_error,
                     'matrix_queue_wait': self.last_matrix_queue_wait,
+                },
+                'last_applied_frame': {
+                    'index': self.last_applied_frame_index,
+                    'applied_at': self.last_applied_frame_at,
+                    'plan_id': self.last_applied_frame_plan_id,
+                    'plan_frame_count': self.last_applied_frame_plan_frame_count,
+                    'active_droplet_ids': list(self.last_applied_frame_active_droplet_ids or []),
                 },
             }
 
@@ -1173,12 +1201,17 @@ class PlanExecutor:
                         
                         # Check for breakpoints after executing frame (so droplet is at final position)
                         if self.state.current_frame in self.breakpoints:
-                            logger.info(f"Breakpoint reached at frame {self.state.current_frame}")
+                            reached_frame = self.state.current_frame
+                            logger.info(f"Breakpoint reached at frame {reached_frame}")
                             self.breakpoint_reached.set()
                             self.state.is_executing = False
                             # Remove the breakpoint after it's hit (one-time breakpoint)
-                            self.breakpoints.discard(self.state.current_frame)
-                            # Don't increment frame counter - stay at breakpoint frame for visualization
+                            self.breakpoints.discard(reached_frame)
+                            # current_frame always points to the next frame to execute.
+                            # The visualizer/diagnostics can use last_frame.index for
+                            # the frame that was just applied at the breakpoint.
+                            self.state.frames_executed = reached_frame + 1
+                            self.state.current_frame = reached_frame + 1
                             self.state.last_update = time.time()
                             paused = True
                         else:
@@ -1271,6 +1304,7 @@ class PlanExecutor:
                     "Frame %s matrix update failed after retry: %s"
                     % (frame_idx, matrix_queue_wait)
                 )
+            self._record_last_applied_frame(frame_idx, frame_matrix, active_droplets)
 
             # _t3 = time.time()
             # print(f"  [Time] Matrix/Hardware update: {(_t3 - _t2)*1000:.2f} ms")
@@ -1333,6 +1367,57 @@ class PlanExecutor:
         # Positions are tracked via current_frame index and queried from plan trajectories when needed.
         # This prevents interference with planning operations and maintains clean separation of concerns.
         logger.debug(f"Frame {frame_idx} executed - positions tracked via plan trajectories")
+
+    def _record_last_applied_frame(self, frame_idx: int, frame_matrix, active_droplets=None):
+        """Record the last matrix frame successfully sent to hardware."""
+        try:
+            matrix_copy = frame_matrix.copy() if hasattr(frame_matrix, "copy") else frame_matrix
+        except Exception:
+            matrix_copy = frame_matrix
+
+        active_ids = []
+        for droplet in active_droplets or []:
+            try:
+                active_ids.append(int(droplet.id))
+            except Exception:
+                continue
+
+        with self.execution_lock:
+            self.last_applied_frame_index = int(frame_idx)
+            self.last_applied_frame_matrix = matrix_copy
+            self.last_applied_frame_plan = self.current_plan
+            self.last_applied_frame_plan_id = id(self.current_plan) if self.current_plan is not None else None
+            self.last_applied_frame_plan_frame_count = (
+                len(self.current_plan.frames)
+                if self.current_plan is not None and hasattr(self.current_plan, "frames")
+                else None
+            )
+            self.last_applied_frame_active_droplet_ids = active_ids
+            self.last_applied_frame_at = time.time()
+
+        callback = self.on_frame_applied
+        if callback is not None:
+            try:
+                callback(
+                    {
+                        "frame_index": int(frame_idx),
+                        "applied_at": self.last_applied_frame_at,
+                        "active_droplet_ids": active_ids,
+                    }
+                )
+            except Exception as exc:
+                logger.debug("Frame-applied callback failed: %s", exc)
+
+    def _clear_last_applied_frame(self):
+        """Clear stale applied-frame metadata before a new execution segment."""
+        with self.execution_lock:
+            self.last_applied_frame_index = None
+            self.last_applied_frame_matrix = None
+            self.last_applied_frame_plan = None
+            self.last_applied_frame_plan_id = None
+            self.last_applied_frame_plan_frame_count = None
+            self.last_applied_frame_active_droplet_ids = []
+            self.last_applied_frame_at = None
 
     def _handle_visualization(self):
         """Handle visualizer setup and updates."""

@@ -98,9 +98,9 @@ agent 通常应通过 `AdvancedDrop` 和 `PlanExecutor` 控制实验，而不是
 
 `capabilities()` 是 agent 的最佳第一步，因为可用模块取决于加载的系统。
 
-### Droplet And Planning Tools
+### Droplet Definition Tools
 
-用于定义液滴和调用 planning functions：
+用于定义和编辑逻辑液滴集合：
 
 | Tool | 用途 |
 | --- | --- |
@@ -108,13 +108,28 @@ agent 通常应通过 `AdvancedDrop` 和 `PlanExecutor` 控制实验，而不是
 | `add_droplets` | 创建多个液滴 |
 | `delete_droplet` | 从逻辑液滴列表删除液滴 |
 | `update_droplet_target` | 规划前更改目标 |
+| `update_droplet_targets` | 规划前批量更改目标 |
 | `update_droplet_position` | 校正逻辑当前位置 |
 | `droplets_summary` | 检查所有液滴 |
-| `advanced_drop_call` | 调用白名单 `AdvancedDrop` method |
+
+### Planning Primitive Tools
+
+这些 tools 会把一个逻辑 planning primitive 添加到当前 plan，但不会执行硬件。agent 应先 plan，再检查 `plan_summary`，然后通过 `PlanExecutor` 明确执行。
+
+| Tool | 用途 |
+| --- | --- |
+| `plan_activation_frame` | 为当前液滴添加一个 activation frame |
+| `plan_move` | 为 target 与当前位置不同的液滴规划移动 |
+| `plan_reservoir_extraction` | 从 reservoir 规划液滴抽取 |
+| `plan_isometric_split` | 规划 isometric split |
+| `plan_mix` | 规划 mixing sequence |
+| `plan_merge` | 规划 droplet merge |
+| `planning_job_status` | 轮询 background planning job |
+| `cancel_planning_job` | 请求取消 background planning job |
 | `plan_summary` | 检查 frame count、events、trajectories 和结果 |
 | `save_protocol` | 将当前 plan 和 droplets 保存到 pickle |
 
-`advanced_drop_call` 暴露 `move`、`reservoir_extraction`、`isometric_split`、`mix`、`merge`、`verify_droplets`、`detect_condensates`、`correct_droplet_position`、`clear` 和 `push_frame` 等方法。
+大规模或困难规划应使用 `background=true`，然后轮询 `planning_job_status()`，不要让一个 MCP request 长时间阻塞。通用 `advanced_drop_call` / `list_advanced_drop_methods` 只在 `--allow-unsafe-tools` 下作为 debug surface 注册。
 
 ### Execution Tools
 
@@ -128,9 +143,24 @@ agent 通常应通过 `AdvancedDrop` 和 `PlanExecutor` 控制实验，而不是
 | `stop_plan` | 停止执行 |
 | `executor_status` | 检查当前 frame、总 frames、进度和 breakpoints |
 | `add_breakpoint` | 到达 frame 时暂停 |
-| `execute_until_breakpoint` | 阻塞直到下一个 breakpoint 或 plan 完成 |
+| `start_execute_until_breakpoint` | 启动 background wait，直到 breakpoint 或 plan 完成 |
+| `execution_wait_status` | 轮询执行等待状态 |
+| `cancel_execution_wait` | 只取消等待 job，不停止物理执行 |
 
 录制仍属于 `PlanExecutor`，因此视频会与执行 frames 保持同步。
+
+### State And Scene Tools
+
+当 agent 或外部 app 需要结构化状态而不是图像时使用：
+
+| Tool | 用途 |
+| --- | --- |
+| `state_summary` | 读取摘要状态，避免展开大型数组 |
+| `read_state` | 读取一个小型精确 state path |
+| `matrix_summary` | 返回紧凑的 active matrix ranges；zeros 隐式表示 |
+| `execution_scene` | 返回紧凑的 plan/executor/matrix/droplet scene state |
+
+`read_large_state` 只在 server 使用 `--allow-large-state-tools` 启动时注册，仅用于有人监督的调试。
 
 ### Visualizer And Frame Tools
 
@@ -140,16 +170,13 @@ agent 通常应通过 `AdvancedDrop` 和 `PlanExecutor` 控制实验，而不是
 | --- | --- |
 | `visualizer_status` | 检查 matrix 和 streamer 是否可用 |
 | `visualizer_frame` | 返回当前 frame 的 base64 或保存到磁盘 |
-| `visualizer_snapshot` | 保存 snapshot 文件 |
-| `visualizer_call` | 调用白名单 visualizer method |
 | `start_visualizer` | 在支持时启动 visualizer window |
 | `stop_visualizer` | 停止 visualizer window |
+| `bring_visualizer_to_front` | 在支持时将 visualizer window 带到前台 |
 
 MCP server 不是视频流服务器。agents 可以轮询 `visualizer_frame` 获取当前 frames。
 
 ### Vision Tools
-
-Vision tools 既直接暴露，也可通过 `advanced_drop_call` 使用：
 
 | Tool | 用途 |
 | --- | --- |

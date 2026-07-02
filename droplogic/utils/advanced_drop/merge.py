@@ -12,8 +12,8 @@ Droplet Merge Module (hub-aware, SIPP-routed with travel-point docking)
 """
 
 from typing import List, Tuple, Optional, Dict, Set, Union
+import copy
 import numpy as np
-import json
 
 from .common import (
     Droplet,
@@ -278,9 +278,24 @@ def merge(
     docking_lb = _earliest_docking_frame(travel_point, merging)
 
     # For merge-into-existing: ignore vs target at hub, exclude target from temp reservations
-    all_active = list(droplets)
+    #
+    # Existing plans may have stale/incomplete active_droplets_per_frame after
+    # split/extraction primitives. A requested merge is an explicit request to
+    # route those droplets, so force the merging ids into the routing view of
+    # the active set instead of letting move() silently drop an inactive joiner.
+    routing_existing_plan = existing_plan
+    forced_active_ids = set(ids)
+    if update_existing and target_droplet is not None:
+        forced_active_ids.add(target_droplet.id)
     if existing_plan and existing_plan.active_droplets_per_frame:
-        active_ids = set(existing_plan.active_droplets_per_frame[-1])
+        routing_existing_plan = copy.copy(existing_plan)
+        active_frames = [list(frame or []) for frame in existing_plan.active_droplets_per_frame]
+        active_frames[-1] = sorted(set(active_frames[-1]) | forced_active_ids)
+        routing_existing_plan.active_droplets_per_frame = active_frames
+
+    all_active = list(droplets)
+    if routing_existing_plan and routing_existing_plan.active_droplets_per_frame:
+        active_ids = set(routing_existing_plan.active_droplets_per_frame[-1])
         all_active = [d for d in droplets if d.id in active_ids]
 
     if update_existing and target_droplet is not None:
@@ -295,7 +310,7 @@ def merge(
         merging,
         matrix,
         mode="sipp",
-        existing_plan=existing_plan,
+        existing_plan=routing_existing_plan,
         ignore_vital_space_pairs=ignore_vital_pairs,
         max_frames=300,
         planning_timeout=180.0,
@@ -308,16 +323,31 @@ def merge(
 
     # Check arrivals
     arrivals_ok = True
+    arrival_positions: Dict[int, Tuple[int, int]] = {}
     for d in merging:
         traj = sipp_plan.droplet_trajectories.get(d.id, [])
         last = traj[-1] if traj else None
+        if last is None and d.origin_corner == travel_point:
+            last = travel_point
+        elif last != travel_point and d.origin_corner == travel_point:
+            last = travel_point
+        if last == travel_point:
+            arrival_positions[d.id] = travel_point
         logger.debug(f"[MERGE DEBUG] traj end for id={d.id}: {last} (dock={travel_point})")
-        if (not traj) or (last != travel_point):
+        if last != travel_point:
             arrivals_ok = False
             break
 
     if not arrivals_ok:
         logger.warning("merge: not all droplets reached docking cell; returning motion plan only")
+        sipp_plan.planning_success = False
+        sipp_plan.conflicts_resolved = list(getattr(sipp_plan, "conflicts_resolved", []) or [])
+        sipp_plan.conflicts_resolved.append({
+            "type": "merge_arrival_failure",
+            "message": "Not all merging droplets reached the merge docking cell; no merged droplet was created.",
+            "dock": travel_point,
+            "unreached_droplet_ids": [d.id for d in merging if d.id not in arrival_positions],
+        })
         return list(droplets), sipp_plan
 
     # if update_existing and target_droplet is not None:
@@ -384,6 +414,13 @@ def merge(
     active_per_frame.append(sorted(last_active))
 
     # Trajectories: extend one frame, merged appears static at merged_corner
+    pre_consolidation_frame_count = max(0, frame_count - 1)
+    for d in merging:
+        if d.id not in trajs and d.id in arrival_positions:
+            trajs[d.id] = [arrival_positions[d.id]] * pre_consolidation_frame_count
+        elif d.id in trajs and d.id in arrival_positions and trajs[d.id]:
+            trajs[d.id][-1] = arrival_positions[d.id]
+
     for did, path in list(trajs.items()):
         last = path[-1] if path else id_to_d.get(did, None).origin_corner
         if did not in merging_ids:
@@ -425,7 +462,12 @@ def merge(
         # Keep all droplets in list - merging droplets remain but inactive in plan
     else:
         # Create new droplet at merged_corner
-        merged_droplet = create_droplet(merged_id_future, merged_corner, square_rel)
+        merged_droplet = create_droplet(
+            merged_id_future,
+            merged_corner,
+            merged_corner,
+            shape=square_rel,
+        )
         merged_droplet.electrode_count = total_e
         merged_droplet.shape = square_rel
         merged_droplet.target_corner = merged_corner
@@ -464,11 +506,5 @@ def merge(
             for x, y in merged_footprint_positions:
                 if 0 <= x < frames[frame_idx].shape[0] and 0 <= y < frames[frame_idx].shape[1]:
                     frames[frame_idx][x, y] = 1
-
-    # print(f"Active droplets final frame: {active_per_frame[-1]}")
-    # Debug: save droplets to file
-    debug_data = {d.id: {'origin_corner': d.origin_corner, 'shape': list(d.shape), 'electrode_count': d.electrode_count} for d in droplets}
-    with open('merge_debug.json', 'w') as f:
-        json.dump(debug_data, f, indent=4)
     # Return COPY to avoid aliasing in callers that clear/extend
     return list(droplets), new_plan

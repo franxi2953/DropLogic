@@ -477,11 +477,21 @@ def move(
             if (existing_plan.active_droplets_per_frame and existing_plan.active_droplets_per_frame[-1] is not None)
             else []
         )
-        active_droplets = [d for d in droplets if d.id in last_frame_active]
-        for droplet in active_droplets:
+        active_droplet_ids = set()
+        for droplet_id in last_frame_active:
+            try:
+                active_droplet_ids.add(int(droplet_id))
+            except Exception:
+                continue
+        active_droplets = []
+        for droplet in droplets:
             traj = existing_plan.droplet_trajectories.get(droplet.id, [])
             if traj is not None and traj:
                 droplet.origin_corner = traj[-1]
+            if int(droplet.id) in active_droplet_ids:
+                active_droplets.append(droplet)
+            else:
+                droplet.target_corner = droplet.origin_corner
         active_droplets = [d for d in active_droplets if d.origin_corner != d.target_corner]
         droplets_to_plan = active_droplets
     else:
@@ -662,6 +672,15 @@ def move(
             for did, vital in planner.reservations[frame]:
                 if did == droplet.id:
                     planning_logger.debug(f"DROPLET_{droplet.id}_COMPLETE_RESERVATION_FRAME_{frame}_POS_{path[min(frame, len(path)-1)] if frame < len(path) else path[-1]}_VITAL_SIZE_{len(vital)}")
+
+    for droplet in droplets_to_plan:
+        if droplet.id not in targets_reached:
+            trajectories[droplet.id] = [droplet.origin_corner]
+            targets_reached[droplet.id] = False
+            logger.warning(
+                f"[FAILED] Droplet {droplet.id} was not planned before the planner stopped - "
+                f"staying at origin {droplet.origin_corner}"
+            )
 
     # Handle droplets that were skipped due to conflicts
     for d in droplets:

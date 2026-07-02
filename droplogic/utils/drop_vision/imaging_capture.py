@@ -48,6 +48,58 @@ def _capture_direct_frame(system) -> Optional[np.ndarray]:
     return None
 
 
+def _set_light_master(system, on: bool) -> bool:
+    """Best-effort master light switch for systems that expose one."""
+    try:
+        update_state = getattr(system, "update_state", None)
+        if update_state is not None:
+            update_state("light_settings.light_on", bool(on))
+        else:
+            light = getattr(system, "light", None)
+            if light is None or not hasattr(light, "switch_light"):
+                return False
+            light.switch_light(bool(on))
+        return True
+    except Exception:
+        return False
+
+
+def _wait_for_hardware_queue(system, timeout: float = 10.0, poll: float = 0.05) -> bool:
+    """Wait until queued hardware commands have had time to land."""
+    get_queue_status = getattr(system, "get_queue_status", None)
+    if get_queue_status is None:
+        time.sleep(min(max(timeout, 0.0), 0.2))
+        return True
+
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    started_at = time.time()
+    while True:
+        try:
+            status = get_queue_status()
+            pending = 0
+            for item in status.values():
+                if isinstance(item, dict):
+                    pending += int(item.get("unfinished_tasks", item.get("queue_size", 0)) or 0)
+                    last_error = item.get("last_command_error")
+                    if (
+                        isinstance(last_error, dict)
+                        and (
+                            last_error.get("processed_at") is None
+                            or float(last_error.get("processed_at")) >= started_at
+                        )
+                    ):
+                        return False
+            if pending <= 0:
+                return True
+        except Exception:
+            time.sleep(min(max(timeout, 0.0), 0.2))
+            return False
+
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(max(0.01, float(poll)))
+
+
 def _grab_valid_frame_from_streamer(streamer, mode: str = "brightfield") -> Optional[np.ndarray]:
     if streamer is None or not hasattr(streamer, "get_raw_frame"):
         return None
@@ -109,15 +161,19 @@ def configure_capture_channel(
     system,
     channel: str,
     exposure_time: int,
-    gain: int = 12,
+    gain: int = 0,
     coaxial_intensity: int = 30,
     ring_intensity: int = 0,
     frame_wait: float = 0.2,
     stabilization_wait: float = 0.2,
+    queue_timeout: float = 10.0,
 ) -> None:
     """Apply microscope and light settings for one imaging channel."""
     if not (hasattr(system, "microscope") and system.microscope is not None):
         return
+
+    if coaxial_intensity > 0 or ring_intensity > 0:
+        _set_light_master(system, True)
 
     system.update_state("microscope_settings.current_channel", channel)
     time.sleep(frame_wait)
@@ -129,19 +185,55 @@ def configure_capture_channel(
     time.sleep(frame_wait)
     system.update_state("light_settings.coaxial_intensity", coaxial_intensity)
     system.update_state("light_settings.ring_intensity", ring_intensity)
+    if not _wait_for_hardware_queue(system, timeout=queue_timeout):
+        raise RuntimeError(
+            "Timed out or failed while applying microscope/light capture settings"
+        )
     time.sleep(stabilization_wait)
+
+
+def snapshot_capture_settings(system) -> dict:
+    """Return requested state plus best-effort microscope hardware readback."""
+    state = getattr(system, "state", {}) or {}
+    microscope_settings = state.get("microscope_settings", {}) or {}
+    light_settings = state.get("light_settings", {}) or {}
+    snapshot = {
+        "state": {
+            "channel": microscope_settings.get("current_channel"),
+            "auto_exposure": microscope_settings.get("auto_exposure"),
+            "exposure_time": microscope_settings.get("exposure_time"),
+            "gain": microscope_settings.get("gain"),
+            "light_on": light_settings.get("light_on"),
+            "coaxial_intensity": light_settings.get("coaxial_intensity"),
+            "ring_intensity": light_settings.get("ring_intensity"),
+        },
+        "hardware_readback": {},
+    }
+
+    microscope = getattr(system, "microscope", None)
+    get_parameter = getattr(microscope, "get_parameter", None)
+    if get_parameter is not None:
+        for label, node in (("exposure_time", "ExposureTime"), ("gain", "Gain")):
+            try:
+                snapshot["hardware_readback"][label] = get_parameter("float_value", node)
+            except Exception as exc:
+                snapshot["hardware_readback"][label] = f"error: {exc}"
+
+    return snapshot
 
 
 def capture_channel_frame(
     system,
     channel: str,
     exposure_time: int,
-    gain: int = 12,
+    gain: int = 0,
     coaxial_intensity: int = 30,
     ring_intensity: int = 0,
     frame_wait: float = 0.2,
     timeout_per_frame: float = 10.0,
     mode: str = "brightfield",
+    use_streamer: bool = True,
+    queue_timeout: float = 10.0,
 ) -> Optional[np.ndarray]:
     """
     Capture one valid frame using a channel profile.
@@ -162,10 +254,12 @@ def capture_channel_frame(
         ring_intensity=ring_intensity,
         frame_wait=frame_wait,
         stabilization_wait=stabilization_wait,
+        queue_timeout=queue_timeout,
     )
 
-    streamer = _get_streamer(system)
-    _ensure_streamer_started(streamer, frame_wait=frame_wait)
+    streamer = _get_streamer(system) if use_streamer else None
+    if use_streamer:
+        _ensure_streamer_started(streamer, frame_wait=frame_wait)
 
     if streamer is not None and hasattr(streamer, "get_raw_frame"):
         if mode == "brightfield":

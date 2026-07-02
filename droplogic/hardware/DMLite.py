@@ -48,6 +48,8 @@ class DMLite(DropSystem):
             reset_matrix=reset_matrix,
         )
         version = electrode_config.get("version", "DMLite")
+        voltage = int(electrode_config.get("voltage", 40))
+        initial_voltages = electrode_config.get("initial_voltages", voltage)
 
         # Define lock for electrode matrix
         self._electrode_matrix_lock = threading.Lock()
@@ -58,6 +60,7 @@ class DMLite(DropSystem):
             None,
             rows, columns,
             version=version,
+            initial_voltage=initial_voltages,
             debug=False
         )
 
@@ -72,10 +75,9 @@ class DMLite(DropSystem):
         self._initialized = True
         self.logger.info("DMLite initialized successfully")
         
-        # Initialize electrode matrix with config voltage
-        voltage = int(self.state.get("electrode_matrix", {}).get("voltage", 40))
-        self.electrode_matrix.set_voltage([voltage] * 9)
-        self.logger.info(f"Electrode matrix initialized with voltage: {voltage}V")
+        # Initialize electrode matrix with config voltage profile.
+        self.electrode_matrix.set_voltage(initial_voltages)
+        self.logger.info(f"Electrode matrix initialized with voltage profile: {initial_voltages}")
 
         # Initialize visualizers namespace
         self.visualizers = self._VisualizersContainer()
@@ -116,8 +118,7 @@ class DMLite(DropSystem):
             
             with self._electrode_matrix_lock:
                 if param_name == "voltage":
-                    voltage = int(value)
-                    self.electrode_matrix.set_voltage([voltage] * 9)
+                    self.electrode_matrix.set_voltage(value)
                     return True
                     
                 elif param_name == "matrix":

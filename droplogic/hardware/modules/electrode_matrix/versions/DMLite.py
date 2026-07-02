@@ -171,13 +171,8 @@ class DMLite:
         self.matrix = self.electrode_states
         self.logger = logger
 
-        try:
-            startup_voltage = int(initial_voltage)
-        except (TypeError, ValueError):
-            startup_voltage = 55
-        startup_voltage = max(0, min(255, startup_voltage))
-        self.voltage = startup_voltage
-        self.initialized_voltages = [startup_voltage] * 9
+        self.initialized_voltages = self._normalize_voltage(initial_voltage)
+        self.voltage = self.initialized_voltages[0]
 
         if microfluidics is None:
             raise RuntimeError(
@@ -384,10 +379,15 @@ class DMLite:
     def _normalize_voltage(self, voltage):
         if isinstance(voltage, int):
             values = [voltage] * 9
-        elif isinstance(voltage, (list, tuple)) and len(voltage) == 9:
-            values = list(voltage)
+        elif isinstance(voltage, (list, tuple)):
+            if len(voltage) == 4:
+                values = list(voltage) + [0] * 5
+            elif len(voltage) == 9:
+                values = list(voltage)
+            else:
+                raise ValueError("Voltage must be an int or a list/tuple of 4 or 9 values")
         else:
-            raise ValueError("Voltage must be an int or a list/tuple of 9 values")
+            raise ValueError("Voltage must be an int or a list/tuple of 4 or 9 values")
 
         return [max(0, min(255, int(value))) for value in values]
 

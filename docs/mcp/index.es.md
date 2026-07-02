@@ -100,7 +100,9 @@ El servidor expone varios grupos de tools.
 
 Cuando el servidor arranca, no hay ningun sistema cargado. Usa `load_system(...)` para crear uno, `close_system()` para liberarlo y `restart_system(...)` solo tras un fallo observado. `capabilities()` es util despues de cargar, porque los modulos disponibles dependen del sistema activo.
 
-### Gotas Y Planificacion
+### Definicion De Gotas
+
+Usa estas tools para definir y editar el conjunto logico de gotas:
 
 | Tool | Uso |
 | --- | --- |
@@ -108,26 +110,41 @@ Cuando el servidor arranca, no hay ningun sistema cargado. Usa `load_system(...)
 | `add_droplets` | Crea varias gotas |
 | `delete_droplet` | Elimina una gota de la lista logica |
 | `update_droplet_target` | Cambia el objetivo antes de planificar |
+| `update_droplet_targets` | Cambia varios objetivos antes de planificar |
 | `update_droplet_position` | Corrige la posicion logica actual |
 | `droplets_summary` | Inspecciona todas las gotas |
-| `list_advanced_drop_methods` | Muestra metodos `AdvancedDrop` expuestos |
-| `advanced_drop_call` | Llama un metodo `AdvancedDrop` permitido |
+
+### Primitivas De Planificacion
+
+Usa estas tools para anadir una primitiva logica al plan actual. No ejecutan hardware. El agente debe planificar, inspeccionar `plan_summary`, y despues ejecutar deliberadamente con `PlanExecutor`.
+
+| Tool | Uso |
+| --- | --- |
+| `plan_activation_frame` | Anade un frame de activacion para las gotas actuales |
+| `plan_move` | Planifica movimiento de gotas cuyo target difiere de su posicion actual |
+| `plan_reservoir_extraction` | Planifica extraccion de gotas desde un reservorio |
+| `plan_isometric_split` | Planifica un split isometrico |
+| `plan_mix` | Planifica una secuencia de mezcla |
+| `plan_merge` | Planifica merge de gotas |
+| `planning_job_status` | Consulta un job de planificacion en background |
+| `cancel_planning_job` | Solicita cancelar un job de planificacion |
 | `plan_summary` | Inspecciona frames, eventos, trayectorias y resultado |
 | `save_protocol` | Guarda plan y gotas en un pickle |
 
-`advanced_drop_call` expone metodos publicos como `move`, `reservoir_extraction`, `isometric_split`, `mix`, `merge`, `verify_droplets`, `detect_condensates`, `correct_droplet_position`, `clear` y `push_frame`.
+Para movimientos grandes o planes dificiles, usa `background=true` y consulta `planning_job_status()` en vez de mantener una llamada MCP abierta.
 
-Ejemplo:
+Ejemplo de planificacion de movimiento:
 
 ```json
 {
-  "method": "move",
-  "arguments": {
-    "mode": "sipp",
-    "remove_duplicate_frames": false
-  }
+  "mode": "sipp",
+  "remove_duplicate_frames": false,
+  "planning_timeout": 1200,
+  "background": true
 }
 ```
+
+Las tools genericas `advanced_drop_call` y `list_advanced_drop_methods` son superficies de depuracion y solo se registran si el servidor arranca con `--allow-unsafe-tools`.
 
 ### Ejecucion
 
@@ -141,7 +158,9 @@ Ejemplo:
 | `add_breakpoint` | Pausa al llegar a un frame |
 | `remove_breakpoint` | Elimina un breakpoint |
 | `clear_breakpoints` | Elimina todos los breakpoints |
-| `execute_until_breakpoint` | Bloquea hasta breakpoint o fin del plan |
+| `start_execute_until_breakpoint` | Inicia una espera en background hasta breakpoint o fin del plan |
+| `execution_wait_status` | Consulta la espera activa o ultima |
+| `cancel_execution_wait` | Cancela solo la espera, no la ejecucion fisica |
 
 Ejemplo:
 
@@ -157,16 +176,32 @@ Ejemplo:
 
 La grabacion sigue perteneciendo a `PlanExecutor`, asi que los videos quedan sincronizados con los frames ejecutados.
 
+### Estado Y Escena
+
+Usa estas tools cuando un agente o una app externa necesita estado estructurado en vez de una imagen:
+
+| Tool | Uso |
+| --- | --- |
+| `state_summary` | Lee estado resumido sin expandir arrays grandes |
+| `read_state` | Lee una ruta pequena exacta |
+| `matrix_summary` | Devuelve rangos activos compactos de matriz; los ceros son implicitos |
+| `execution_scene` | Devuelve estado compacto de plan/executor/matriz/gotas |
+
+`execution_scene` combina lo que normalmente necesita un dashboard: cursor del executor, ultimo frame aplicado, resumen del frame de plan, rangos activos de matriz, evento actual, posiciones de gotas, targets, bounding boxes y paths acotados. Usa la misma codificacion compacta de matriz que `matrix_summary`, asi que es segura para uso MCP normal. Por defecto no devuelve cada celda de cada gota; pide `include_droplet_cells=true` solo si el cliente necesita esas celdas y puede asumir mas contexto.
+
+Usa `matrix_summary` si la pregunta es solo sobre la matriz de electrodos. Usa `execution_scene` si la pregunta relaciona matriz, plan, frame del executor, eventos y gotas. Usa `visualizer_frame` solo cuando el agente necesita pixeles.
+
+Las lecturas crudas de matriz 128 x 128 estan protegidas porque el transporte MCP puede duplicar datos en texto y payload estructurado. `read_large_state` solo se registra si el servidor arranca con `--allow-large-state-tools`; usalo solo para depuracion supervisada.
+
 ### Visualizadores Y Frames
 
 | Tool | Uso |
 | --- | --- |
 | `visualizer_status` | Inspecciona disponibilidad de matriz y streamer |
 | `visualizer_frame` | Devuelve un frame como base64 y/o lo guarda a disco |
-| `visualizer_snapshot` | Guarda un snapshot |
-| `visualizer_call` | Llama un metodo permitido de visualizador |
 | `start_visualizer` | Abre una ventana si el OS lo permite |
 | `stop_visualizer` | Cierra una ventana |
+| `bring_visualizer_to_front` | Trae una ventana al frente si el OS lo permite |
 
 Para ver la matriz:
 
@@ -218,14 +253,12 @@ Para workflows reales de vision, el sistema cargado debe tener camara, microscop
 | Tool | Uso |
 | --- | --- |
 | `list_system_modules` | Lista modulos cargados y metodos permitidos |
-| `module_call` | Llama un metodo permitido de modulo |
 | `module_busy_status` | Comprueba si un modulo, o todos, parecen ocupados |
-| `wait_for_module_free` | Espera a que un modulo quede libre, o devuelve timeout |
-| `system_call` | Llama un metodo permitido del sistema cargado |
+| `module_call` | Llamada de debug/fallback a un metodo permitido de modulo |
 
-Las superficies expuestas incluyen luces, exposicion de camara, canal de microscopio, temperaturas, posicion de XY stage y feedback capacitivo.
+Los workflows normales deben preferir las tools dedicadas de stage, luz, imaging, temperatura, planificacion, ejecucion y estado. `module_call` queda disponible para lecturas u operaciones supervisadas de bajo nivel que aun no tengan tool dedicada.
 
-Metodos crudos de matriz como `set_chip` se consideran inseguros y requieren `--allow-unsafe-tools`. La ruta privada de comandos del proveedor, incluido `send_ascii_command`, no se expone.
+Metodos crudos de matriz como `set_chip` se consideran inseguros y requieren `--allow-unsafe-tools`. `system_call`, `set_system_state` y las tools genericas de AdvancedDrop tambien son de depuracion y solo se registran con `--allow-unsafe-tools`. La ruta privada de comandos del proveedor, incluido `send_ascii_command`, no se expone.
 
 ## Modulos Ocupados Y Recuperacion
 
@@ -235,11 +268,10 @@ Los agentes deberian usar este patron antes de llamadas directas a modulos:
 
 ```text
 1. module_busy_status(module="electrode_matrix")
-2. Si esta ocupado, wait_for_module_free(module="electrode_matrix", timeout_seconds=30)
-3. module_call(module="electrode_matrix", method="deactivate_all")
+2. Si hace falta una llamada de modulo, module_call(..., wait_if_busy=true, timeout_seconds=30)
 ```
 
-`module_call` y `system_call` tambien aceptan `wait_if_busy`, `timeout_seconds` y `poll_interval`:
+`module_call` acepta `wait_if_busy`, `timeout_seconds` y `poll_interval`:
 
 ```json
 {
@@ -275,7 +307,7 @@ Un flujo sencillo con simulador:
 1. load_system(system="simulator")
 2. capabilities()
 3. create_droplet(droplet_id=1, origin=[5, 5], target=[20, 20])
-4. advanced_drop_call(method="move", arguments={"mode": "sipp"})
+4. plan_move(mode="sipp")
 5. visualizer_frame(visualizer="matrix", frame_source="snapshot")
 6. start_plan(frame_delay=0.5, verify_positions=false)
 7. executor_status()
