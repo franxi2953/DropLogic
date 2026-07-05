@@ -8,14 +8,17 @@ serialization live here.
 import base64
 import copy
 import hashlib
+import http.server
 import inspect
 import json
 import logging
 import os
 import pickle
+import socket
 import tempfile
 import threading
 import time
+import urllib.parse
 import uuid
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
@@ -25,6 +28,10 @@ import cv2
 import numpy as np
 
 from .context_store import DropLogicMCPContextStore
+from droplogic.utils.advanced_drop.common import (
+    check_vital_space_conflict,
+    get_droplet_positions,
+)
 from droplogic.utils.drop_vision.imaging_capture import (
     capture_channel_frame,
     snapshot_capture_settings,
@@ -38,6 +45,20 @@ class DropLogicMCPError(RuntimeError):
 
 class DropLogicMCPRuntime:
     """Own a single DropLogic system for MCP-controlled sessions."""
+
+    CALIBRATION_SPEEDS = {
+        "1": ("fine", 200.0, 2000.0),
+        "2": ("medium", 1000.0, 10000.0),
+        "3": ("fast", 5000.0, 100000.0),
+    }
+    STAGE_MOTION_SPEEDS = {
+        "slow": ("slow", 1000.0, 10000.0),
+        "medium": ("medium", 5000.0, 100000.0),
+        "fast": ("fast", 10000.0, 1000000.0),
+        "standard": ("fast", 10000.0, 1000000.0),
+    }
+    CALIBRATION_TRAVEL_VELOCITY = 10000.0
+    CALIBRATION_TRAVEL_ACCELERATION = 1000000.0
 
     SYSTEM_METHODS = {
         "get_queue_status",
@@ -66,6 +87,9 @@ class DropLogicMCPRuntime:
         "merge_sequential_events",
         "push_frame",
         "trim_plan_tail",
+        "timeline_status",
+        "pause_timeline",
+        "resume_timeline",
     }
 
     PLAN_MOVE_OPTION_KEYS = {
@@ -245,10 +269,15 @@ class DropLogicMCPRuntime:
         self.allow_real_hardware = allow_real_hardware
         self.allow_unsafe_tools = allow_unsafe_tools
         self.allow_large_state_tools = allow_large_state_tools
-        self.snapshots_dir = os.path.abspath(
-            snapshots_dir
-            or os.path.join(tempfile.gettempdir(), "droplogic_mcp_snapshots")
-        )
+        self.capture_root = self._default_capture_root()
+        if snapshots_dir:
+            self.snapshots_dir = self._resolve_capture_directory(
+                snapshots_dir,
+                "visualizer_snapshots",
+            )
+        else:
+            self.snapshots_dir = os.path.join(self.capture_root, "visualizer_snapshots")
+            os.makedirs(self.snapshots_dir, exist_ok=True)
         self.session_id = uuid.uuid4().hex[:12]
         self._lock = threading.RLock()
         self.context_dir = context_dir
@@ -262,6 +291,10 @@ class DropLogicMCPRuntime:
         self._temperature_routine_status: Optional[Dict[str, Any]] = None
         self._temperature_routine_thread: Optional[threading.Thread] = None
         self._temperature_routine_stop_event = threading.Event()
+        self._melting_curve_lock = threading.RLock()
+        self._melting_curve_status: Optional[Dict[str, Any]] = None
+        self._melting_curve_thread: Optional[threading.Thread] = None
+        self._melting_curve_stop_event = threading.Event()
         self._advanced_drop_job_lock = threading.RLock()
         self._advanced_drop_job_status: Optional[Dict[str, Any]] = None
         self._advanced_drop_job_thread: Optional[threading.Thread] = None
@@ -277,6 +310,101 @@ class DropLogicMCPRuntime:
         self._dashboard_scene_write_lock = threading.RLock()
         self._dashboard_timeline_cache_key: Optional[Tuple[Any, ...]] = None
         self._dashboard_timeline_cache: Optional[Dict[str, Any]] = None
+        self._mjpeg_server = None
+        self._mjpeg_thread: Optional[threading.Thread] = None
+        self._mjpeg_host: Optional[str] = None
+        self._mjpeg_port: Optional[int] = None
+        self._mjpeg_lock = threading.RLock()
+
+    @staticmethod
+    def _default_capture_root() -> str:
+        root = str(os.environ.get("DROPLOGIC_CAPTURE_ROOT") or "").strip()
+        if not root:
+            root = os.path.join(
+                os.path.expanduser("~"),
+                "Documents",
+                "DropLogic",
+                "captures",
+            )
+        return os.path.abspath(os.path.expandvars(os.path.expanduser(root)))
+
+    @staticmethod
+    def _safe_capture_segment(value: Any, default: str = "capture") -> str:
+        text = str(value or default).strip()
+        safe = "".join(
+            char if char.isalnum() or char in ("-", "_", ".") else "_"
+            for char in text
+        ).strip("._")
+        return safe or default
+
+    def _resolve_capture_path(self, path: str, category: str) -> str:
+        path_text = os.path.expandvars(os.path.expanduser(os.fspath(path)))
+        if os.path.isabs(path_text):
+            return os.path.abspath(path_text)
+        base = os.path.abspath(
+            os.path.join(self.capture_root, self._safe_capture_segment(category))
+        )
+        resolved = os.path.abspath(os.path.join(base, path_text))
+        if os.path.commonpath([base, resolved]) != base:
+            raise DropLogicMCPError(
+                "Relative capture paths must stay inside the managed DropLogic "
+                f"capture directory: {base}"
+            )
+        return resolved
+
+    def _resolve_capture_directory(self, path: str, category: str) -> str:
+        directory = self._resolve_capture_path(path, category)
+        os.makedirs(directory, exist_ok=True)
+        return directory
+
+    def _resolve_capture_file(self, path: str, category: str) -> str:
+        output_path = self._resolve_capture_path(path, category)
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        return output_path
+
+    def _new_capture_directory(self, category: str, prefix: Optional[str] = None) -> str:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        name = f"{self._safe_capture_segment(prefix or category)}_{stamp}"
+        directory = os.path.join(
+            self.capture_root,
+            self._safe_capture_segment(category),
+            name,
+        )
+        os.makedirs(directory, exist_ok=True)
+        return directory
+
+    def _resolve_module_capture_arguments(
+        self,
+        module_key: str,
+        method: str,
+        arguments: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        call_arguments = dict(arguments or {})
+        if module_key not in {"camera", "microscope"} or method != "capture_image":
+            return call_arguments
+
+        category = f"{module_key}_captures"
+        path_keys = ("save_path", "output_path", "path", "filename")
+        has_explicit_path = False
+        for key in path_keys:
+            value = call_arguments.get(key)
+            if value:
+                call_arguments[key] = self._resolve_capture_file(value, category)
+                has_explicit_path = True
+
+        wants_default_path = module_key == "microscope" or bool(call_arguments.get("save"))
+        if not has_explicit_path and wants_default_path:
+            filename = (
+                f"{module_key}_capture_"
+                f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.bmp"
+            )
+            call_arguments["save_path"] = self._resolve_capture_file(
+                filename,
+                category,
+            )
+        return call_arguments
 
     def _runtime_mode(self) -> Dict[str, Any]:
         cockpit_mode = str(os.environ.get("DROPLOGIC_COCKPIT_MODE", "")).strip().lower() in {
@@ -395,10 +523,14 @@ class DropLogicMCPRuntime:
         """Close the current DropSystem, if any."""
         with self._lock:
             self._temperature_routine_stop_event.set()
+            self._melting_curve_stop_event.set()
             self._execution_wait_cancel_event.set()
             temperature_thread = self._temperature_routine_thread
             if temperature_thread is not None and temperature_thread.is_alive():
                 temperature_thread.join(timeout=2.0)
+            melting_curve_thread = self._melting_curve_thread
+            if melting_curve_thread is not None and melting_curve_thread.is_alive():
+                melting_curve_thread.join(timeout=2.0)
             execution_wait_thread = self._execution_wait_thread
             if execution_wait_thread is not None and execution_wait_thread.is_alive():
                 execution_wait_thread.join(timeout=2.0)
@@ -510,12 +642,18 @@ class DropLogicMCPRuntime:
             executor_status = None
             plan_summary = None
             droplet_summary = None
+            timeline_control = (
+                self._no_system_timeline_status()
+                if system is None
+                else self._no_advanced_drop_timeline_status()
+            )
             if system is not None and hasattr(system, "advanced_drop"):
                 advanced_drop = system.advanced_drop
                 executor = getattr(advanced_drop, "executor", None)
                 if executor is not None:
                     executor_status = self.to_jsonable(executor.status())
                 plan_summary = self.plan_summary(getattr(advanced_drop, "plan", None))
+                timeline_control = self._advanced_drop_timeline_status(advanced_drop)
                 droplets = getattr(advanced_drop, "droplets", None)
                 if droplets is not None and hasattr(droplets, "get_droplets_summary"):
                     droplet_summary = self.to_jsonable(droplets.get_droplets_summary())
@@ -527,11 +665,16 @@ class DropLogicMCPRuntime:
                 "allow_unsafe_tools": self.allow_unsafe_tools,
                 "config_file": self.config_file,
                 "context": self.context_status(),
+                "capture": {
+                    "root": self.capture_root,
+                    "snapshots_dir": self.snapshots_dir,
+                },
                 "last_error": self.to_jsonable(self.last_error),
                 "system": system_status,
                 "executor": executor_status,
                 "plan": plan_summary,
                 "droplets": droplet_summary,
+                "timeline_control": timeline_control,
                 "visualizers": visualizer_status,
                 "last_visualizer_prepare_result": self.to_jsonable(
                     self.last_visualizer_prepare_result
@@ -830,6 +973,73 @@ class DropLogicMCPRuntime:
             active_cells_limit=active_cells_limit,
             include_hash=include_hash,
         )
+
+    def matrix_voltage_status(self) -> Dict[str, Any]:
+        """Return the active electrode matrix voltage channels when available."""
+        system = self.require_system()
+        state = getattr(system, "state", {}) or {}
+        matrix_state = state.get("electrode_matrix") if isinstance(state, dict) else {}
+        matrix_state = matrix_state if isinstance(matrix_state, dict) else {}
+        state_voltage = matrix_state.get("voltage")
+        state_initial = matrix_state.get("initial_voltages")
+        fallback_values = self._normalize_voltage_values(
+            state_initial if state_initial is not None else state_voltage
+        )
+
+        module = getattr(system, "electrode_matrix", None)
+        try:
+            raw_values = None
+            if module is not None and hasattr(module, "_query_voltage"):
+                raw_values = module._query_voltage()
+            elif module is not None and hasattr(getattr(module, "matrix", None), "_query_voltage"):
+                raw_values = module.matrix._query_voltage()
+            elif module is not None and hasattr(getattr(module, "matrix", None), "initialized_voltages"):
+                raw_values = module.matrix.initialized_voltages
+            elif module is not None and hasattr(getattr(module, "matrix", None), "voltage"):
+                raw_values = [module.matrix.voltage]
+            values = self._normalize_voltage_values(raw_values)
+            if not values:
+                values = fallback_values
+            return self._matrix_voltage_payload(
+                values,
+                ok=True,
+                source="hardware_query" if raw_values is not None else "state",
+                state_voltage=state_voltage,
+            )
+        except Exception as exc:
+            payload = self._matrix_voltage_payload(
+                fallback_values,
+                ok=False,
+                source="state_fallback",
+                state_voltage=state_voltage,
+            )
+            payload["error"] = str(exc)
+            return payload
+
+    def set_matrix_voltage(self, values: List[int]) -> Dict[str, Any]:
+        """Set the electrode matrix voltage profile with one, four, or nine channel values."""
+        voltage_values = self._normalize_voltage_values(values)
+        if len(voltage_values) == 1:
+            voltage_values = voltage_values * 9
+        elif len(voltage_values) == 4:
+            voltage_values = voltage_values + [0] * 5
+        elif len(voltage_values) != 9:
+            raise DropLogicMCPError("values must contain 1, 4, or 9 voltage values.")
+        voltage_values = [max(0, min(255, int(value))) for value in voltage_values]
+
+        system = self.require_system()
+        result = system.update_state("electrode_matrix.voltage", voltage_values)
+        if hasattr(system, "set_cached_state"):
+            try:
+                system.set_cached_state("electrode_matrix.initial_voltages", voltage_values)
+            except Exception:
+                pass
+        return {
+            "ok": True,
+            "values": voltage_values,
+            "update_state": self.to_jsonable(result),
+            "status": self.matrix_voltage_status(),
+        }
 
     def set_matrix_cells(
         self,
@@ -1383,12 +1593,18 @@ class DropLogicMCPRuntime:
                     "light_off",
                     "configure_microscope_imaging",
                     "capture_droplet_images",
+                    "start_melting_curve_capture",
+                    "melting_curve_capture_status",
+                    "cancel_melting_curve_capture",
                 ],
                 "temperature": [
                     "temperature_hold",
                     "start_temperature_routine",
                     "temperature_routine_status",
                     "cancel_temperature_routine",
+                    "start_melting_curve_capture",
+                    "melting_curve_capture_status",
+                    "cancel_melting_curve_capture",
                 ],
                 "droplets": [
                     "create_droplet",
@@ -1501,6 +1717,9 @@ class DropLogicMCPRuntime:
             "imaging_tools": [
                 "configure_microscope_imaging",
                 "capture_droplet_images",
+                "start_melting_curve_capture",
+                "melting_curve_capture_status",
+                "cancel_melting_curve_capture",
             ],
             "light_tools": [
                 "set_light_state",
@@ -1511,6 +1730,9 @@ class DropLogicMCPRuntime:
                 "start_temperature_routine",
                 "temperature_routine_status",
                 "cancel_temperature_routine",
+                "start_melting_curve_capture",
+                "melting_curve_capture_status",
+                "cancel_melting_curve_capture",
             ],
             "state_tools": {
                 "safe_by_default": True,
@@ -1591,10 +1813,10 @@ class DropLogicMCPRuntime:
             )
             output_path = os.path.join(self.snapshots_dir, filename)
         else:
-            output_path = os.path.abspath(os.fspath(output_path))
-            output_dir = os.path.dirname(output_path)
-            if output_dir:
-                os.makedirs(output_dir, exist_ok=True)
+            output_path = self._resolve_capture_file(
+                output_path,
+                "visualizer_snapshots",
+            )
 
         ok = cv2.imwrite(output_path, frame)
         if not ok:
@@ -1620,6 +1842,7 @@ class DropLogicMCPRuntime:
         output_path: Optional[str] = None,
         max_width: Optional[int] = None,
         max_height: Optional[int] = None,
+        image_quality: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Return a current visualizer frame as base64 and/or a saved image path."""
         system = self.require_system()
@@ -1641,7 +1864,11 @@ class DropLogicMCPRuntime:
 
         ext = "jpg" if image_format == "jpeg" else image_format
         encode_ext = f".{ext}"
-        ok, encoded = cv2.imencode(encode_ext, frame)
+        encode_params = []
+        if ext == "jpg" and image_quality is not None:
+            quality = max(30, min(95, int(image_quality)))
+            encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+        ok, encoded = cv2.imencode(encode_ext, frame, encode_params)
         if not ok:
             raise DropLogicMCPError(f"Failed to encode visualizer frame as {ext}.")
 
@@ -1652,25 +1879,212 @@ class DropLogicMCPRuntime:
             "format": ext,
             "mime_type": "image/jpeg" if ext == "jpg" else "image/png",
         }
+        if ext == "jpg" and image_quality is not None:
+            result["image_quality"] = max(30, min(95, int(image_quality)))
 
         if include_base64:
             result["base64"] = base64.b64encode(encoded.tobytes()).decode("ascii")
 
         if output_path:
-            output_path = os.path.abspath(os.fspath(output_path))
-            output_dir = os.path.dirname(output_path)
-            if output_dir:
-                os.makedirs(output_dir, exist_ok=True)
+            output_path = self._resolve_capture_file(
+                output_path,
+                "visualizer_frames",
+            )
             with open(output_path, "wb") as handle:
                 handle.write(encoded.tobytes())
             result["path"] = output_path
 
         return result
 
+    def ensure_mjpeg_server(self) -> Dict[str, Any]:
+        """Start a local MJPEG server that reads frames directly from visualizer objects."""
+        with self._mjpeg_lock:
+            if self._mjpeg_server is not None and self._mjpeg_thread is not None and self._mjpeg_thread.is_alive():
+                return self.mjpeg_server_status()
+
+            host = str(os.environ.get("DROPLOGIC_MJPEG_HOST", "127.0.0.1")).strip() or "127.0.0.1"
+            start_port = int(os.environ.get("DROPLOGIC_MJPEG_PORT", "8791"))
+            handler_cls = self._make_mjpeg_handler()
+            last_error = None
+            server = None
+            port = start_port
+            for candidate in range(start_port, start_port + 20):
+                try:
+                    server = http.server.ThreadingHTTPServer((host, candidate), handler_cls)
+                    port = candidate
+                    break
+                except OSError as exc:
+                    last_error = exc
+            if server is None:
+                return {
+                    "available": False,
+                    "error": str(last_error or "Could not bind MJPEG server."),
+                    "host": host,
+                    "port": start_port,
+                }
+
+            server.daemon_threads = True
+            thread = threading.Thread(
+                target=server.serve_forever,
+                name=f"DropLogicMJPEG-{port}",
+                daemon=True,
+            )
+            self._mjpeg_server = server
+            self._mjpeg_thread = thread
+            self._mjpeg_host = host
+            self._mjpeg_port = port
+            thread.start()
+            return self.mjpeg_server_status()
+
+    def mjpeg_server_status(self) -> Dict[str, Any]:
+        host = self._mjpeg_host or str(os.environ.get("DROPLOGIC_MJPEG_HOST", "127.0.0.1")).strip() or "127.0.0.1"
+        port = self._mjpeg_port or int(os.environ.get("DROPLOGIC_MJPEG_PORT", "8791"))
+        public_host = str(os.environ.get("DROPLOGIC_MJPEG_PUBLIC_HOST", "")).strip()
+        url_host = public_host or ("127.0.0.1" if host in {"", "0.0.0.0", "::"} else host)
+        running = bool(self._mjpeg_server is not None and self._mjpeg_thread is not None and self._mjpeg_thread.is_alive())
+        base_url = f"http://{url_host}:{port}"
+        return {
+            "available": running,
+            "host": host,
+            "port": port,
+            "base_url": base_url,
+            "streamer_url": f"{base_url}/stream/streamer.mjpg",
+            "matrix_url": f"{base_url}/stream/matrix.mjpg",
+        }
+
+    def _make_mjpeg_handler(self):
+        runtime = self
+
+        class MJPEGHandler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, fmt, *args):
+                logging.getLogger("droplogic.mcp.mjpeg").debug(fmt, *args)
+
+            def do_GET(self):
+                parsed = urllib.parse.urlparse(self.path)
+                if parsed.path in {"/", "/health"}:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(runtime.mjpeg_server_status()).encode("utf-8"))
+                    return
+                parts = [part for part in parsed.path.split("/") if part]
+                if len(parts) != 2 or parts[0] != "stream" or not parts[1].endswith(".mjpg"):
+                    self.send_error(404, "Use /stream/streamer.mjpg or /stream/matrix.mjpg")
+                    return
+                visualizer = parts[1][:-5]
+                if visualizer not in {"streamer", "matrix"}:
+                    self.send_error(404, "Unknown visualizer")
+                    return
+                params = urllib.parse.parse_qs(parsed.query)
+                default_source = "processed" if visualizer == "streamer" else "snapshot"
+                source = str((params.get("source") or [default_source])[0] or default_source)
+                fps = runtime._bounded_float((params.get("fps") or [None])[0], 1.0, 60.0, 20.0)
+                quality = int(runtime._bounded_float((params.get("quality") or [None])[0], 30.0, 95.0, 78.0))
+                max_width = runtime._optional_int((params.get("max_width") or [None])[0])
+                max_height = runtime._optional_int((params.get("max_height") or [None])[0])
+                fresh = str((params.get("fresh") or ["true"])[0]).strip().lower() not in {"0", "false", "no", "off"}
+
+                self.send_response(200)
+                self.send_header("Age", "0")
+                self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Connection", "close")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+                self.end_headers()
+
+                interval = 1.0 / max(1.0, fps)
+                last_sequence = None
+                while True:
+                    frame_started = time.perf_counter()
+                    try:
+                        frame, metadata = runtime._get_visualizer_frame_with_metadata(
+                            runtime.require_system(),
+                            visualizer,
+                            source,
+                        )
+                        sequence = metadata.get("sequence") if isinstance(metadata, dict) else None
+                        if (
+                            fresh
+                            and sequence is not None
+                            and last_sequence is not None
+                            and int(sequence) <= int(last_sequence)
+                        ):
+                            time.sleep(min(0.02, interval))
+                            continue
+                        frame = runtime._resize_frame(frame, max_width=max_width, max_height=max_height)
+                        if frame is None:
+                            time.sleep(min(0.2, interval))
+                            continue
+                        ok, encoded = cv2.imencode(
+                            ".jpg",
+                            frame,
+                            [int(cv2.IMWRITE_JPEG_QUALITY), quality],
+                        )
+                        if not ok:
+                            time.sleep(min(0.2, interval))
+                            continue
+                        image = encoded.tobytes()
+                        self.wfile.write(b"--frame\r\n")
+                        self.wfile.write(b"Content-Type: image/jpeg\r\n")
+                        if isinstance(metadata, dict):
+                            if metadata.get("source"):
+                                self.wfile.write(
+                                    f"X-DropLogic-Frame-Source: {metadata.get('source')}\r\n".encode("ascii", "ignore")
+                                )
+                            if sequence is not None:
+                                self.wfile.write(f"X-DropLogic-Frame-Sequence: {int(sequence)}\r\n".encode("ascii"))
+                            if metadata.get("updated_at") is not None:
+                                try:
+                                    updated_at = float(metadata.get("updated_at"))
+                                    self.wfile.write(
+                                        f"X-DropLogic-Frame-Age-Ms: {(time.time() - updated_at) * 1000.0:.1f}\r\n".encode("ascii")
+                                    )
+                                except (TypeError, ValueError):
+                                    pass
+                        self.wfile.write(f"Content-Length: {len(image)}\r\n\r\n".encode("ascii"))
+                        self.wfile.write(image)
+                        self.wfile.write(b"\r\n")
+                        self.wfile.flush()
+                        if sequence is not None:
+                            last_sequence = int(sequence)
+                    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, socket.timeout):
+                        break
+                    except Exception:
+                        logging.getLogger("droplogic.mcp.mjpeg").exception("MJPEG frame error")
+                        time.sleep(min(0.5, interval))
+                    elapsed = time.perf_counter() - frame_started
+                    if elapsed < interval:
+                        time.sleep(interval - elapsed)
+
+        return MJPEGHandler
+
+    @staticmethod
+    def _bounded_float(value: Any, minimum: float, maximum: float, default: float) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        if parsed != parsed:
+            return default
+        return max(minimum, min(maximum, parsed))
+
+    @staticmethod
+    def _optional_int(value: Any) -> Optional[int]:
+        try:
+            parsed = int(float(value))
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
     def visualizer_status(self) -> Dict[str, Any]:
         """Return status for available visualizers."""
         system = self.require_system()
         status = {}
+        stream_server = self.ensure_mjpeg_server()
         for visualizer_name in ("matrix", "streamer"):
             instance = self._get_visualizer_instance(system, visualizer_name)
             if instance is None:
@@ -1686,11 +2100,17 @@ class DropLogicMCPRuntime:
                 "display_active": bool(getattr(instance, "_display_active", False)),
                 "last_exit_reason": getattr(instance, "last_exit_reason", None),
                 "last_display_error": getattr(instance, "last_display_error", None),
+                "stream": {
+                    "available": bool(stream_server.get("available")),
+                    "transport": "direct_mjpeg",
+                    "url": stream_server.get(f"{visualizer_name}_url"),
+                    "base_url": stream_server.get("base_url"),
+                },
             }
             window_name = item["window_name"]
             if window_name and item.get("window_enabled", True):
                 item["os_window"] = get_window_status(window_name)
-            for thread_name in ("thread", "capture_thread", "display_thread"):
+            for thread_name in ("thread", "capture_thread", "processor_thread", "display_thread"):
                 thread = getattr(instance, thread_name, None)
                 if thread is not None and hasattr(thread, "is_alive"):
                     try:
@@ -1714,6 +2134,18 @@ class DropLogicMCPRuntime:
                 item["source"] = self._streamer_source_name(system, instance)
                 item["electrode_overlay"] = getattr(instance, "electrode_overlay", None)
                 item["coordinates"] = getattr(instance, "coordinates", None)
+                item["electrode_width_px"] = getattr(instance, "electrode_width_px", None)
+                item["electrode_height_px"] = getattr(instance, "electrode_height_px", None)
+                item["electrode_spacing_x_px"] = getattr(instance, "electrode_spacing_x_px", None)
+                item["electrode_spacing_y_px"] = getattr(instance, "electrode_spacing_y_px", None)
+                frame_shape = None
+                for frame_attr in ("proc_frame", "raw_frame"):
+                    frame = getattr(instance, frame_attr, None)
+                    shape = getattr(frame, "shape", None)
+                    if shape is not None:
+                        frame_shape = list(shape)
+                        break
+                item["frame_shape"] = frame_shape
                 item["raw_frame_buffered"] = bool(getattr(instance, "raw_frame", None) is not None)
                 item["processed_frame_buffered"] = bool(getattr(instance, "proc_frame", None) is not None)
                 item["device"] = type(getattr(instance, "device", None)).__name__ if getattr(instance, "device", None) is not None else None
@@ -1824,7 +2256,7 @@ class DropLogicMCPRuntime:
         coordinates: Optional[bool] = None,
         bring_to_front: bool = False,
     ) -> Dict[str, Any]:
-        """Switch the live streamer visualizer between microscope and camera."""
+        """Switch only the streamer device; use set_execution_view_mode for whole-chip positioning."""
         system = self.require_system()
         streamer = self._get_visualizer_instance(system, "streamer")
         if streamer is None:
@@ -1862,7 +2294,7 @@ class DropLogicMCPRuntime:
             except DropLogicMCPError as exc:
                 brought_to_front = {"ok": False, "error": str(exc)}
 
-        return {
+        response = {
             "ok": True,
             "visualizer": "streamer",
             "source": source_name,
@@ -1871,6 +2303,14 @@ class DropLogicMCPRuntime:
             "brought_to_front": brought_to_front,
             "status": self.visualizer_status().get("streamer"),
         }
+        if source_name == "camera":
+            response["warning"] = (
+                "Camera source alone does not configure whole-cartridge visualization. "
+                "Use set_execution_view_mode(mode='whole_chip_camera') or "
+                "execute_segment_to_breakpoint(execution_view_mode='whole_chip_camera', "
+                "verify_positions=false) to apply the fixed stage/camera preset."
+            )
+        return response
 
     def _validate_light_intensity(self, name: str, value: Any) -> int:
         try:
@@ -2008,18 +2448,35 @@ class DropLogicMCPRuntime:
     def configure_microscope_imaging(
         self,
         channel: str = "Brightfield",
-        exposure_time: int = 72000,
-        gain: int = 0,
-        coaxial_intensity: int = 4,
-        ring_intensity: int = 0,
-        auto_exposure: bool = False,
+        exposure_time: Optional[int] = None,
+        gain: Optional[int] = None,
+        coaxial_intensity: Optional[int] = None,
+        ring_intensity: Optional[int] = None,
+        auto_exposure: Optional[bool] = None,
         restart_streamer: bool = True,
         bring_to_front: bool = False,
         stabilization_wait: float = 0.5,
         queue_timeout_seconds: float = 10.0,
     ) -> Dict[str, Any]:
-        """Safely configure microscope channel, exposure, gain and light for live imaging."""
+        """Safely configure microscope imaging; pass only channel/preset to use current saved presets."""
         system = self.require_system()
+        profile = self._resolve_microscope_imaging_profile(
+            channel=channel,
+            overrides={
+                "exposure_time": exposure_time,
+                "gain": gain,
+                "coaxial_intensity": coaxial_intensity,
+                "ring_intensity": ring_intensity,
+                "auto_exposure": auto_exposure,
+            },
+        )
+        channel = str(profile["channel"])
+        exposure_time = int(profile["exposure_time"])
+        gain = int(profile["gain"])
+        coaxial_intensity = int(profile["coaxial_intensity"])
+        ring_intensity = int(profile["ring_intensity"])
+        auto_exposure = bool(profile["auto_exposure"])
+
         actions = []
         streamer = self._get_visualizer_instance(system, "streamer")
         streamer_was_running = False
@@ -2086,6 +2543,7 @@ class DropLogicMCPRuntime:
             "coaxial_intensity": int(coaxial_intensity),
             "ring_intensity": int(ring_intensity),
             "auto_exposure": bool(auto_exposure),
+            "preset": profile.get("preset"),
             "streamer_was_running": streamer_was_running,
             "actions": self.to_jsonable(actions),
             "visualizers": self.visualizer_status(),
@@ -2139,7 +2597,7 @@ class DropLogicMCPRuntime:
         wait_before_check: float = 0.5,
         wait_after_check: float = 0.5,
     ) -> Dict[str, Any]:
-        """Move to droplets and save images for one or more channel profiles."""
+        """Move to droplets and save images; channel strings like FAM resolve current saved imaging presets."""
         system = self.require_system()
         advanced_drop = self.require_advanced_drop()
 
@@ -2167,12 +2625,13 @@ class DropLogicMCPRuntime:
         if not channel_profiles:
             raise DropLogicMCPError("capture_droplet_images requires at least one channel.")
 
-        if output_dir is None:
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_dir = os.path.abspath(os.path.join("results", f"droplet_imaging_{stamp}"))
+        if output_dir is None or not str(output_dir).strip():
+            output_dir = self._new_capture_directory(
+                "droplet_imaging",
+                "droplet_imaging",
+            )
         else:
-            output_dir = os.path.abspath(os.fspath(output_dir))
-        os.makedirs(output_dir, exist_ok=True)
+            output_dir = self._resolve_capture_directory(output_dir, "droplet_imaging")
 
         streamer = self._get_visualizer_instance(system, "streamer")
         streamer_was_running = False
@@ -2510,6 +2969,197 @@ class DropLogicMCPRuntime:
             self._temperature_routine_status["cancel_requested"] = True
             return self.temperature_routine_status()
 
+    def start_melting_curve_capture(
+        self,
+        start_c: Optional[float] = None,
+        end_c: Optional[float] = None,
+        step_c: float = 0.5,
+        temperature_steps: Optional[List[Dict[str, Any]]] = None,
+        hold_seconds: float = 300.0,
+        droplet_ids: Optional[List[int]] = None,
+        channels: Optional[List[Any]] = None,
+        output_dir: Optional[str] = None,
+        capture_mode: str = "droplets",
+        visualizer: str = "streamer",
+        frame_source: str = "device_raw",
+        tolerance_c: float = 0.5,
+        settle_timeout_seconds: float = 600.0,
+        sample_interval_seconds: float = 5.0,
+        require_settle: bool = True,
+        max_samples_per_step: int = 20,
+        stop_on_error: bool = True,
+        metadata: Optional[Dict[str, Any]] = None,
+        capture_source: str = "streamer",
+        restart_streamer: bool = True,
+        restore_low_light: bool = True,
+        image_format: str = "png",
+        wait_before_check: float = 0.5,
+        wait_after_check: float = 0.5,
+    ) -> Dict[str, Any]:
+        """Start a background melting curve that captures an image after every temperature step."""
+        self.require_system()
+        capture_mode = self._normalize_melting_curve_capture_mode(capture_mode)
+        if not isinstance(metadata or {}, dict):
+            raise DropLogicMCPError("metadata must be an object when provided.")
+        metadata = dict(metadata or {})
+
+        if temperature_steps is not None:
+            steps = self._normalize_temperature_steps(
+                steps=temperature_steps,
+                tolerance_c=tolerance_c,
+                settle_timeout_seconds=settle_timeout_seconds,
+                sample_interval_seconds=sample_interval_seconds,
+                require_settle=require_settle,
+                max_samples_per_step=max_samples_per_step,
+            )
+        else:
+            if start_c is None or end_c is None:
+                raise DropLogicMCPError(
+                    "start_melting_curve_capture requires start_c and end_c, "
+                    "or an explicit temperature_steps list."
+                )
+            steps = self._normalize_melting_curve_steps(
+                start_c=float(start_c),
+                end_c=float(end_c),
+                step_c=float(step_c),
+                hold_seconds=float(hold_seconds),
+                tolerance_c=tolerance_c,
+                settle_timeout_seconds=settle_timeout_seconds,
+                sample_interval_seconds=sample_interval_seconds,
+                require_settle=require_settle,
+                max_samples_per_step=max_samples_per_step,
+            )
+
+        if capture_mode == "droplets":
+            advanced_drop = self.require_advanced_drop()
+            if droplet_ids is None:
+                droplet_ids = [
+                    int(droplet.id)
+                    for droplet in getattr(advanced_drop, "droplets", [])
+                    if hasattr(droplet, "id")
+                ]
+            droplet_ids = [int(droplet_id) for droplet_id in droplet_ids]
+            if not droplet_ids:
+                raise DropLogicMCPError(
+                    "Droplet melting-curve capture requires at least one droplet id."
+                )
+            channels = channels or ["FAM"]
+            if not self._normalize_imaging_channels(channels):
+                raise DropLogicMCPError("Droplet melting-curve capture requires at least one channel.")
+        else:
+            droplet_ids = []
+            channels = []
+
+        if output_dir is None or not str(output_dir).strip():
+            output_dir = self._new_capture_directory(
+                "melting_curves",
+                "melting_curve",
+            )
+        else:
+            output_dir = self._resolve_capture_directory(output_dir, "melting_curves")
+
+        with self._temperature_routine_lock:
+            temperature_thread = self._temperature_routine_thread
+            if temperature_thread is not None and temperature_thread.is_alive():
+                status = self.temperature_routine_status()
+                raise DropLogicMCPError(
+                    "A temperature routine is already running. "
+                    f"Current routine id: {status.get('routine_id')}. "
+                    "Cancel or wait for it before starting melting-curve capture."
+                )
+
+        with self._melting_curve_lock:
+            if self._melting_curve_thread is not None and self._melting_curve_thread.is_alive():
+                status = self.melting_curve_capture_status()
+                raise DropLogicMCPError(
+                    "A melting-curve capture is already running. "
+                    f"Current routine id: {status.get('routine_id')}."
+                )
+
+            routine_id = uuid.uuid4().hex[:12]
+            self._melting_curve_stop_event.clear()
+            self._melting_curve_status = {
+                "routine_id": routine_id,
+                "running": True,
+                "completed": False,
+                "cancel_requested": False,
+                "ok": None,
+                "started_at": time.time(),
+                "finished_at": None,
+                "requested_steps": len(steps),
+                "current_step_index": 0,
+                "completed_steps": 0,
+                "capture_mode": capture_mode,
+                "output_dir": output_dir,
+                "metadata_path": os.path.join(output_dir, "melting_curve_capture_status.json"),
+                "droplet_ids": self.to_jsonable(droplet_ids),
+                "channels": self.to_jsonable(channels),
+                "visualizer": visualizer,
+                "frame_source": frame_source,
+                "active_step": None,
+                "results": [],
+                "last_sample": None,
+                "last_capture": None,
+                "path": "",
+                "mime_type": "",
+                "error": None,
+            }
+            self._melting_curve_thread = threading.Thread(
+                target=self._run_melting_curve_capture,
+                args=(
+                    routine_id,
+                    steps,
+                    bool(stop_on_error),
+                    {
+                        "droplet_ids": droplet_ids,
+                        "channels": channels,
+                        "output_dir": output_dir,
+                        "capture_mode": capture_mode,
+                        "visualizer": visualizer,
+                        "frame_source": frame_source,
+                        "metadata": metadata,
+                        "capture_source": capture_source,
+                        "restart_streamer": restart_streamer,
+                        "restore_low_light": restore_low_light,
+                        "image_format": image_format,
+                        "wait_before_check": wait_before_check,
+                        "wait_after_check": wait_after_check,
+                    },
+                ),
+                name=f"DropLogicMeltingCurveCapture-{routine_id}",
+                daemon=True,
+            )
+            self._melting_curve_thread.start()
+            return self.melting_curve_capture_status()
+
+    def melting_curve_capture_status(self) -> Dict[str, Any]:
+        """Return compact status for the active or last melting-curve capture."""
+        with self._melting_curve_lock:
+            status = dict(self._melting_curve_status or {})
+            if not status:
+                return {
+                    "running": False,
+                    "completed": False,
+                    "thread_alive": False,
+                    "message": "No melting-curve capture has been started in this runtime.",
+                }
+            thread = self._melting_curve_thread
+            status["thread_alive"] = bool(thread is not None and thread.is_alive())
+            return self.to_jsonable(status)
+
+    def cancel_melting_curve_capture(self) -> Dict[str, Any]:
+        """Ask the active melting-curve capture to stop after its current wait/capture."""
+        with self._melting_curve_lock:
+            if self._melting_curve_status is None:
+                return {
+                    "ok": True,
+                    "cancel_requested": False,
+                    "message": "No melting-curve capture is active.",
+                }
+            self._melting_curve_stop_event.set()
+            self._melting_curve_status["cancel_requested"] = True
+            return self.melting_curve_capture_status()
+
     def visualizer_call(
         self,
         visualizer: str,
@@ -2824,12 +3474,30 @@ class DropLogicMCPRuntime:
         self, droplet_id: int, target: Iterable[int]
     ) -> Dict[str, Any]:
         advanced_drop = self.require_advanced_drop()
+        target_pair = self._pair(target, "target")
         with self._lock:
+            target_validation = self._validate_droplet_target_layout(
+                advanced_drop,
+                {int(droplet_id): target_pair},
+            )
+            if not target_validation.get("ok", False):
+                return self.to_jsonable(
+                    {
+                        "ok": False,
+                        "updated": False,
+                        "droplet_id": int(droplet_id),
+                        "target": target_pair,
+                        "target_validation": target_validation,
+                        "droplets": advanced_drop.droplets.get_droplets_summary(),
+                    }
+                )
             updated = advanced_drop.droplets.update_droplet_target(
-                droplet_id, self._pair(target, "target")
+                droplet_id, target_pair
             )
             return {
+                "ok": bool(updated),
                 "updated": bool(updated),
+                "target_validation": self.to_jsonable(target_validation),
                 "droplets": self.to_jsonable(
                     advanced_drop.droplets.get_droplets_summary()
                 ),
@@ -2901,27 +3569,64 @@ class DropLogicMCPRuntime:
                 "{id|droplet_id, target} objects or a mapping of id -> target."
             )
 
-        updated = []
-        not_found = []
         with self._lock:
-            for item in normalized:
-                droplet_id = item["droplet_id"]
-                target = item["target"]
-                ok = advanced_drop.droplets.update_droplet_target(droplet_id, target)
-                if ok:
-                    updated.append({"id": droplet_id, "target": target})
-                else:
-                    not_found.append(droplet_id)
+            droplet_ids = {
+                int(getattr(droplet, "id"))
+                for droplet in list(getattr(advanced_drop, "droplets", []) or [])
+                if getattr(droplet, "id", None) is not None
+            }
+            not_found = [
+                item["droplet_id"]
+                for item in normalized
+                if item["droplet_id"] not in droplet_ids
+            ]
+            valid_items = [
+                item for item in normalized if item["droplet_id"] not in set(not_found)
+            ]
+            target_updates = {
+                item["droplet_id"]: item["target"]
+                for item in valid_items
+            }
+            target_validation = self._validate_droplet_target_layout(
+                advanced_drop,
+                target_updates,
+            )
+
+            updated = []
+            if target_validation.get("ok", False):
+                for item in valid_items:
+                    droplet_id = item["droplet_id"]
+                    target = item["target"]
+                    ok = advanced_drop.droplets.update_droplet_target(droplet_id, target)
+                    if ok:
+                        updated.append({"id": droplet_id, "target": target})
+                    elif droplet_id not in not_found:
+                        not_found.append(droplet_id)
 
             result = {
-                "ok": not errors and not not_found,
+                "ok": (
+                    not errors
+                    and not not_found
+                    and bool(target_validation.get("ok", False))
+                ),
                 "requested_count": len(normalized) + len(errors),
                 "valid_count": len(normalized),
                 "updated_count": len(updated),
                 "updated_ids": [item["id"] for item in updated],
                 "not_found_ids": not_found,
                 "errors": errors,
+                "target_validation": target_validation,
             }
+            if not target_validation.get("ok", False):
+                result["message"] = (
+                    "Targets were not updated because the proposed final layout "
+                    "creates new footprint/vital-space conflicts or out-of-bounds droplets."
+                )
+                if target_validation.get("suggested_targets"):
+                    result["message"] += (
+                        " Use target_validation.suggested_targets for the closest "
+                        "nearby legal replacements."
+                    )
             if include_summary:
                 summary = advanced_drop.droplets.get_droplets_summary()
                 result["droplets"] = {
@@ -2930,6 +3635,506 @@ class DropLogicMCPRuntime:
                 }
                 result["plan"] = self.plan_summary(advanced_drop.plan)
             return self.to_jsonable(result)
+
+    def _validate_droplet_target_layout(
+        self,
+        advanced_drop: Any,
+        target_updates: Dict[int, Tuple[int, int]],
+    ) -> Dict[str, Any]:
+        """Validate the final active-droplet layout after applying target updates.
+
+        New footprint/vital-space conflicts caused by the proposed targets are
+        blocking. Conflicts already present in the current physical layout are
+        reported as warnings so callers can still reset targets to current
+        positions.
+        """
+        target_updates = {
+            int(droplet_id): tuple(target)
+            for droplet_id, target in (target_updates or {}).items()
+        }
+        requested_ids = sorted(target_updates)
+        active_droplets = self._active_droplets_for_target_validation(advanced_drop)
+        active_ids = [int(getattr(droplet, "id")) for droplet in active_droplets]
+        matrix_shape = self._target_validation_matrix_shape(advanced_drop)
+
+        current_corners: Dict[int, Tuple[int, int]] = {}
+        final_corners: Dict[int, Tuple[int, int]] = {}
+        for droplet in active_droplets:
+            droplet_id = int(getattr(droplet, "id"))
+            current_corners[droplet_id] = tuple(getattr(droplet, "origin_corner"))
+            final_corners[droplet_id] = tuple(
+                target_updates.get(
+                    droplet_id,
+                    getattr(droplet, "target_corner", getattr(droplet, "origin_corner")),
+                )
+            )
+
+        pending_ids = [
+            droplet_id
+            for droplet_id in active_ids
+            if current_corners.get(droplet_id) != final_corners.get(droplet_id)
+        ]
+        pending_not_requested = [
+            droplet_id for droplet_id in pending_ids if droplet_id not in requested_ids
+        ]
+
+        blocking = []
+        warnings = []
+        for droplet in active_droplets:
+            droplet_id = int(getattr(droplet, "id"))
+            final_corner = final_corners[droplet_id]
+            final_positions = get_droplet_positions(droplet, final_corner)
+            out_of_bounds = [
+                [row, col]
+                for row, col in sorted(final_positions)
+                if not self._target_cell_in_bounds(row, col, matrix_shape)
+            ]
+            if not out_of_bounds:
+                continue
+            issue = {
+                "type": "out_of_bounds",
+                "droplet_id": droplet_id,
+                "target": final_corner,
+                "matrix_shape": matrix_shape,
+                "cells": out_of_bounds[:10],
+                "cell_count": len(out_of_bounds),
+            }
+            if droplet_id in requested_ids or final_corner != current_corners[droplet_id]:
+                blocking.append(issue)
+            else:
+                warnings.append({**issue, "warning": "preexisting_out_of_bounds"})
+
+        final_occupied: Dict[Tuple[int, int], int] = {}
+        current_occupied: Dict[Tuple[int, int], int] = {}
+        for droplet in active_droplets:
+            droplet_id = int(getattr(droplet, "id"))
+            for cell in get_droplet_positions(droplet, current_corners[droplet_id]):
+                current_occupied.setdefault(cell, droplet_id)
+            for cell in get_droplet_positions(droplet, final_corners[droplet_id]):
+                other_id = final_occupied.setdefault(cell, droplet_id)
+                if other_id == droplet_id:
+                    continue
+                current_same = (
+                    current_occupied.get(cell) in {other_id, droplet_id}
+                    and current_corners.get(other_id) == final_corners.get(other_id)
+                    and current_corners.get(droplet_id) == final_corners.get(droplet_id)
+                )
+                issue = {
+                    "type": "footprint_overlap",
+                    "droplet_ids": [other_id, droplet_id],
+                    "cell": [cell[0], cell[1]],
+                    "targets": {
+                        str(other_id): final_corners.get(other_id),
+                        str(droplet_id): final_corners.get(droplet_id),
+                    },
+                }
+                if current_same:
+                    warnings.append({**issue, "warning": "preexisting_overlap"})
+                else:
+                    blocking.append(issue)
+
+        preexisting_pair_conflicts = set()
+        for index, droplet_a in enumerate(active_droplets):
+            id_a = int(getattr(droplet_a, "id"))
+            for droplet_b in active_droplets[index + 1:]:
+                id_b = int(getattr(droplet_b, "id"))
+                pair = tuple(sorted((id_a, id_b)))
+                current_conflict = check_vital_space_conflict(
+                    droplet_a,
+                    current_corners[id_a],
+                    droplet_b,
+                    current_corners[id_b],
+                )
+                if current_conflict:
+                    preexisting_pair_conflicts.add(pair)
+                final_conflict = check_vital_space_conflict(
+                    droplet_a,
+                    final_corners[id_a],
+                    droplet_b,
+                    final_corners[id_b],
+                )
+                if not final_conflict:
+                    continue
+                issue = {
+                    "type": "vital_space_conflict",
+                    "droplet_ids": [id_a, id_b],
+                    "targets": {
+                        str(id_a): final_corners[id_a],
+                        str(id_b): final_corners[id_b],
+                    },
+                    "vital_spaces": {
+                        str(id_a): int(getattr(droplet_a, "vital_space", 0) or 0),
+                        str(id_b): int(getattr(droplet_b, "vital_space", 0) or 0),
+                    },
+                }
+                if pair in preexisting_pair_conflicts:
+                    warnings.append({**issue, "warning": "preexisting_vital_space_conflict"})
+                else:
+                    blocking.append(issue)
+
+        for index, droplet_a in enumerate(active_droplets):
+            id_a = int(getattr(droplet_a, "id"))
+            for droplet_b in active_droplets[index + 1:]:
+                id_b = int(getattr(droplet_b, "id"))
+                final_conflict = check_vital_space_conflict(
+                    droplet_a,
+                    final_corners[id_a],
+                    droplet_b,
+                    final_corners[id_b],
+                )
+                if final_conflict:
+                    continue
+                for mover, mover_id, blocker, blocker_id in (
+                    (droplet_a, id_a, droplet_b, id_b),
+                    (droplet_b, id_b, droplet_a, id_a),
+                ):
+                    if final_corners[mover_id] == current_corners[mover_id]:
+                        continue
+                    if not check_vital_space_conflict(
+                        mover,
+                        final_corners[mover_id],
+                        blocker,
+                        current_corners[blocker_id],
+                    ):
+                        continue
+                    blocking.append(
+                        {
+                            "type": "target_uses_current_reserved_space",
+                            "moving_droplet_id": mover_id,
+                            "blocking_droplet_id": blocker_id,
+                            "moving_target": final_corners[mover_id],
+                            "blocking_current_position": current_corners[blocker_id],
+                            "message": (
+                                "SIPP reserves active droplets' current footprints/vital "
+                                "spaces during a move. Move the blocking droplet to an "
+                                "intermediate parking position and execute that segment first."
+                            ),
+                        }
+                    )
+
+        if pending_not_requested:
+            warnings.append(
+                {
+                    "type": "pending_targets_not_in_request",
+                    "droplet_ids": pending_not_requested,
+                    "message": (
+                        "plan_move moves every active droplet whose target differs from "
+                        "its current position, including these droplets. Reset them to "
+                        "their current positions or include them intentionally before planning."
+                    ),
+                }
+            )
+        if len(pending_ids) > 10:
+            warnings.append(
+                {
+                    "type": "large_move_batch",
+                    "pending_target_count": len(pending_ids),
+                    "message": (
+                        "For real hardware, split movement into executed batches of "
+                        "5-10 droplets and prefer 5 in dense layouts."
+                    ),
+                }
+            )
+
+        suggested_targets = {}
+        if blocking and requested_ids:
+            suggested_targets = self._suggest_available_droplet_targets(
+                active_droplets=active_droplets,
+                current_corners=current_corners,
+                final_corners=final_corners,
+                requested_targets=target_updates,
+                blocking_issues=blocking,
+                matrix_shape=matrix_shape,
+            )
+
+        return self.to_jsonable(
+            {
+                "ok": not blocking,
+                "requested_target_ids": requested_ids,
+                "active_droplet_ids": active_ids,
+                "pending_target_ids": pending_ids,
+                "pending_target_ids_not_in_request": pending_not_requested,
+                "blocking_issue_count": len(blocking),
+                "blocking_issues": blocking[:20],
+                "suggestion_count": len(suggested_targets),
+                "suggested_targets": suggested_targets,
+                "warning_count": len(warnings),
+                "warnings": warnings[:20],
+                "matrix_shape": matrix_shape,
+            }
+        )
+
+    def _suggest_available_droplet_targets(
+        self,
+        *,
+        active_droplets: List[Any],
+        current_corners: Dict[int, Tuple[int, int]],
+        final_corners: Dict[int, Tuple[int, int]],
+        requested_targets: Dict[int, Tuple[int, int]],
+        blocking_issues: List[Dict[str, Any]],
+        matrix_shape: Optional[List[int]],
+    ) -> Dict[str, Dict[str, Any]]:
+        requested_ids = {int(droplet_id) for droplet_id in requested_targets}
+        affected_ids = self._target_suggestion_affected_ids(
+            blocking_issues,
+            requested_ids,
+        )
+        if not affected_ids:
+            affected_ids = set(requested_ids)
+
+        droplets_by_id = {
+            int(getattr(droplet, "id")): droplet
+            for droplet in active_droplets
+            if getattr(droplet, "id", None) is not None
+        }
+        suggested = {}
+        search_corners = dict(final_corners)
+
+        for droplet_id in sorted(affected_ids):
+            droplet = droplets_by_id.get(droplet_id)
+            requested = requested_targets.get(droplet_id)
+            if droplet is None or requested is None:
+                continue
+
+            requested = tuple(requested)
+            if self._target_candidate_available(
+                droplet_id=droplet_id,
+                candidate_corner=requested,
+                active_droplets=active_droplets,
+                current_corners=current_corners,
+                final_corners=search_corners,
+                matrix_shape=matrix_shape,
+            )[0]:
+                search_corners[droplet_id] = requested
+                continue
+
+            candidate, reason = self._nearest_available_droplet_target(
+                droplet_id=droplet_id,
+                requested_corner=requested,
+                active_droplets=active_droplets,
+                current_corners=current_corners,
+                final_corners=search_corners,
+                matrix_shape=matrix_shape,
+            )
+            if candidate is None:
+                suggested[str(droplet_id)] = {
+                    "target": None,
+                    "from": requested,
+                    "reason": "no_available_target_found",
+                    "message": (
+                        "No nearby legal target was found within the cartridge. "
+                        "Move blockers to parking positions or reduce the batch size."
+                    ),
+                }
+                continue
+
+            search_corners[droplet_id] = candidate
+            suggested[str(droplet_id)] = {
+                "target": candidate,
+                "from": requested,
+                "manhattan_distance": (
+                    abs(int(candidate[0]) - int(requested[0]))
+                    + abs(int(candidate[1]) - int(requested[1]))
+                ),
+                "reason": reason or "closest_available_target",
+                "message": (
+                    "Closest available target found while keeping the other "
+                    "requested targets and active droplets reserved."
+                ),
+            }
+
+        return suggested
+
+    @staticmethod
+    def _target_suggestion_affected_ids(
+        blocking_issues: List[Dict[str, Any]],
+        requested_ids: set,
+    ) -> set:
+        affected = set()
+        for issue in blocking_issues:
+            issue_type = issue.get("type")
+            if issue_type == "out_of_bounds":
+                droplet_id = issue.get("droplet_id")
+                if droplet_id in requested_ids:
+                    affected.add(int(droplet_id))
+            elif issue_type in {"footprint_overlap", "vital_space_conflict"}:
+                for droplet_id in issue.get("droplet_ids", []) or []:
+                    if droplet_id in requested_ids:
+                        affected.add(int(droplet_id))
+            elif issue_type == "target_uses_current_reserved_space":
+                droplet_id = issue.get("moving_droplet_id")
+                if droplet_id in requested_ids:
+                    affected.add(int(droplet_id))
+        return affected
+
+    def _nearest_available_droplet_target(
+        self,
+        *,
+        droplet_id: int,
+        requested_corner: Tuple[int, int],
+        active_droplets: List[Any],
+        current_corners: Dict[int, Tuple[int, int]],
+        final_corners: Dict[int, Tuple[int, int]],
+        matrix_shape: Optional[List[int]],
+    ) -> Tuple[Optional[Tuple[int, int]], Optional[str]]:
+        if matrix_shape and len(matrix_shape) >= 2:
+            search_limit = max(int(matrix_shape[0]), int(matrix_shape[1]))
+        else:
+            search_limit = 64
+
+        requested_row, requested_col = int(requested_corner[0]), int(requested_corner[1])
+        last_reason = None
+        for radius in range(search_limit + 1):
+            candidates = []
+            for row_delta in range(-radius, radius + 1):
+                col_distance = radius - abs(row_delta)
+                if col_distance == 0:
+                    candidates.append((requested_row + row_delta, requested_col))
+                else:
+                    candidates.append(
+                        (requested_row + row_delta, requested_col - col_distance)
+                    )
+                    candidates.append(
+                        (requested_row + row_delta, requested_col + col_distance)
+                    )
+            for candidate in sorted(
+                set(candidates),
+                key=lambda item: (
+                    abs(item[0] - requested_row) + abs(item[1] - requested_col),
+                    max(abs(item[0] - requested_row), abs(item[1] - requested_col)),
+                    abs(item[0] - requested_row),
+                    abs(item[1] - requested_col),
+                    item[0],
+                    item[1],
+                ),
+            ):
+                ok, reason = self._target_candidate_available(
+                    droplet_id=droplet_id,
+                    candidate_corner=candidate,
+                    active_droplets=active_droplets,
+                    current_corners=current_corners,
+                    final_corners=final_corners,
+                    matrix_shape=matrix_shape,
+                )
+                if ok:
+                    return (int(candidate[0]), int(candidate[1])), "closest_available_target"
+                last_reason = reason
+        return None, last_reason
+
+    def _target_candidate_available(
+        self,
+        *,
+        droplet_id: int,
+        candidate_corner: Tuple[int, int],
+        active_droplets: List[Any],
+        current_corners: Dict[int, Tuple[int, int]],
+        final_corners: Dict[int, Tuple[int, int]],
+        matrix_shape: Optional[List[int]],
+    ) -> Tuple[bool, Optional[str]]:
+        candidate_corner = (int(candidate_corner[0]), int(candidate_corner[1]))
+        candidate_final_corners = dict(final_corners)
+        candidate_final_corners[int(droplet_id)] = candidate_corner
+        droplets_by_id = {
+            int(getattr(droplet, "id")): droplet
+            for droplet in active_droplets
+            if getattr(droplet, "id", None) is not None
+        }
+        droplet = droplets_by_id.get(int(droplet_id))
+        if droplet is None:
+            return False, "droplet_not_active"
+
+        for row, col in get_droplet_positions(droplet, candidate_corner):
+            if not self._target_cell_in_bounds(row, col, matrix_shape):
+                return False, "out_of_bounds"
+
+        moving = candidate_corner != tuple(current_corners.get(int(droplet_id), candidate_corner))
+        for other in active_droplets:
+            other_id = int(getattr(other, "id"))
+            if other_id == int(droplet_id):
+                continue
+            other_final = tuple(candidate_final_corners.get(other_id, current_corners[other_id]))
+            other_positions = get_droplet_positions(other, other_final)
+            for cell in get_droplet_positions(droplet, candidate_corner):
+                if cell in other_positions:
+                    return False, "footprint_overlap"
+            if check_vital_space_conflict(droplet, candidate_corner, other, other_final):
+                return False, "vital_space_conflict"
+            if moving and check_vital_space_conflict(
+                droplet,
+                candidate_corner,
+                other,
+                tuple(current_corners[other_id]),
+            ):
+                return False, "target_uses_current_reserved_space"
+
+        return True, None
+
+    def _active_droplets_for_target_validation(self, advanced_drop: Any) -> List[Any]:
+        droplets = list(getattr(advanced_drop, "droplets", []) or [])
+        plan = getattr(advanced_drop, "plan", None)
+        active_ids = None
+        active_by_frame = getattr(plan, "active_droplets_per_frame", None)
+        if active_by_frame:
+            try:
+                active_ids = {
+                    int(droplet_id)
+                    for droplet_id in (active_by_frame[-1] or [])
+                }
+            except Exception:
+                active_ids = None
+        if not active_ids:
+            return [
+                droplet for droplet in droplets if getattr(droplet, "id", None) is not None
+            ]
+        return [
+            droplet
+            for droplet in droplets
+            if getattr(droplet, "id", None) is not None
+            and int(getattr(droplet, "id")) in active_ids
+        ]
+
+    def _target_validation_matrix_shape(self, advanced_drop: Any) -> Optional[List[int]]:
+        plan = getattr(advanced_drop, "plan", None)
+        frames = getattr(plan, "frames", None)
+        if frames:
+            try:
+                shape = frames[-1].shape
+                if len(shape) >= 2:
+                    return [int(shape[0]), int(shape[1])]
+            except Exception:
+                pass
+        try:
+            system = self.require_system()
+        except Exception:
+            system = None
+        state = getattr(system, "state", {}) if system is not None else {}
+        matrix_state = state.get("electrode_matrix") if isinstance(state, dict) else None
+        if isinstance(matrix_state, dict):
+            rows = matrix_state.get("rows")
+            cols = matrix_state.get("columns") or matrix_state.get("cols")
+            try:
+                if rows is not None and cols is not None:
+                    return [int(rows), int(cols)]
+            except Exception:
+                pass
+            matrix = matrix_state.get("matrix")
+            try:
+                array = np.asarray(matrix)
+                if array.ndim >= 2:
+                    return [int(array.shape[0]), int(array.shape[1])]
+            except Exception:
+                pass
+        return None
+
+    @staticmethod
+    def _target_cell_in_bounds(
+        row: int,
+        col: int,
+        matrix_shape: Optional[List[int]],
+    ) -> bool:
+        if not matrix_shape or len(matrix_shape) < 2:
+            return True
+        return 0 <= int(row) < int(matrix_shape[0]) and 0 <= int(col) < int(matrix_shape[1])
 
     def update_droplet_position(
         self, droplet_id: int, position: Iterable[int]
@@ -3106,6 +4311,7 @@ class DropLogicMCPRuntime:
         linear_drop_shape: Optional[Any] = None,
         linear_direction: Optional[Iterable[int]] = None,
         linear_vital_space: Optional[int] = None,
+        linear_post_separation_steps: Optional[int] = 3,
         remove_duplicate_frames: bool = False,
         background: bool = False,
         **kwargs: Any,
@@ -3126,6 +4332,11 @@ class DropLogicMCPRuntime:
             "linear_drop_shape": linear_drop_shape,
             "linear_direction": linear_direction,
             "linear_vital_space": linear_vital_space,
+            "linear_post_separation_steps": (
+                3
+                if linear_post_separation_steps is None
+                else int(linear_post_separation_steps)
+            ),
             "remove_duplicate_frames": bool(remove_duplicate_frames),
             **kwargs,
         }
@@ -3925,15 +5136,33 @@ class DropLogicMCPRuntime:
         debug: bool = False,
     ) -> Dict[str, Any]:
         """Run AdvancedDrop droplet verification."""
-        result = self.require_advanced_drop().verify_droplets(
+        advanced_drop = self.require_advanced_drop()
+        if save_frames_path:
+            save_frames_path = self._resolve_capture_directory(
+                save_frames_path,
+                "verify_droplets",
+            )
+        result = advanced_drop.verify_droplets(
             frame_idx=frame_idx,
             droplet_ids=droplet_ids,
             save_frames_path=save_frames_path,
             debug=debug,
         )
+        validation_results = None
+        frame_files = None
+        if isinstance(result, (list, tuple)):
+            if len(result) >= 1:
+                validation_results = result[0]
+            if len(result) >= 2:
+                frame_files = result[1]
+        validator = getattr(advanced_drop, "validator", None)
+        stage_movements = getattr(validator, "last_stage_movements", []) if validator is not None else []
         return {
             "frame_idx": frame_idx,
             "result": self.to_jsonable(result),
+            "validation_results": self.to_jsonable(validation_results),
+            "frame_files": self.to_jsonable(frame_files),
+            "stage_movements": self.to_jsonable(stage_movements),
         }
 
     def detect_condensates(
@@ -3953,6 +5182,21 @@ class DropLogicMCPRuntime:
         brightfield_light: int = 30,
     ) -> Dict[str, Any]:
         """Run condensate detection through AdvancedDrop."""
+        if save_image_path:
+            save_image_path = self._resolve_capture_file(
+                save_image_path,
+                "condensates",
+            )
+        if debug_output_dir:
+            debug_output_dir = self._resolve_capture_directory(
+                debug_output_dir,
+                "condensates",
+            )
+        elif save_debug_images:
+            debug_output_dir = self._new_capture_directory(
+                "condensates",
+                "debug",
+            )
         result = self.require_advanced_drop().detect_condensates(
             crop_droplet=crop_droplet,
             crop_padding=crop_padding,
@@ -4126,7 +5370,8 @@ class DropLogicMCPRuntime:
                     "Use top-level move_stage(preset=... or position=...) for stage moves, "
                     "set_execution_view_mode(...) for whole-chip/follow-droplet viewing, "
                     "or module_call(module='xy_stage', method='move_axis_to_position', "
-                    "arguments={'axis': 'Y', 'target_position': 47000}) only as a low-level fallback."
+                    "arguments={'axis': 'Y', 'target_position': <value from stage.manual_injection>}) "
+                    "only as a low-level fallback after reading the preset."
                 )
             raise DropLogicMCPError(
                 f"Module method '{module}.{method}' is not exposed through MCP. "
@@ -4146,6 +5391,12 @@ class DropLogicMCPRuntime:
         if func is None:
             raise DropLogicMCPError(f"Module '{module}' has no method '{method}'.")
 
+        call_arguments = self._resolve_module_capture_arguments(
+            module_key,
+            method,
+            arguments,
+        )
+
         wait_result = self._wait_or_report_busy(
             module_key,
             wait_if_busy=wait_if_busy,
@@ -4162,7 +5413,7 @@ class DropLogicMCPRuntime:
             }
 
         try:
-            result = func(**(arguments or {}))
+            result = func(**call_arguments)
             if module_key == "temperature" and method == "get_temperature" and result is None:
                 return {
                     "ok": False,
@@ -4179,13 +5430,16 @@ class DropLogicMCPRuntime:
                         system.set_cached_state("temperature.current", result)
                 except Exception:
                     pass
-            return {
+            response = {
                 "ok": True,
                 "busy": False,
                 "module": module_key,
                 "method": method,
                 "result": self.to_jsonable(result),
             }
+            if module_key in {"camera", "microscope"} and method == "capture_image":
+                response["resolved_arguments"] = self.to_jsonable(call_arguments)
+            return response
         except Exception as exc:
             self._record_error(f"module_call:{module_key}.{method}", exc)
             return {
@@ -4209,7 +5463,7 @@ class DropLogicMCPRuntime:
         record_streamer: bool = False,
         matrix_filename: Optional[str] = None,
         streamer_filename: Optional[str] = None,
-        execution_view_mode: str = "follow_droplets",
+        execution_view_mode: Optional[str] = None,
         fixed_stage_position: Optional[Any] = None,
         prepare_execution_view: bool = True,
         execution_view_timeout_seconds: float = 60.0,
@@ -4240,13 +5494,16 @@ class DropLogicMCPRuntime:
                     "debugging."
                 )
 
-            view_mode = self._normalize_execution_view_mode(execution_view_mode)
+            view_mode, effective_fixed_stage_position = self._resolve_execution_view_mode(
+                execution_view_mode,
+                fixed_stage_position=fixed_stage_position,
+            )
             view_result = None
             view_ready = {"ready": True, "reason": None, "view_mode": view_mode}
             if prepare_execution_view:
                 view_result = self.set_execution_view_mode(
                     mode=view_mode,
-                    fixed_stage_position=fixed_stage_position,
+                    fixed_stage_position=effective_fixed_stage_position,
                     move_now=view_mode != "follow_droplets",
                     bring_to_front=False,
                     wait_timeout_seconds=execution_view_timeout_seconds,
@@ -4264,7 +5521,7 @@ class DropLogicMCPRuntime:
 
             stage_tracking_mode, resolved_stage_position = self._executor_stage_mode_for_view(
                 view_mode,
-                fixed_stage_position=fixed_stage_position,
+                fixed_stage_position=effective_fixed_stage_position,
             )
             notes = []
             effective_verify_positions = bool(verify_positions)
@@ -4416,6 +5673,8 @@ class DropLogicMCPRuntime:
         preset: Optional[str] = None,
         wait_timeout_seconds: float = 20.0,
         poll_interval: float = 0.1,
+        wait_for_queue: bool = True,
+        wait_for_completion: bool = True,
     ) -> Dict[str, Any]:
         """Move the XY stage using a named preset or explicit X/Y/Z axis values."""
         system = self.require_system()
@@ -4443,7 +5702,7 @@ class DropLogicMCPRuntime:
             and self._stage_positions_close(target_position, actual_before)
         ):
             queue_summary = self._hardware_queue_summary()
-            return {
+            response = {
                 "ok": True,
                 "preset": preset,
                 "resolved_preset": self.to_jsonable(resolved_preset),
@@ -4458,16 +5717,55 @@ class DropLogicMCPRuntime:
                     "queues": queue_summary.get("queues", {}),
                 },
             }
+            view_update = self._configure_stage_preset_execution_view(
+                resolved_preset,
+                target_position,
+            )
+            if view_update:
+                response["execution_view"] = self.to_jsonable(view_update)
+            return response
 
         result = system.update_state("xy_stage.position", dict(target_position))
+        if not wait_for_queue:
+            return {
+                "ok": True,
+                "preset": preset,
+                "resolved_preset": self.to_jsonable(resolved_preset),
+                "target_position": target_position,
+                "actual_position": actual_before,
+                "update_result": self.to_jsonable(result),
+                "queue_wait": {
+                    "ok": None,
+                    "timed_out": False,
+                    "pending_commands": None,
+                    "skipped": "not_requested",
+                },
+                "motion_complete": False,
+                "queued_only": True,
+            }
+
         queue_wait = self._wait_for_hardware_queue_empty(
-            timeout_seconds=max(float(wait_timeout_seconds), 1.0),
+            timeout_seconds=max(float(wait_timeout_seconds), 1.0) if wait_for_completion else max(0.05, min(float(wait_timeout_seconds), 1.0)),
             poll_interval=0.05,
         )
 
+        if not wait_for_completion:
+            actual_position = self._read_stage_position(xy_stage) or actual_before or target_position
+            return {
+                "ok": bool(queue_wait.get("ok", True)),
+                "preset": preset,
+                "resolved_preset": self.to_jsonable(resolved_preset),
+                "target_position": target_position,
+                "actual_position": actual_position,
+                "update_result": self.to_jsonable(result),
+                "queue_wait": queue_wait,
+                "motion_complete": False,
+                "queued_only": True,
+            }
+
         if xy_stage is None or type(system).__name__ == "Simulator":
             actual_position = self._read_stage_position(xy_stage) or target_position
-            return {
+            response = {
                 "ok": bool(queue_wait.get("ok", True)),
                 "preset": preset,
                 "resolved_preset": self.to_jsonable(resolved_preset),
@@ -4477,6 +5775,13 @@ class DropLogicMCPRuntime:
                 "queue_wait": queue_wait,
                 "motion_complete": True,
             }
+            view_update = self._configure_stage_preset_execution_view(
+                resolved_preset,
+                target_position,
+            )
+            if view_update:
+                response["execution_view"] = self.to_jsonable(view_update)
+            return response
 
         deadline = time.time() + max(0.0, float(wait_timeout_seconds))
         time.sleep(0.2)
@@ -4488,7 +5793,7 @@ class DropLogicMCPRuntime:
                         target_position,
                         actual_position,
                     )
-                    return {
+                    response = {
                         "ok": ok,
                         "preset": preset,
                         "resolved_preset": self.to_jsonable(resolved_preset),
@@ -4498,6 +5803,14 @@ class DropLogicMCPRuntime:
                         "queue_wait": queue_wait,
                         "motion_complete": True,
                     }
+                    if ok:
+                        view_update = self._configure_stage_preset_execution_view(
+                            resolved_preset,
+                            target_position,
+                        )
+                        if view_update:
+                            response["execution_view"] = self.to_jsonable(view_update)
+                    return response
             except Exception as exc:
                 actual_position = self._read_stage_position(xy_stage)
                 return {
@@ -4525,6 +5838,284 @@ class DropLogicMCPRuntime:
             "motion_complete": False,
             "timed_out": True,
         }
+
+    def calibration_stage_set_speed(self, speed_key: str = "2") -> Dict[str, Any]:
+        """Apply the same manual jog speed table used by calibration_tool.py."""
+        system = self.require_system()
+        speed_key, speed_name, velocity, acceleration = self._calibration_speed(speed_key)
+        actions = self._apply_calibration_speed(system, speed_key=speed_key)
+        return {
+            "ok": self._actions_ok(actions),
+            "speed_key": speed_key,
+            "speed_name": speed_name,
+            "velocity": velocity,
+            "acceleration": acceleration,
+            "actions": self.to_jsonable(actions),
+            "position": self._cached_stage_position(system),
+        }
+
+    def calibration_stage_position(self) -> Dict[str, Any]:
+        """Read the current hardware stage position for calibration recording."""
+        system = self.require_system()
+        position = self._read_stage_position(getattr(system, "xy_stage", None))
+        return {
+            "ok": position is not None,
+            "position": position,
+        }
+
+    def set_stage_motion_speed(self, speed_key: str = "fast") -> Dict[str, Any]:
+        """Apply a named XY stage motion speed preset."""
+        from droplogic.base import Priority
+
+        system = self.require_system()
+        key, speed_name, velocity, acceleration = self._stage_motion_speed(speed_key)
+        actions = self._apply_calibration_motion_params(
+            system,
+            velocity,
+            acceleration,
+            priority=Priority.HIGH,
+        )
+        return {
+            "ok": self._actions_ok(actions),
+            "speed_key": key,
+            "speed_name": speed_name,
+            "velocity": velocity,
+            "acceleration": acceleration,
+            "actions": self.to_jsonable(actions),
+            "position": self._cached_stage_position(system),
+        }
+
+    def stage_motion_params(self) -> Dict[str, Any]:
+        """Read the current XY stage velocity and acceleration parameters."""
+        system = self.require_system()
+        params = ((getattr(system, "state", {}) or {}).get("xy_stage") or {}).get("motion_params") or {}
+        velocity = self._positive_float_or_none(params.get("dMaxV"))
+        acceleration = self._positive_float_or_none(params.get("dMaxA"))
+        return {
+            "ok": velocity is not None and acceleration is not None,
+            "velocity": velocity,
+            "acceleration": acceleration,
+            "motion_params": {
+                "dMaxV": velocity,
+                "dMaxA": acceleration,
+            },
+            "position": self._cached_stage_position(system),
+        }
+
+    def set_stage_motion_params(self, velocity: float, acceleration: float) -> Dict[str, Any]:
+        """Apply explicit XY stage velocity and acceleration parameters."""
+        from droplogic.base import Priority
+
+        system = self.require_system()
+        parsed_velocity = self._positive_float_or_none(velocity)
+        parsed_acceleration = self._positive_float_or_none(acceleration)
+        if parsed_velocity is None or parsed_acceleration is None:
+            raise DropLogicMCPError("velocity and acceleration must be positive finite numbers.")
+        actions = self._apply_calibration_motion_params(
+            system,
+            parsed_velocity,
+            parsed_acceleration,
+            priority=Priority.HIGH,
+        )
+        return {
+            "ok": self._actions_ok(actions),
+            "velocity": parsed_velocity,
+            "acceleration": parsed_acceleration,
+            "motion_params": {
+                "dMaxV": parsed_velocity,
+                "dMaxA": parsed_acceleration,
+            },
+            "actions": self.to_jsonable(actions),
+            "position": self._cached_stage_position(system),
+        }
+
+    def calibration_stage_jog(
+        self,
+        axis: Optional[str] = None,
+        direction: int = 0,
+        stop_all: bool = False,
+    ) -> Dict[str, Any]:
+        """Start/refresh/stop continuous calibration jogging for one axis."""
+        from droplogic.base import Priority
+
+        system = self.require_system()
+        xy_stage = getattr(system, "xy_stage", None)
+        axes = ("X", "Y", "Z")
+        actions = []
+
+        if stop_all:
+            for item in axes:
+                path = f"xy_stage.continuous_movement.{item}"
+                try:
+                    actions.append({
+                        "path": path,
+                        "direction": 0,
+                        "result": system.update_state(path, 0, priority=Priority.HIGH),
+                    })
+                except Exception as exc:
+                    actions.append({"path": path, "direction": 0, "ok": False, "error": str(exc)})
+                try:
+                    if xy_stage is not None and hasattr(xy_stage, "stop_continuous_movement"):
+                        xy_stage.stop_continuous_movement(item)
+                except Exception as exc:
+                    actions.append({"axis": item, "direct_stop": False, "error": str(exc)})
+            return {
+                "ok": self._actions_ok(actions),
+                "stop_all": True,
+                "actions": self.to_jsonable(actions),
+                "position": self._cached_stage_position(system),
+            }
+
+        axis_name = str(axis or "").upper()
+        if axis_name not in axes:
+            raise DropLogicMCPError("axis must be X, Y, or Z.")
+        direction_value = max(-1, min(1, int(direction)))
+        path = f"xy_stage.continuous_movement.{axis_name}"
+        result = system.update_state(path, direction_value, priority=Priority.HIGH)
+        return {
+            "ok": True,
+            "axis": axis_name,
+            "direction": direction_value,
+            "path": path,
+            "result": self.to_jsonable(result),
+            "position": self._cached_stage_position(system),
+        }
+
+    def calibration_stage_move_to_target(
+        self,
+        position: Any,
+        speed_key: str = "2",
+        wait_timeout_seconds: float = 20.0,
+        poll_interval: float = 0.05,
+    ) -> Dict[str, Any]:
+        """Move to a guided calibration target using the original travel speed."""
+        from droplogic.base import Priority
+
+        system = self.require_system()
+        xy_stage = getattr(system, "xy_stage", None)
+        target_position = self._normalize_stage_axis_update(position)
+        actual_before = self._read_stage_position(xy_stage)
+        actions = []
+
+        actions.extend(
+            self._apply_calibration_motion_params(
+                system,
+                self.CALIBRATION_TRAVEL_VELOCITY,
+                self.CALIBRATION_TRAVEL_ACCELERATION,
+                priority=Priority.HIGH,
+            )
+        )
+        try:
+            result = system.update_state("xy_stage.position", dict(target_position), priority=Priority.HIGH)
+            actions.append({"path": "xy_stage.position", "result": result})
+        except Exception as exc:
+            actions.append({"path": "xy_stage.position", "ok": False, "error": str(exc)})
+            self._apply_calibration_speed(system, speed_key=speed_key)
+            return {
+                "ok": False,
+                "position": target_position,
+                "target_position": target_position,
+                "actual_position": actual_before,
+                "actions": self.to_jsonable(actions),
+                "error": str(exc),
+            }
+
+        queue_wait = self._wait_for_hardware_queue_empty(
+            timeout_seconds=max(float(wait_timeout_seconds), 1.0),
+            poll_interval=max(0.01, float(poll_interval)),
+        )
+        actions.append({"wait_for_hardware_queue": queue_wait})
+
+        motion_complete = False
+        timed_out = False
+        deadline = time.time() + max(0.0, float(wait_timeout_seconds))
+        if xy_stage is None or type(system).__name__ == "Simulator":
+            motion_complete = bool(queue_wait.get("ok", True))
+        else:
+            time.sleep(0.2)
+            while time.time() < deadline:
+                try:
+                    if all(xy_stage.is_motion_complete(axis) for axis in ("X", "Y", "Z")):
+                        motion_complete = True
+                        break
+                except Exception:
+                    motion_complete = False
+                time.sleep(max(0.01, float(poll_interval)))
+            timed_out = not motion_complete
+
+        restore_actions = self._apply_calibration_speed(system, speed_key=speed_key)
+        actions.extend({"restore_manual_speed": action} for action in restore_actions)
+        actual_position = self._read_stage_position(xy_stage) or target_position
+        return {
+            "ok": bool(queue_wait.get("ok", True)) and motion_complete,
+            "position": target_position,
+            "target_position": target_position,
+            "actual_position": actual_position,
+            "actual_before": actual_before,
+            "queue_wait": queue_wait,
+            "motion_complete": motion_complete,
+            "timed_out": timed_out,
+            "speed_key": str(speed_key or "2"),
+            "actions": self.to_jsonable(actions),
+        }
+
+    def _calibration_speed(self, speed_key: str) -> Tuple[str, str, float, float]:
+        key = str(speed_key or "2")
+        if key not in self.CALIBRATION_SPEEDS:
+            key = "2"
+        name, velocity, acceleration = self.CALIBRATION_SPEEDS[key]
+        return key, name, float(velocity), float(acceleration)
+
+    def _stage_motion_speed(self, speed_key: str) -> Tuple[str, str, float, float]:
+        key = str(speed_key or "fast").strip().lower()
+        if key not in self.STAGE_MOTION_SPEEDS:
+            key = "fast"
+        name, velocity, acceleration = self.STAGE_MOTION_SPEEDS[key]
+        public_key = "fast" if key == "standard" else key
+        return public_key, name, float(velocity), float(acceleration)
+
+    def _apply_calibration_speed(self, system, speed_key: str = "2") -> List[Dict[str, Any]]:
+        from droplogic.base import Priority
+
+        _key, _name, velocity, acceleration = self._calibration_speed(speed_key)
+        return self._apply_calibration_motion_params(
+            system,
+            velocity,
+            acceleration,
+            priority=Priority.HIGH,
+        )
+
+    def _apply_calibration_motion_params(
+        self,
+        system,
+        velocity: float,
+        acceleration: float,
+        priority=None,
+    ) -> List[Dict[str, Any]]:
+        actions = []
+        for path, value in (
+            ("xy_stage.motion_params.dMaxV", float(velocity)),
+            ("xy_stage.motion_params.dMaxA", float(acceleration)),
+        ):
+            try:
+                actions.append({
+                    "path": path,
+                    "value": value,
+                    "result": system.update_state(path, value, priority=priority),
+                })
+            except Exception as exc:
+                actions.append({"path": path, "value": value, "ok": False, "error": str(exc)})
+        return actions
+
+    @staticmethod
+    def _positive_float_or_none(value: Any) -> Optional[float]:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        if parsed != parsed or parsed <= 0:
+            return None
+        return parsed
 
     def pause_plan(self) -> Dict[str, Any]:
         executor = self.require_executor()
@@ -4556,6 +6147,83 @@ class DropLogicMCPRuntime:
     def executor_status(self) -> Dict[str, Any]:
         return self.to_jsonable(self.require_executor().status())
 
+    def timeline_status(self) -> Dict[str, Any]:
+        if self.system is None:
+            return self._no_system_timeline_status()
+        advanced_drop = self.require_advanced_drop()
+        return self._advanced_drop_timeline_status(advanced_drop)
+
+    def pause_timeline(self, reason: str = "", source: str = "agent") -> Dict[str, Any]:
+        if self.system is None:
+            state = self._no_system_timeline_status(reason=reason or "no_system_loaded")
+            state["ok"] = True
+            state["already_paused"] = True
+            return state
+        advanced_drop = self.require_advanced_drop()
+        pause = getattr(advanced_drop, "pause_timeline", None)
+        if pause is None:
+            raise DropLogicMCPError("AdvancedDrop does not expose pause_timeline().")
+        return self.to_jsonable(pause(reason=reason, source=source))
+
+    def resume_timeline(self, reason: str = "", source: str = "agent") -> Dict[str, Any]:
+        if self.system is None:
+            state = self._no_system_timeline_status(reason="no_system_loaded")
+            state["ok"] = False
+            state["error"] = "Cannot resume timeline until a DropLogic system is loaded."
+            state["isError"] = True
+            return state
+        advanced_drop = self.require_advanced_drop()
+        resume = getattr(advanced_drop, "resume_timeline", None)
+        if resume is None:
+            raise DropLogicMCPError("AdvancedDrop does not expose resume_timeline().")
+        return self.to_jsonable(resume(reason=reason, source=source))
+
+    def _no_system_timeline_status(self, reason: str = "no_system_loaded") -> Dict[str, Any]:
+        return {
+            "paused": True,
+            "paused_at": None,
+            "paused_reason": reason,
+            "paused_source": "system",
+            "paused_after_frame_index": None,
+            "active_duration_seconds": None,
+            "interval_count": 0,
+            "total_paused_seconds": 0,
+            "intervals": [],
+            "system_loaded": False,
+            "reason": reason,
+        }
+
+    def _no_advanced_drop_timeline_status(self) -> Dict[str, Any]:
+        return {
+            "paused": False,
+            "paused_at": None,
+            "paused_reason": "",
+            "paused_source": "",
+            "paused_after_frame_index": None,
+            "active_duration_seconds": None,
+            "interval_count": 0,
+            "total_paused_seconds": 0,
+            "intervals": [],
+            "system_loaded": True,
+            "reason": "no_advanced_drop",
+        }
+
+    def _advanced_drop_timeline_status(self, advanced_drop: Any) -> Dict[str, Any]:
+        status = getattr(advanced_drop, "timeline_status", None)
+        if status is None:
+            return {
+                "paused": False,
+                "paused_at": None,
+                "interval_count": 0,
+                "total_paused_seconds": 0,
+                "intervals": [],
+                "system_loaded": True,
+            }
+        result = self.to_jsonable(status())
+        if isinstance(result, dict):
+            result.setdefault("system_loaded", True)
+        return result
+
     def add_breakpoint(self, frame_number: int) -> Dict[str, Any]:
         executor = self.require_executor()
         executor.add_breakpoint(frame_number)
@@ -4571,6 +6239,58 @@ class DropLogicMCPRuntime:
         executor.clear_breakpoints()
         return self.to_jsonable(executor.status())
 
+    def executor_frame_history(self, limit: int = 1000) -> Dict[str, Any]:
+        """Return compact per-frame PlanExecutor timing diagnostics."""
+        executor = self.require_executor()
+        try:
+            safe_limit = max(1, min(10000, int(limit or 1000)))
+        except Exception:
+            safe_limit = 1000
+        history = list(getattr(executor, "frame_history", []) or [])
+        selected = history[-safe_limit:]
+        durations = [
+            float(item.get("duration_seconds"))
+            for item in selected
+            if isinstance(item, dict)
+            and isinstance(item.get("duration_seconds"), (int, float))
+        ]
+        matrix_latencies = []
+        for item in selected:
+            if not isinstance(item, dict):
+                continue
+            latency = (
+                ((item.get("matrix_queue_wait") or {}).get("high_queue") or {})
+                .get("command_latency_seconds")
+            )
+            if isinstance(latency, (int, float)):
+                matrix_latencies.append(float(latency))
+        return {
+            "ok": True,
+            "count": len(history),
+            "returned_count": len(selected),
+            "limit": safe_limit,
+            "frames": self.to_jsonable(selected),
+            "duration_summary": self._numeric_summary(durations),
+            "matrix_command_latency_summary": self._numeric_summary(matrix_latencies),
+        }
+
+    @staticmethod
+    def _numeric_summary(values: List[float]) -> Dict[str, Any]:
+        clean = sorted(float(value) for value in values if np.isfinite(float(value)))
+        if not clean:
+            return {"count": 0}
+        def percentile(p: float) -> float:
+            index = min(len(clean) - 1, max(0, int(round((len(clean) - 1) * p))))
+            return clean[index]
+        return {
+            "count": len(clean),
+            "min": round(clean[0], 6),
+            "median": round(percentile(0.5), 6),
+            "p95": round(percentile(0.95), 6),
+            "max": round(clean[-1], 6),
+            "mean": round(sum(clean) / len(clean), 6),
+        }
+
     def execute_segment_to_breakpoint(
         self,
         frame_number: Optional[int] = None,
@@ -4582,7 +6302,7 @@ class DropLogicMCPRuntime:
         frame_delay: float = 1.0,
         verify_positions: bool = False,
         enable_visualizers: bool = False,
-        execution_view_mode: str = "follow_droplets",
+        execution_view_mode: Optional[str] = None,
         fixed_stage_position: Optional[Any] = None,
         prepare_execution_view: bool = True,
         execution_view_timeout_seconds: float = 60.0,
@@ -4650,6 +6370,13 @@ class DropLogicMCPRuntime:
                 "choosing another breakpoint."
             )
 
+        view_mode, effective_fixed_stage_position = self._resolve_execution_view_mode(
+            execution_view_mode,
+            fixed_stage_position=fixed_stage_position,
+        )
+        resume_view_result = None
+        resume_view_ready = {"ready": True, "reason": None, "view_mode": view_mode}
+
         if clear_existing_breakpoints:
             executor.clear_breakpoints()
         executor.add_breakpoint(target_frame)
@@ -4662,7 +6389,7 @@ class DropLogicMCPRuntime:
                 verify_positions=verify_positions,
                 enable_visualizers=enable_visualizers,
                 execution_view_mode=execution_view_mode,
-                fixed_stage_position=fixed_stage_position,
+                fixed_stage_position=effective_fixed_stage_position,
                 prepare_execution_view=prepare_execution_view,
                 execution_view_timeout_seconds=execution_view_timeout_seconds,
                 restart_from_beginning=False,
@@ -4686,6 +6413,35 @@ class DropLogicMCPRuntime:
                 }
         else:
             action = "resume_plan"
+            if prepare_execution_view:
+                resume_view_result = self.set_execution_view_mode(
+                    mode=view_mode,
+                    fixed_stage_position=effective_fixed_stage_position,
+                    move_now=view_mode != "follow_droplets",
+                    bring_to_front=False,
+                    wait_timeout_seconds=execution_view_timeout_seconds,
+                )
+                resume_view_ready = self._execution_view_ready_status(
+                    view_mode,
+                    resume_view_result,
+                )
+                if not resume_view_ready.get("ready", False):
+                    return {
+                        "ok": False,
+                        "action": action,
+                        "started_wait": False,
+                        "reason": "execution_view_not_ready",
+                        "breakpoint_frame": target_frame,
+                        "plan": self._compact_plan_status(plan_summary),
+                        "initial_executor_status": self._compact_executor_status(initial_status),
+                        "breakpoint_status": self._compact_executor_status(breakpoint_status),
+                        "execution_view_ready": self.to_jsonable(resume_view_ready),
+                        "execution_view": self.to_jsonable(resume_view_result),
+                        "executor_status": self._compact_executor_status(
+                            self.to_jsonable(executor.status())
+                        ),
+                        "next": "Correct the execution view before resuming this segment.",
+                    }
             self._set_executor_frame_delay(executor, frame_delay)
             if resume_if_paused:
                 execution_result = self.resume_plan(allow_failed_plan=allow_failed_plan)
@@ -5283,6 +7039,7 @@ class DropLogicMCPRuntime:
                 "available": False,
                 "reason": "no_system_loaded",
                 "system_loaded": False,
+                "session_id": self.session_id,
                 "scene_mode": "none",
             }
 
@@ -5304,6 +7061,7 @@ class DropLogicMCPRuntime:
                 "available": False,
                 "reason": "no_advanced_drop",
                 "system_loaded": True,
+                "session_id": self.session_id,
                 "scene_mode": "matrix",
                 "matrix": matrix_summary,
                 "coordinate_mapping": coordinate_mapping,
@@ -5321,7 +7079,7 @@ class DropLogicMCPRuntime:
 
         frames = list(getattr(frame_plan, "frames", []) or []) if frame_plan is not None else []
         frame_count = len(frames)
-        frame_index, frame_matrix, frame_source = self._execution_scene_frame_source(
+        frame_index, frame_matrix, frame_source, frame_diagnostics = self._execution_scene_frame_source(
             executor,
             executor_status,
             frames,
@@ -5340,6 +7098,7 @@ class DropLogicMCPRuntime:
             except Exception as exc:
                 frame_summary = {"error": str(exc), "index": frame_index, "source": frame_source}
 
+        current_event = self._execution_scene_current_event(applied_plan, frame_index)
         droplets = self._execution_scene_droplets(
             advanced_drop=advanced_drop,
             plan=applied_plan,
@@ -5349,8 +7108,14 @@ class DropLogicMCPRuntime:
             max_droplet_cells=max_droplet_cells,
             include_droplet_cells=include_droplet_cells,
             include_paths=include_paths,
+            frame_matrix=frame_matrix,
+            current_event=current_event,
+            droplet_snapshot=(
+                getattr(executor, "last_applied_frame_droplets", None)
+                if executor is not None
+                else None
+            ),
         )
-        current_event = self._execution_scene_current_event(applied_plan, frame_index)
         action_paths = (
             self._execution_scene_action_paths(plan, max_path_points=max_path_points)
             if include_paths and include_action_paths
@@ -5421,12 +7186,14 @@ class DropLogicMCPRuntime:
         }
         if include_action_paths:
             plan_payload["actions"] = action_paths
+        timeline_control = self._advanced_drop_timeline_status(advanced_drop)
 
         return {
             "available": True,
             "surface": "execution_scene",
             "system_loaded": True,
             "system": self.system_name,
+            "session_id": self.session_id,
             "scene_mode": "advanced_drop",
             "updated_at": time.time(),
             "revision": revision,
@@ -5437,10 +7204,12 @@ class DropLogicMCPRuntime:
                 "count": frame_count,
                 "source": frame_source,
                 "synced_to_executor": frame_source == "executor_last_applied_frame",
+                **frame_diagnostics,
                 "summary": frame_summary,
             },
             "executor": executor_status,
             "plan": plan_payload,
+            "timeline_control": timeline_control,
             "droplets": droplets,
         }
 
@@ -5551,15 +7320,33 @@ class DropLogicMCPRuntime:
     def _dashboard_scene_timeline(self) -> Dict[str, Any]:
         """Return frame-indexed plan data for the browser timeline scrubber."""
         system = self.system
+        if system is None:
+            control = self._no_system_timeline_status()
+            return {
+                "available": False,
+                "reason": "no_system_loaded",
+                "control": control,
+                "pauses": control.get("intervals", []),
+            }
         advanced_drop = getattr(system, "advanced_drop", None) if system is not None else None
         executor = getattr(advanced_drop, "executor", None) if advanced_drop is not None else None
         plan = getattr(advanced_drop, "plan", None) if advanced_drop is not None else None
+        timeline_control = (
+            self._advanced_drop_timeline_status(advanced_drop)
+            if advanced_drop is not None
+            else self._no_advanced_drop_timeline_status()
+        )
         if plan is None and executor is not None:
             plan = getattr(executor, "current_plan", None)
         if plan is None and executor is not None:
             plan = getattr(executor, "last_applied_frame_plan", None)
         if plan is None:
-            return {"available": False, "reason": "no_plan"}
+            return {
+                "available": False,
+                "reason": "no_plan",
+                "control": timeline_control,
+                "pauses": timeline_control.get("intervals", []),
+            }
 
         frames = list(getattr(plan, "frames", []) or [])
         frame_count = len(frames)
@@ -5579,11 +7366,13 @@ class DropLogicMCPRuntime:
             active_by_frame,
             droplets,
             trajectories,
+            timeline_control,
         )
         if self._dashboard_timeline_cache_key == cache_key and self._dashboard_timeline_cache is not None:
             return self._dashboard_timeline_cache
 
         event_type_by_id: Dict[str, str] = {}
+        event_data_by_id: Dict[str, Dict[str, Any]] = {}
         timeline_events: List[Dict[str, Any]] = []
 
         for index, event in enumerate(events):
@@ -5598,6 +7387,7 @@ class DropLogicMCPRuntime:
             event_id = data.get("event_id")
             if event_id is not None:
                 event_type_by_id[str(event_id)] = event_type
+                event_data_by_id[str(event_id)] = data
             span = self._execution_scene_event_span(
                 data=data,
                 event_frame=event_frame,
@@ -5623,6 +7413,8 @@ class DropLogicMCPRuntime:
                 }
             )
 
+        detailed_frame_limit = 240
+        include_detailed_frames = frame_count <= detailed_frame_limit
         timeline_frames = []
         for frame_index, frame_matrix in enumerate(frames):
             event_id = event_ids_by_frame[frame_index] if frame_index < len(event_ids_by_frame) else None
@@ -5633,32 +7425,35 @@ class DropLogicMCPRuntime:
                         active_ids.append(int(raw_id))
                     except Exception:
                         continue
-            try:
-                summary = self._matrix_compact_representation(
-                    frame_matrix,
-                    source="timeline_frame",
-                    include_ranges=True,
-                    include_active_cells=False,
-                    include_hash=False,
+            frame_payload = {
+                "index": frame_index,
+                "event_id": self.to_jsonable(event_id),
+                "event_type": event_type_by_id.get(str(event_id), None) if event_id is not None else None,
+                "active_droplet_ids": sorted(set(active_ids)),
+            }
+            if include_detailed_frames:
+                try:
+                    summary = self._matrix_compact_representation(
+                        frame_matrix,
+                        source="timeline_frame",
+                        include_ranges=True,
+                        include_active_cells=False,
+                        include_hash=False,
+                    )
+                    summary = self._dashboard_scene_timeline_summary(summary)
+                except Exception as exc:
+                    summary = {"source": "timeline_frame", "error": str(exc)}
+                frame_payload["droplets"] = self._dashboard_scene_timeline_frame_droplets(
+                    droplets=droplets,
+                    trajectories=trajectories,
+                    active_ids=sorted(set(active_ids)),
+                    frame_index=frame_index,
+                    frame_matrix=frame_matrix,
+                    event_data=event_data_by_id.get(str(event_id), {}) if event_id is not None else {},
+                    include_droplet_cells=True,
                 )
-                summary = self._dashboard_scene_timeline_summary(summary)
-            except Exception as exc:
-                summary = {"source": "timeline_frame", "error": str(exc)}
-            timeline_frames.append(
-                {
-                    "index": frame_index,
-                    "event_id": self.to_jsonable(event_id),
-                    "event_type": event_type_by_id.get(str(event_id), None) if event_id is not None else None,
-                    "active_droplet_ids": sorted(set(active_ids)),
-                    "droplets": self._dashboard_scene_timeline_frame_droplets(
-                        droplets=droplets,
-                        trajectories=trajectories,
-                        active_ids=sorted(set(active_ids)),
-                        frame_index=frame_index,
-                    ),
-                    "summary": summary,
-                }
-            )
+                frame_payload["summary"] = summary
+            timeline_frames.append(frame_payload)
 
         payload = {
             "available": True,
@@ -5666,7 +7461,11 @@ class DropLogicMCPRuntime:
             "event_count": len(timeline_events),
             "events": timeline_events,
             "frames": timeline_frames,
-            "encoding": "per_frame_active_ranges",
+            "control": timeline_control,
+            "pauses": timeline_control.get("intervals", []),
+            "encoding": "per_frame_active_ranges" if include_detailed_frames else "compact_frame_index",
+            "frames_compact": not include_detailed_frames,
+            "detailed_frame_limit": detailed_frame_limit,
         }
         self._dashboard_timeline_cache_key = cache_key
         self._dashboard_timeline_cache = payload
@@ -5681,10 +7480,13 @@ class DropLogicMCPRuntime:
         active_by_frame: List[Any],
         droplets: List[Any],
         trajectories: Dict[Any, Any],
+        timeline_control: Dict[str, Any],
     ) -> Tuple[Any, ...]:
         last_event = events[-1] if events else None
         first_frame_id = id(frames[0]) if frames else None
         last_frame_id = id(frames[-1]) if frames else None
+        timeline_intervals = timeline_control.get("intervals", []) if isinstance(timeline_control, dict) else []
+        timeline_last_interval = timeline_intervals[-1] if timeline_intervals else None
         droplet_key = []
         for droplet in droplets:
             try:
@@ -5719,6 +7521,11 @@ class DropLogicMCPRuntime:
             self.to_jsonable(last_event),
             len(event_ids_by_frame),
             len(active_by_frame),
+            bool(timeline_control.get("paused")) if isinstance(timeline_control, dict) else False,
+            timeline_control.get("paused_at") if isinstance(timeline_control, dict) else None,
+            timeline_control.get("paused_after_frame_index") if isinstance(timeline_control, dict) else None,
+            len(timeline_intervals),
+            self.to_jsonable(timeline_last_interval),
             tuple(sorted(droplet_key)),
             tuple(sorted(trajectory_key, key=lambda item: str(item[0]))),
         )
@@ -5746,6 +7553,9 @@ class DropLogicMCPRuntime:
         trajectories: Dict[Any, Any],
         active_ids: List[int],
         frame_index: int,
+        frame_matrix: Any = None,
+        event_data: Optional[Dict[str, Any]] = None,
+        include_droplet_cells: bool = False,
     ) -> List[Dict[str, Any]]:
         """Return droplet shapes/positions for one timeline frame."""
         if not active_ids:
@@ -5805,7 +7615,13 @@ class DropLogicMCPRuntime:
                     "path_length": len(trajectory),
                 }
             )
-        return result
+        if not include_droplet_cells:
+            return result
+        return self._apply_dynamic_linear_reservoir_cells(
+            result,
+            frame_matrix=frame_matrix,
+            event_data=event_data,
+        )
 
     def _execution_scene_frame_index(
         self,
@@ -5832,31 +7648,44 @@ class DropLogicMCPRuntime:
         executor_status: Optional[Dict[str, Any]],
         frames: List[Any],
         matrix_summary: Optional[Dict[str, Any]],
-    ) -> Tuple[Optional[int], Any, str]:
+    ) -> Tuple[Optional[int], Any, str, Dict[str, Any]]:
         frame_count = len(frames)
         status = executor_status if isinstance(executor_status, dict) else {}
         applied = status.get("last_applied_frame") if isinstance(status.get("last_applied_frame"), dict) else {}
         applied_index = applied.get("index")
         applied_matrix = getattr(executor, "last_applied_frame_matrix", None) if executor is not None else None
         if applied_matrix is not None and isinstance(applied_index, (int, float)) and int(applied_index) >= 0:
-            if (
-                isinstance(matrix_summary, dict)
-                and matrix_summary.get("error") is None
-                and not self._execution_scene_matrix_matches_summary(applied_matrix, matrix_summary)
-            ):
-                return None, None, "state"
-            return int(applied_index), applied_matrix, "executor_last_applied_frame"
+            state_matches_executor = True
+            if isinstance(matrix_summary, dict) and matrix_summary.get("error") is None:
+                state_matches_executor = self._execution_scene_matrix_matches_summary(
+                    applied_matrix,
+                    matrix_summary,
+                )
+            diagnostics = {
+                "state_matches_executor": bool(state_matches_executor),
+                "state_mismatch": not bool(state_matches_executor),
+            }
+            return int(applied_index), applied_matrix, "executor_last_applied_frame", diagnostics
 
         # Before the executor has applied any frame, the only truthful matrix
         # state is the live hardware/runtime state. Do not show future planned
         # frames as if they had executed.
         if isinstance(matrix_summary, dict) and matrix_summary.get("error") is None:
-            return None, None, "state"
+            return None, None, "state", {
+                "state_matches_executor": None,
+                "state_mismatch": False,
+            }
 
         frame_index = self._execution_scene_frame_index(executor_status, frame_count)
         if frame_index is not None and 0 <= frame_index < frame_count:
-            return frame_index, frames[frame_index], "plan_frame_fallback"
-        return None, None, "none"
+            return frame_index, frames[frame_index], "plan_frame_fallback", {
+                "state_matches_executor": None,
+                "state_mismatch": False,
+            }
+        return None, None, "none", {
+            "state_matches_executor": None,
+            "state_mismatch": False,
+        }
 
     def _execution_scene_matrix_matches_summary(
         self,
@@ -5886,11 +7715,14 @@ class DropLogicMCPRuntime:
         max_droplet_cells: int,
         include_droplet_cells: bool,
         include_paths: bool,
+        frame_matrix: Any = None,
+        current_event: Any = None,
+        droplet_snapshot: Any = None,
     ) -> List[Dict[str, Any]]:
         if not executed_frame or frame_index is None:
             return []
 
-        droplets = getattr(advanced_drop, "droplets", None) or []
+        droplets = droplet_snapshot if droplet_snapshot is not None else (getattr(advanced_drop, "droplets", None) or [])
         trajectories = getattr(plan, "droplet_trajectories", {}) or {}
         trajectory_ids = set()
         for raw_id, trajectory in trajectories.items():
@@ -5993,7 +7825,87 @@ class DropLogicMCPRuntime:
                     "path_length": len(trajectory),
                 }
             )
+        event_data = (
+            current_event[2]
+            if isinstance(current_event, (list, tuple))
+            and len(current_event) >= 3
+            and isinstance(current_event[2], dict)
+            else {}
+        )
+        return self._apply_dynamic_linear_reservoir_cells(
+            result,
+            frame_matrix=frame_matrix,
+            event_data=event_data,
+        )
+
+    def _apply_dynamic_linear_reservoir_cells(
+        self,
+        droplets: List[Dict[str, Any]],
+        frame_matrix: Any = None,
+        event_data: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Use actual frame cells for linear extraction's shrinking reservoir."""
+        if frame_matrix is None or not isinstance(event_data, dict):
+            return droplets
+        primitive = str(event_data.get("primitive") or "").lower()
+        split_mode = str(event_data.get("split_mode") or event_data.get("mode") or "").lower()
+        if split_mode != "linear" or "reservoir_extraction" not in primitive:
+            return droplets
+        try:
+            reservoir_id = int(event_data.get("reservoir_droplet_id"))
+        except Exception:
+            return droplets
+
+        active_cells = self._matrix_active_cells(frame_matrix)
+        if not active_cells:
+            return droplets
+
+        sibling_cells = set()
+        reservoir_index = None
+        for index, droplet in enumerate(droplets):
+            try:
+                droplet_id = int(droplet.get("id"))
+            except Exception:
+                continue
+            if droplet_id == reservoir_id:
+                reservoir_index = index
+                continue
+            if droplet.get("active") is False:
+                continue
+            for cell in droplet.get("cells") or []:
+                if isinstance(cell, (list, tuple)) and len(cell) >= 2:
+                    try:
+                        sibling_cells.add((int(cell[0]), int(cell[1])))
+                    except Exception:
+                        continue
+
+        if reservoir_index is None:
+            return droplets
+        reservoir_cells = [
+            cell for cell in active_cells if (int(cell[0]), int(cell[1])) not in sibling_cells
+        ]
+        if not reservoir_cells:
+            return droplets
+
+        result = [dict(droplet) for droplet in droplets]
+        reservoir = dict(result[reservoir_index])
+        reservoir["cells"] = self.to_jsonable(reservoir_cells)
+        reservoir["cells_truncated"] = False
+        reservoir["bbox"] = self._execution_scene_bbox(reservoir_cells)
+        reservoir["shape_size"] = len(reservoir_cells)
+        reservoir["dynamic_shape"] = True
+        result[reservoir_index] = reservoir
         return result
+
+    def _matrix_active_cells(self, matrix: Any) -> List[List[int]]:
+        try:
+            array = np.asarray(matrix)
+            if array.ndim != 2:
+                return []
+            positions = np.argwhere(array != 0)
+            return [[int(row), int(col)] for row, col in positions]
+        except Exception:
+            return []
 
     def _execution_scene_action_paths(
         self,
@@ -6855,6 +8767,40 @@ class DropLogicMCPRuntime:
             "execution_view_mode/mode must be follow_droplets, whole_chip_camera, or fixed_stage."
         )
 
+    def _resolve_execution_view_mode(
+        self,
+        mode: Optional[str],
+        fixed_stage_position: Optional[Any] = None,
+    ) -> Tuple[str, Optional[Any]]:
+        requested = str(mode or "").strip().lower()
+        if requested and requested not in {"auto", "current", "preserve"}:
+            return self._normalize_execution_view_mode(requested), fixed_stage_position
+
+        try:
+            status = self.require_executor().status()
+        except Exception:
+            return "follow_droplets", fixed_stage_position
+
+        tracking_mode = str(status.get("stage_tracking_mode") or "").strip().lower()
+        if tracking_mode != "fixed_stage":
+            return "follow_droplets", fixed_stage_position
+
+        current_fixed = fixed_stage_position or status.get("fixed_stage_position")
+        if current_fixed is None:
+            return "follow_droplets", fixed_stage_position
+
+        try:
+            whole_chip_position = self._get_named_preset("imaging", "whole_chip_camera").get("position")
+            if self._stage_positions_close(
+                self._normalize_stage_position(current_fixed),
+                self._normalize_stage_position(whole_chip_position),
+                tolerance_steps=250,
+            ):
+                return "whole_chip_camera", current_fixed
+        except Exception:
+            pass
+        return "fixed_stage", current_fixed
+
     def _executor_stage_mode_for_view(
         self,
         view_mode: str,
@@ -6914,6 +8860,59 @@ class DropLogicMCPRuntime:
         if not isinstance(preset_data.get("position"), dict):
             raise DropLogicMCPError(f"Preset '{preset}' does not define a stage position.")
         return preset_data
+
+    def _configure_stage_preset_execution_view(
+        self,
+        resolved_preset: Optional[Dict[str, Any]],
+        target_position: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(resolved_preset, dict):
+            return None
+        streamer_source = str(resolved_preset.get("streamer_source") or "").strip().lower()
+        if streamer_source != "camera":
+            return None
+
+        system = self.require_system()
+        position = self._normalize_stage_position(
+            resolved_preset.get("position") or target_position
+        )
+        actions = []
+        try:
+            actions.append(
+                {
+                    "set_streamer_source": self.set_streamer_source(
+                        source=streamer_source,
+                        electrode_overlay=False,
+                        bring_to_front=False,
+                    )
+                }
+            )
+        except DropLogicMCPError as exc:
+            actions.append({"set_streamer_source": {"ok": False, "error": str(exc)}})
+
+        actions.extend(self._apply_whole_chip_camera_preset(system, resolved_preset))
+
+        executor_status = None
+        try:
+            executor = self.require_executor()
+            executor.configure_stage_tracking(
+                "fixed_stage",
+                fixed_stage_position=position,
+                move_now=False,
+            )
+            executor_status = self.to_jsonable(executor.status())
+        except Exception as exc:
+            actions.append({"configure_stage_tracking": {"ok": False, "error": str(exc)}})
+
+        return {
+            "ok": self._actions_ok(actions),
+            "mode": "whole_chip_camera",
+            "stage_tracking_mode": "fixed_stage",
+            "fixed_stage_position": position,
+            "actions": self.to_jsonable(actions),
+            "executor_status": executor_status,
+            "visualizers": self.visualizer_status(),
+        }
 
     def _normalize_stage_axis_update(self, position: Any) -> Dict[str, int]:
         if position is None:
@@ -7122,6 +9121,246 @@ class DropLogicMCPRuntime:
             )
         return normalized
 
+    def _normalize_melting_curve_steps(
+        self,
+        start_c: float,
+        end_c: float,
+        step_c: float,
+        hold_seconds: float,
+        tolerance_c: float,
+        settle_timeout_seconds: float,
+        sample_interval_seconds: float,
+        require_settle: bool,
+        max_samples_per_step: int,
+    ) -> List[Dict[str, Any]]:
+        step = abs(float(step_c))
+        if step <= 0:
+            raise DropLogicMCPError("step_c must be greater than zero.")
+
+        start = float(start_c)
+        end = float(end_c)
+        direction = 1.0 if end >= start else -1.0
+        signed_step = step * direction
+        epsilon = step / 1000.0
+        values = []
+        current = start
+        for _ in range(10000):
+            if direction > 0 and current > end + epsilon:
+                break
+            if direction < 0 and current < end - epsilon:
+                break
+            values.append(round(current, 6))
+            current += signed_step
+        if not values:
+            values.append(round(start, 6))
+        if abs(values[-1] - end) > epsilon:
+            values.append(round(end, 6))
+
+        return [
+            {
+                "index": index,
+                "target_c": float(value),
+                "hold_seconds": max(0.0, float(hold_seconds)),
+                "tolerance_c": max(0.0, float(tolerance_c)),
+                "settle_timeout_seconds": max(0.0, float(settle_timeout_seconds)),
+                "sample_interval_seconds": max(0.1, float(sample_interval_seconds)),
+                "require_settle": bool(require_settle),
+                "max_samples": max(1, int(max_samples_per_step)),
+            }
+            for index, value in enumerate(values)
+        ]
+
+    @staticmethod
+    def _normalize_melting_curve_capture_mode(capture_mode: str) -> str:
+        text = str(capture_mode or "droplets").strip().lower().replace("-", "_").replace(" ", "_")
+        if text in {"droplet", "droplets", "microscope", "microscope_droplets"}:
+            return "droplets"
+        if text in {"whole_chip", "whole_chip_camera", "whole_cartridge", "cartridge", "camera"}:
+            return "whole_chip_camera"
+        if text in {"streamer", "streamer_frame", "current_view", "visualizer"}:
+            return "streamer_frame"
+        raise DropLogicMCPError(
+            "capture_mode must be 'droplets', 'whole_chip_camera', or 'streamer_frame'."
+        )
+
+    @staticmethod
+    def _temperature_capture_label(target_c: Any) -> str:
+        return f"{float(target_c):g}C"
+
+    def _update_melting_curve_status(self, routine_id: str, **updates: Any) -> None:
+        with self._melting_curve_lock:
+            if not self._melting_curve_status:
+                return
+            if self._melting_curve_status.get("routine_id") != routine_id:
+                return
+            self._melting_curve_status.update(self.to_jsonable(updates))
+
+    def _append_melting_curve_result(self, routine_id: str, result: Dict[str, Any]) -> None:
+        snapshot = None
+        with self._melting_curve_lock:
+            if not self._melting_curve_status:
+                return
+            if self._melting_curve_status.get("routine_id") != routine_id:
+                return
+            results = self._melting_curve_status.setdefault("results", [])
+            results.append(self.to_jsonable(result))
+            self._melting_curve_status["completed_steps"] = sum(
+                1 for item in results if item.get("ok")
+            )
+            capture = result.get("capture") if isinstance(result.get("capture"), dict) else None
+            if capture:
+                self._melting_curve_status["last_capture"] = self.to_jsonable(capture)
+                if capture.get("path"):
+                    self._melting_curve_status["path"] = capture.get("path")
+                if capture.get("mime_type"):
+                    self._melting_curve_status["mime_type"] = capture.get("mime_type")
+            snapshot = self.to_jsonable(self._melting_curve_status)
+        self._write_melting_curve_status_snapshot(snapshot)
+
+    def _write_melting_curve_status_snapshot(self, status: Optional[Dict[str, Any]] = None) -> None:
+        if status is None:
+            with self._melting_curve_lock:
+                status = self.to_jsonable(self._melting_curve_status or {})
+        path = status.get("metadata_path") if isinstance(status, dict) else None
+        if not path:
+            return
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp_path = f"{path}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as handle:
+                json.dump(status, handle, indent=2, default=str)
+            os.replace(tmp_path, path)
+        except Exception as exc:
+            self._record_error("melting_curve_capture:write_status", exc)
+
+    def _compact_temperature_hold_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        return self.to_jsonable(
+            {
+                "ok": bool(result.get("ok")),
+                "target_c": result.get("target_c"),
+                "hold_seconds": result.get("hold_seconds"),
+                "settled": result.get("settled"),
+                "tolerance_c": result.get("tolerance_c"),
+                "final_temperature_c": result.get("final_temperature_c"),
+                "samples": result.get("samples", []),
+                **({"error": result.get("error")} if result.get("error") else {}),
+            }
+        )
+
+    def _compact_capture_result(self, result: Dict[str, Any], capture_mode: str) -> Dict[str, Any]:
+        paths = []
+        captures = result.get("captures")
+        if isinstance(captures, list):
+            for droplet_entry in captures:
+                if not isinstance(droplet_entry, dict):
+                    continue
+                for capture in droplet_entry.get("captures") or []:
+                    if isinstance(capture, dict) and capture.get("path"):
+                        paths.append(capture["path"])
+
+        if result.get("path"):
+            paths.append(result["path"])
+
+        errors = result.get("errors")
+        error_count = len(errors) if isinstance(errors, list) else (0 if result.get("ok", True) else 1)
+        mime_type = result.get("mime_type") or (
+            "image/jpeg"
+            if str(result.get("format") or "").lower() in {"jpg", "jpeg"}
+            else "image/png"
+        )
+        compact = {
+            "ok": bool(result.get("ok", True)) and error_count == 0,
+            "capture_mode": capture_mode,
+            "output_dir": result.get("output_dir"),
+            "metadata_path": result.get("metadata_path"),
+            "path": paths[0] if paths else "",
+            "paths_sample": paths[:8],
+            "image_count": len(paths),
+            "error_count": error_count,
+            "mime_type": mime_type,
+            "source": result.get("visualizer") or result.get("capture_source") or capture_mode,
+        }
+        if result.get("temperature_label"):
+            compact["temperature_label"] = result.get("temperature_label")
+        if result.get("shape"):
+            compact["shape"] = result.get("shape")
+        if isinstance(errors, list) and errors:
+            compact["errors_sample"] = self.to_jsonable(errors[:5])
+        if result.get("error"):
+            compact["error"] = result.get("error")
+        return self.to_jsonable(compact)
+
+    def _capture_melting_curve_step(
+        self,
+        step: Dict[str, Any],
+        options: Dict[str, Any],
+        hold_result: Dict[str, Any],
+        view_setup: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        target = float(step["target_c"])
+        label = self._temperature_capture_label(target)
+        safe_label = self._safe_capture_segment(label, "temperature")
+        output_dir = options["output_dir"]
+        step_dir = os.path.join(output_dir, f"step_{int(step['index']):03d}_{safe_label}")
+        os.makedirs(step_dir, exist_ok=True)
+
+        metadata = dict(options.get("metadata") or {})
+        metadata.update(
+            {
+                "protocol": "melting_curve_capture",
+                "step_index": int(step["index"]),
+                "target_c": target,
+                "temperature_label": label,
+                "final_temperature_c": hold_result.get("final_temperature_c"),
+                "settled": hold_result.get("settled"),
+            }
+        )
+
+        capture_mode = options["capture_mode"]
+        if capture_mode == "droplets":
+            return self.capture_droplet_images(
+                droplet_ids=options["droplet_ids"],
+                channels=options["channels"],
+                output_dir=step_dir,
+                temperature_label=label,
+                metadata=metadata,
+                capture_source=options["capture_source"],
+                restart_streamer=bool(options["restart_streamer"]),
+                restore_low_light=bool(options["restore_low_light"]),
+                image_format=options["image_format"],
+                wait_before_check=float(options["wait_before_check"]),
+                wait_after_check=float(options["wait_after_check"]),
+            )
+
+        ext = str(options["image_format"] or "png").lstrip(".").lower()
+        if ext == "jpeg":
+            ext = "jpg"
+        if ext not in {"png", "jpg"}:
+            raise DropLogicMCPError("image_format must be png, jpg, or jpeg.")
+
+        filename = (
+            f"{self._safe_capture_segment(capture_mode)}_"
+            f"{safe_label}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.{ext}"
+        )
+        result = self.visualizer_frame(
+            visualizer=options["visualizer"],
+            frame_source=options["frame_source"],
+            image_format=ext,
+            include_base64=False,
+            output_path=os.path.join(step_dir, filename),
+        )
+        result["ok"] = True
+        result["output_dir"] = step_dir
+        result["temperature_label"] = label
+        result["metadata"] = self.to_jsonable(metadata)
+        if view_setup is not None:
+            result["view_setup"] = self.to_jsonable(view_setup)
+        metadata_path = os.path.join(step_dir, "metadata.json")
+        with open(metadata_path, "w", encoding="utf-8") as handle:
+            json.dump(result, handle, indent=2, default=str)
+        result["metadata_path"] = metadata_path
+        return result
+
     def _update_temperature_routine_status(self, routine_id: str, **updates: Any) -> None:
         with self._temperature_routine_lock:
             if not self._temperature_routine_status:
@@ -7203,6 +9442,121 @@ class DropLogicMCPRuntime:
                 active_step=None,
                 error=error,
             )
+
+    def _run_melting_curve_capture(
+        self,
+        routine_id: str,
+        steps: List[Dict[str, Any]],
+        stop_on_error: bool,
+        options: Dict[str, Any],
+    ) -> None:
+        ok = True
+        error = None
+        view_setup = None
+        try:
+            if options.get("capture_mode") == "whole_chip_camera":
+                view_setup = self.set_execution_view_mode(
+                    mode="whole_chip_camera",
+                    move_now=True,
+                    bring_to_front=False,
+                    wait_timeout_seconds=60.0,
+                )
+                self._update_melting_curve_status(
+                    routine_id,
+                    view_setup=view_setup,
+                )
+                if not view_setup.get("ok", False):
+                    raise DropLogicMCPError(
+                        "Could not prepare whole_chip_camera view for melting-curve capture."
+                    )
+
+            for step in steps:
+                if self._melting_curve_stop_event.is_set():
+                    ok = False
+                    error = "cancelled"
+                    break
+
+                self._update_melting_curve_status(
+                    routine_id,
+                    current_step_index=step["index"],
+                    active_step=step,
+                    last_sample=None,
+                )
+                hold_result = self._temperature_hold_impl(
+                    target_c=step["target_c"],
+                    hold_seconds=step["hold_seconds"],
+                    tolerance_c=step["tolerance_c"],
+                    settle_timeout_seconds=step["settle_timeout_seconds"],
+                    sample_interval_seconds=step["sample_interval_seconds"],
+                    require_settle=step["require_settle"],
+                    max_samples=step["max_samples"],
+                    stop_event=self._melting_curve_stop_event,
+                    status_callback=lambda sample, rid=routine_id: self._update_melting_curve_status(
+                        rid,
+                        last_sample=sample,
+                    ),
+                )
+                step_result = {
+                    "index": step["index"],
+                    "target_c": step["target_c"],
+                    "hold_seconds": hold_result.get("hold_seconds"),
+                    "samples": hold_result.get("samples", []),
+                    "hold": self._compact_temperature_hold_result(hold_result),
+                }
+
+                if self._melting_curve_stop_event.is_set():
+                    step_result["ok"] = False
+                    step_result["error"] = "cancelled"
+                    self._append_melting_curve_result(routine_id, step_result)
+                    ok = False
+                    error = "cancelled"
+                    break
+
+                if not hold_result.get("ok"):
+                    step_result["ok"] = False
+                    step_result["error"] = hold_result.get("error") or "temperature step failed"
+                    self._append_melting_curve_result(routine_id, step_result)
+                    ok = False
+                    error = step_result["error"]
+                    if stop_on_error:
+                        break
+                    continue
+
+                capture_result = self._capture_melting_curve_step(
+                    step,
+                    options,
+                    hold_result,
+                    view_setup=view_setup,
+                )
+                capture_summary = self._compact_capture_result(
+                    capture_result,
+                    str(options.get("capture_mode") or ""),
+                )
+                step_result["capture"] = capture_summary
+                step_result["ok"] = bool(capture_summary.get("ok"))
+                if not step_result["ok"]:
+                    step_result["error"] = capture_summary.get("error") or "capture step failed"
+                    ok = False
+                    error = step_result["error"]
+                self._append_melting_curve_result(routine_id, step_result)
+
+                if not step_result["ok"] and stop_on_error:
+                    break
+        except Exception as exc:
+            ok = False
+            error = str(exc)
+            self._record_error("melting_curve_capture", exc)
+        finally:
+            self._update_melting_curve_status(
+                routine_id,
+                running=False,
+                completed=not self._melting_curve_stop_event.is_set() and error is None,
+                ok=ok,
+                finished_at=time.time(),
+                active_step=None,
+                error=error,
+            )
+            self._write_melting_curve_status_snapshot()
 
     def _temperature_hold_impl(
         self,
@@ -7496,6 +9850,49 @@ class DropLogicMCPRuntime:
             values[axis] = int(position)
         return values
 
+    def _cached_stage_position(self, system=None) -> Optional[Dict[str, int]]:
+        """Return the last known stage position without touching hardware."""
+        if system is None:
+            system = self.system
+        if system is None:
+            return None
+
+        state = getattr(system, "_state", None)
+        if not isinstance(state, dict):
+            get_state = getattr(system, "get_state", None)
+            if callable(get_state):
+                try:
+                    state = get_state()
+                except Exception:
+                    state = None
+        if not isinstance(state, dict):
+            return None
+
+        lock = getattr(system, "_state_lock", None)
+        try:
+            if lock is not None:
+                with lock:
+                    position = copy.deepcopy(
+                        state.get("xy_stage", {}).get("position", {})
+                    )
+            else:
+                position = copy.deepcopy(state.get("xy_stage", {}).get("position", {}))
+        except Exception:
+            return None
+
+        if not isinstance(position, dict):
+            return None
+        values = {}
+        for axis in ("X", "Y", "Z"):
+            try:
+                value = position.get(axis)
+                if value is None:
+                    continue
+                values[axis] = int(value)
+            except Exception:
+                return None
+        return values or None
+
     def _streamer_source_name(self, system, streamer) -> Optional[str]:
         device = getattr(streamer, "device", None)
         if device is None:
@@ -7510,6 +9907,8 @@ class DropLogicMCPRuntime:
         if instance is None:
             return []
         sources = []
+        if hasattr(instance, "get_latest_frame"):
+            sources.append("latest")
         if hasattr(instance, "get_snapshot_frame"):
             sources.append("snapshot")
         if hasattr(instance, "get_processed_frame"):
@@ -7573,24 +9972,42 @@ class DropLogicMCPRuntime:
                 continue
             setattr(instance, "window_name", f"{window_name}{suffix}")
 
-    def _get_visualizer_frame(self, system, visualizer: str, frame_source: str = "snapshot"):
+    def _get_visualizer_frame_with_metadata(self, system, visualizer: str, frame_source: str = "snapshot"):
         instance = self._get_visualizer_instance(system, visualizer)
         if instance is None:
             raise DropLogicMCPError(f"Visualizer '{visualizer}' is not available.")
 
         source = (frame_source or "snapshot").lower()
+        metadata = {}
+        metadata_getter = getattr(instance, "get_frame_metadata", None)
+        if callable(metadata_getter):
+            try:
+                metadata = self.to_jsonable(metadata_getter(source))
+            except Exception:
+                metadata = {}
+        if source == "latest" and hasattr(instance, "get_latest_frame"):
+            frame = instance.get_latest_frame()
+            return frame, metadata if isinstance(metadata, dict) else {}
         if source == "snapshot" and hasattr(instance, "get_snapshot_frame"):
-            return instance.get_snapshot_frame()
+            frame = instance.get_snapshot_frame()
+            return frame, metadata if isinstance(metadata, dict) else {}
         if source == "processed" and hasattr(instance, "get_processed_frame"):
-            return instance.get_processed_frame()
+            frame = instance.get_processed_frame()
+            return frame, metadata if isinstance(metadata, dict) else {}
         if source == "raw" and hasattr(instance, "get_raw_frame"):
-            return instance.get_raw_frame()
+            frame = instance.get_raw_frame()
+            return frame, metadata if isinstance(metadata, dict) else {}
         if source in {"camera_raw", "device_raw", "capture_raw"}:
-            return self._capture_visualizer_device_frame(instance)
+            frame = self._capture_visualizer_device_frame(instance)
+            return frame, {"source": source, "sequence": None, "updated_at": time.time()}
         raise DropLogicMCPError(
             f"Visualizer '{visualizer}' cannot provide frame source '{frame_source}'. "
             f"Available sources: {self._visualizer_frame_sources(instance)}"
         )
+
+    def _get_visualizer_frame(self, system, visualizer: str, frame_source: str = "snapshot"):
+        frame, _metadata = self._get_visualizer_frame_with_metadata(system, visualizer, frame_source)
+        return frame
 
     def _capture_visualizer_device_frame(self, instance):
         device = getattr(instance, "device", None)
@@ -7684,56 +10101,236 @@ class DropLogicMCPRuntime:
 
         return normalized
 
+    @staticmethod
+    def _first_not_none(*values: Any, default: Any = None) -> Any:
+        for value in values:
+            if value is not None:
+                return value
+        return default
+
+    @staticmethod
+    def _preset_slug(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        pieces = []
+        current = []
+        for char in text:
+            if char.isalnum():
+                current.append(char)
+            elif current:
+                pieces.append("".join(current))
+                current = []
+        if current:
+            pieces.append("".join(current))
+        return "_".join(pieces) or "preset"
+
+    def _get_imaging_preset_for_channel(
+        self,
+        channel: Optional[str] = None,
+        preset: Optional[str] = None,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        raw = str(preset or channel or "").strip()
+        if not raw:
+            return None, None
+
+        candidates: List[Tuple[str, str]] = []
+        normalized = raw.lower().replace("/", ".")
+        if normalized.startswith("presets."):
+            normalized = normalized[len("presets."):]
+        parts = [part for part in normalized.split(".") if part]
+        if len(parts) == 2:
+            candidates.append((parts[0], parts[1]))
+
+        slug = self._preset_slug(raw)
+        candidates.extend(
+            [
+                ("imaging", raw),
+                ("imaging", normalized),
+                ("imaging", slug),
+                ("imaging", f"microscope_{slug}"),
+            ]
+        )
+
+        seen = set()
+        for category, name in candidates:
+            key = (category, name)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                return self._get_named_preset(category, name), f"{category}.{name}"
+            except DropLogicMCPError:
+                continue
+        return None, None
+
+    def _current_microscope_imaging_profile(self, channel: Optional[str]) -> Dict[str, Any]:
+        state = getattr(self.require_system(), "state", {}) or {}
+        microscope_settings = dict(state.get("microscope_settings") or {})
+        light_settings = dict(state.get("light_settings") or {})
+        resolved_channel = str(
+            channel
+            or microscope_settings.get("current_channel")
+            or "Brightfield"
+        )
+        return {
+            "channel": resolved_channel,
+            "auto_exposure": bool(microscope_settings.get("auto_exposure", False)),
+            "exposure_time": int(self._first_not_none(microscope_settings.get("exposure_time"), default=0)),
+            "gain": int(self._first_not_none(microscope_settings.get("gain"), default=0)),
+            "coaxial_intensity": int(self._first_not_none(light_settings.get("coaxial_intensity"), default=0)),
+            "ring_intensity": int(self._first_not_none(light_settings.get("ring_intensity"), default=0)),
+            "source": "current_state_fallback",
+        }
+
+    def _profile_from_imaging_preset(
+        self,
+        preset_data: Dict[str, Any],
+        preset_path: Optional[str],
+        requested_channel: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        microscope_settings = dict(preset_data.get("microscope_settings") or {})
+        light_settings = dict(preset_data.get("light_settings") or {})
+        channel = str(preset_data.get("channel") or requested_channel or "Brightfield")
+        return {
+            "channel": channel,
+            "auto_exposure": bool(
+                self._first_not_none(
+                    microscope_settings.get("auto_exposure"),
+                    preset_data.get("auto_exposure"),
+                    default=False,
+                )
+            ),
+            "exposure_time": int(
+                self._first_not_none(
+                    microscope_settings.get("exposure_time"),
+                    preset_data.get("exposure_time"),
+                    default=0,
+                )
+            ),
+            "gain": int(
+                self._first_not_none(
+                    microscope_settings.get("gain"),
+                    preset_data.get("gain"),
+                    default=0,
+                )
+            ),
+            "coaxial_intensity": int(
+                self._first_not_none(
+                    light_settings.get("coaxial_intensity"),
+                    preset_data.get("coaxial_intensity"),
+                    default=0,
+                )
+            ),
+            "ring_intensity": int(
+                self._first_not_none(
+                    light_settings.get("ring_intensity"),
+                    preset_data.get("ring_intensity"),
+                    default=0,
+                )
+            ),
+            "streamer_source": str(preset_data.get("streamer_source") or "microscope"),
+            "preset": preset_path,
+        }
+
+    def _resolve_microscope_imaging_profile(
+        self,
+        channel: Optional[str] = None,
+        preset: Optional[str] = None,
+        overrides: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        overrides = dict(overrides or {})
+        requested_channel = str(
+            overrides.get("channel")
+            or overrides.get("name")
+            or channel
+            or ""
+        ).strip()
+        requested_preset = str(overrides.get("preset") or preset or "").strip()
+
+        preset_data, preset_path = self._get_imaging_preset_for_channel(
+            channel=requested_channel or channel,
+            preset=requested_preset or None,
+        )
+        if preset_data is not None:
+            profile = self._profile_from_imaging_preset(
+                preset_data,
+                preset_path,
+                requested_channel=requested_channel or channel,
+            )
+        else:
+            profile = self._current_microscope_imaging_profile(
+                requested_channel or channel
+            )
+
+        microscope_overrides = dict(overrides.get("microscope_settings") or {})
+        light_overrides = dict(overrides.get("light_settings") or {})
+        if overrides.get("channel") is not None or overrides.get("name") is not None:
+            profile["channel"] = str(overrides.get("channel") or overrides.get("name"))
+        for key in ("auto_exposure", "exposure_time", "gain"):
+            value = self._first_not_none(
+                overrides.get(key),
+                microscope_overrides.get(key),
+            )
+            if value is not None:
+                profile[key] = value
+        for key in ("coaxial_intensity", "ring_intensity"):
+            value = self._first_not_none(
+                overrides.get(key),
+                light_overrides.get(key),
+            )
+            if value is not None:
+                profile[key] = value
+
+        passthrough_skip = {
+            "channel",
+            "name",
+            "preset",
+            "microscope_settings",
+            "light_settings",
+            "auto_exposure",
+            "exposure_time",
+            "gain",
+            "coaxial_intensity",
+            "ring_intensity",
+        }
+        for key, value in overrides.items():
+            if key not in passthrough_skip and value is not None:
+                profile[key] = value
+
+        channel_name = str(profile.get("channel") or requested_channel or channel or "Brightfield")
+        profile["channel"] = channel_name
+        profile["auto_exposure"] = bool(profile.get("auto_exposure", False))
+        profile["exposure_time"] = int(profile.get("exposure_time", 0))
+        profile["gain"] = int(profile.get("gain", 0))
+        profile["coaxial_intensity"] = int(profile.get("coaxial_intensity", 0))
+        profile["ring_intensity"] = int(profile.get("ring_intensity", 0))
+        if channel_name.lower() == "fam":
+            profile["mode"] = "fluorescence"
+        else:
+            profile.setdefault("mode", "brightfield")
+        return profile
+
     def _normalize_imaging_channels(self, channels: Optional[List[Any]]) -> List[Dict[str, Any]]:
         if channels is None:
             channels = ["Brightfield", "FAM"]
 
         profiles = []
-        defaults = {
-            "brightfield": {
-                "channel": "Brightfield",
-                "exposure_time": 72000,
-                "gain": 0,
-                "coaxial_intensity": 4,
-                "ring_intensity": 0,
-                "mode": "brightfield",
-            },
-            "fam": {
-                "channel": "FAM",
-                "exposure_time": 4800000,
-                "gain": 0,
-                "coaxial_intensity": 99,
-                "ring_intensity": 0,
-                "mode": "fluorescence",
-            },
-        }
         for item in channels:
             if isinstance(item, str):
-                key = item.lower()
-                profile = dict(defaults.get(key, {"channel": item, "mode": "brightfield"}))
+                profile = self._resolve_microscope_imaging_profile(channel=item)
             elif isinstance(item, dict):
                 channel = str(item.get("channel", item.get("name", ""))).strip()
-                if not channel:
+                preset = str(item.get("preset", "")).strip()
+                if not channel and not preset:
                     raise DropLogicMCPError("Each imaging channel dict needs 'channel' or 'name'.")
-                key = channel.lower()
-                profile = dict(defaults.get(key, {"channel": channel, "mode": "brightfield"}))
-                profile.update(item)
-                profile["channel"] = channel
+                profile = self._resolve_microscope_imaging_profile(
+                    channel=channel or None,
+                    preset=preset or None,
+                    overrides=item,
+                )
             else:
                 raise DropLogicMCPError(
                     "channels must contain strings or channel profile objects."
                 )
-
-            channel_key = str(profile.get("channel", "")).lower()
-            if channel_key == "fam":
-                profile["mode"] = "fluorescence"
-            else:
-                profile.setdefault("mode", "brightfield")
-
-            profile["exposure_time"] = int(profile.get("exposure_time", defaults.get(channel_key, {}).get("exposure_time", 72000)))
-            profile["gain"] = int(profile.get("gain", 0))
-            profile["coaxial_intensity"] = int(profile.get("coaxial_intensity", 0))
-            profile["ring_intensity"] = int(profile.get("ring_intensity", 0))
             profiles.append(profile)
 
         return profiles
@@ -7836,6 +10433,57 @@ class DropLogicMCPRuntime:
             }
             payload["type"] = type(value).__name__
             return self._summarize_state_value(payload, max_list_items=max_list_items)
+
+        return str(value)
+
+    @staticmethod
+    def _normalize_voltage_values(value: Any) -> List[int]:
+        if value is None:
+            return []
+        if isinstance(value, np.ndarray):
+            value = value.tolist()
+        if isinstance(value, np.generic):
+            value = value.item()
+        if isinstance(value, (int, float, str)):
+            try:
+                return [int(float(value))]
+            except (TypeError, ValueError):
+                return []
+        if isinstance(value, (list, tuple)):
+            values: List[int] = []
+            for item in value:
+                try:
+                    values.append(int(float(item)))
+                except (TypeError, ValueError):
+                    continue
+            return values
+        return []
+
+    @staticmethod
+    def _matrix_voltage_payload(
+        values: List[int],
+        ok: bool,
+        source: str,
+        state_voltage: Any = None,
+    ) -> Dict[str, Any]:
+        values = [int(value) for value in values]
+        all_equal = bool(values) and all(value == values[0] for value in values)
+        if all_equal:
+            display = f"{values[0]} V x{len(values)}"
+        elif values:
+            display = f"{'/'.join(str(value) for value in values)} V"
+        else:
+            display = "-"
+        return {
+            "ok": bool(ok),
+            "source": source,
+            "values": values,
+            "voltage": values[0] if values else state_voltage,
+            "count": len(values),
+            "all_equal": all_equal,
+            "display": display,
+            "state_voltage": state_voltage,
+        }
 
         return str(value)
 

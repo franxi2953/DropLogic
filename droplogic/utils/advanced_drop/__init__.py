@@ -143,6 +143,146 @@ class AdvancedDrop:
         # Backfill initial frame with event
         backfill_initial_event(self.plan)
 
+        # Timeline session state is metadata only: pauses do not add plan frames.
+        self.timeline_state = {
+            "paused": False,
+            "paused_at": None,
+            "paused_reason": "",
+            "paused_source": "",
+            "paused_after_frame_index": None,
+            "intervals": [],
+        }
+
+    def timeline_status(self) -> Dict[str, Any]:
+        """Return logical timeline pause/resume metadata without mutating plan frames."""
+        state = getattr(self, "timeline_state", None)
+        if not isinstance(state, dict):
+            state = {
+                "paused": False,
+                "paused_at": None,
+                "paused_reason": "",
+                "paused_source": "",
+                "paused_after_frame_index": None,
+                "intervals": [],
+            }
+            self.timeline_state = state
+
+        intervals = [dict(item) for item in state.get("intervals", []) if isinstance(item, dict)]
+        total = sum(
+            float(item.get("duration_seconds") or 0.0)
+            for item in intervals
+            if isinstance(item.get("duration_seconds"), (int, float))
+        )
+        paused_at = state.get("paused_at")
+        active_duration = None
+        if state.get("paused") and isinstance(paused_at, (int, float)):
+            active_duration = max(0.0, time.time() - float(paused_at))
+
+        return {
+            "paused": bool(state.get("paused")),
+            "paused_at": paused_at,
+            "paused_reason": state.get("paused_reason") or "",
+            "paused_source": state.get("paused_source") or "",
+            "paused_after_frame_index": state.get("paused_after_frame_index"),
+            "active_duration_seconds": round(active_duration, 3) if active_duration is not None else None,
+            "interval_count": len(intervals),
+            "total_paused_seconds": round(total, 3),
+            "intervals": intervals,
+        }
+
+    def pause_timeline(self, reason: str = "", source: str = "manual") -> Dict[str, Any]:
+        """
+        Pause logical timeline time accumulation.
+
+        This does not pause hardware execution and does not append frames. It marks
+        a wall-clock gap so dashboard/analysis views can show that subsequent work
+        happened after an intentional stop.
+        """
+        state = self.timeline_status()
+        if state.get("paused"):
+            state["ok"] = True
+            state["already_paused"] = True
+            return state
+
+        now = time.time()
+        timeline_state = self.timeline_state
+        timeline_state["paused"] = True
+        timeline_state["paused_at"] = now
+        timeline_state["paused_reason"] = str(reason or "")
+        timeline_state["paused_source"] = str(source or "manual")
+        timeline_state["paused_after_frame_index"] = self._timeline_after_frame_index()
+        state = self.timeline_status()
+        state["ok"] = True
+        state["already_paused"] = False
+        return state
+
+    def resume_timeline(self, reason: str = "", source: str = "manual") -> Dict[str, Any]:
+        """Resume logical timeline accumulation and finalize the stopped interval."""
+        state = self.timeline_status()
+        if not state.get("paused"):
+            state["ok"] = True
+            state["already_running"] = True
+            return state
+
+        timeline_state = self.timeline_state
+        now = time.time()
+        start_time = float(timeline_state.get("paused_at") or now)
+        end_time = max(start_time, now)
+        interval = {
+            "id": len(timeline_state.get("intervals", []) or []) + 1,
+            "start_time": start_time,
+            "end_time": end_time,
+            "duration_seconds": round(end_time - start_time, 3),
+            "reason": timeline_state.get("paused_reason") or "",
+            "resume_reason": str(reason or ""),
+            "source": timeline_state.get("paused_source") or str(source or "manual"),
+            "resume_source": str(source or "manual"),
+            "after_frame_index": timeline_state.get("paused_after_frame_index"),
+        }
+        timeline_state.setdefault("intervals", []).append(interval)
+        timeline_state["paused"] = False
+        timeline_state["paused_at"] = None
+        timeline_state["paused_reason"] = ""
+        timeline_state["paused_source"] = ""
+        timeline_state["paused_after_frame_index"] = None
+
+        state = self.timeline_status()
+        state["ok"] = True
+        state["already_running"] = False
+        state["last_interval"] = interval
+        return state
+
+    def _timeline_after_frame_index(self) -> Optional[int]:
+        executor = getattr(self, "executor", None)
+        try:
+            status = executor.status() if executor is not None else {}
+        except Exception:
+            status = {}
+
+        applied = status.get("last_applied_frame") if isinstance(status, dict) else None
+        if isinstance(applied, dict):
+            try:
+                index = int(applied.get("index"))
+                if index >= 0:
+                    return index
+            except Exception:
+                pass
+
+        try:
+            current_frame = int((status or {}).get("current_frame") or 0)
+            if current_frame > 0:
+                return current_frame - 1
+        except Exception:
+            pass
+
+        plan = getattr(self, "plan", None)
+        try:
+            frame_count = len(getattr(plan, "frames", []) or [])
+            if frame_count > 0:
+                return frame_count - 1
+        except Exception:
+            pass
+        return None
 
     @property
     def matrix(self):
@@ -924,6 +1064,7 @@ class AdvancedDrop:
                             linear_drop_shape: Optional[Union[Tuple[int,int], Set[Tuple[int,int]]]] = None,
                             linear_direction: Optional[Tuple[int,int]] = None,
                             linear_vital_space: Optional[int] = None,
+                            linear_post_separation_steps: Optional[int] = 3,
                             remove_duplicate_frames: bool = False,
                             **kwargs):
         """
@@ -952,11 +1093,14 @@ class AdvancedDrop:
             linear_drops_number: Number of droplets to create in linear mode
             linear_offset: Starting offset from reservoir corner in linear mode
             linear_cfg: LinearConfig object for linear mode (alternative to individual linear_* params)
-            linear_space_per_col: Electrode spacing between columns in linear mode
-            linear_space_per_row: Electrode spacing between rows in linear mode
+            linear_space_per_col: Clear side-to-side gap between droplet columns in linear mode.
+                                  Placement pitch is droplet width plus this gap.
+            linear_space_per_row: Clear side-to-side gap between droplet rows in linear mode.
+                                  Placement pitch is droplet height plus this gap.
             linear_drop_shape: Shape of droplets in linear mode
             linear_direction: Direction tuple (dr, dc) for linear sweep
             linear_vital_space: Vital-space assigned to droplets created in linear mode
+            linear_post_separation_steps: Extra reservoir sweep steps after the last linear droplet is severed
 
         Returns:
             List of IDs of newly created droplets
@@ -971,6 +1115,9 @@ class AdvancedDrop:
 
         # Execute the extraction - get new plan
         # Forward any extra keyword args (e.g. linear_* parameters) to the lower-level implementation
+        linear_post_separation_steps = (
+            3 if linear_post_separation_steps is None else int(linear_post_separation_steps)
+        )
         updated_droplets, new_plan = reservoir_extraction(
             self.droplets, self.matrix, reservoir_droplet_id, split_mode, steps,
             split_size, new_droplet_id, halo_size, separation_steps, self.system.logger, self.plan,
@@ -982,6 +1129,7 @@ class AdvancedDrop:
             linear_drop_shape=linear_drop_shape,
             linear_direction=linear_direction,
             linear_vital_space=linear_vital_space,
+            linear_post_separation_steps=linear_post_separation_steps,
             **kwargs
         )
 
@@ -1004,6 +1152,7 @@ class AdvancedDrop:
             "linear_drop_shape": linear_drop_shape,
             "linear_direction": linear_direction,
             "linear_vital_space": linear_vital_space,
+            "linear_post_separation_steps": linear_post_separation_steps,
         }
         extraction_event_data = {
             key: value for key, value in extraction_event_data.items() if value is not None

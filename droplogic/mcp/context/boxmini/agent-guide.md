@@ -41,6 +41,7 @@ State inspection:
 - Fresh status is required before the first hardware action, after a background wait/job reports completion, after errors or timeouts, before declaring the goal complete, and whenever the user or physical hardware may have changed state externally.
 - Use `state_summary()` for broad inspection and `read_state(path="...")` for exact small values.
 - Useful small paths: `temperature`, `temperature.current`, `xy_stage.position`, `xy_stage.position.Y`, `light_settings`, `microscope_settings`, `camera_settings`, `electrode_matrix.voltage`, `calibration`.
+- Use `set_matrix_voltage(values=[...])` to change matrix voltage profiles; pass 9 channel values for DMLite/BoxMini profiles.
 - Numeric path parts index list-like values: `electrode_matrix.matrix.42` reads row 42; `electrode_matrix.matrix.42.99` reads one electrode.
 - Do not call `read_state(path="advanced_drop")` or `state_summary(path="advanced_drop")`; AdvancedDrop is not in `system.state`. Use droplet, plan, executor, and planning-job tools.
 - Avoid `read_state()` with no path unless the user explicitly needs full raw state.
@@ -69,18 +70,18 @@ Large matrix guardrails:
 - For real BoxMini runs outside cockpit mode, prepare both visualizers early unless the user says not to. `load_system(system="boxmini")` should auto-prepare them without forcing OS focus.
 - If external visualizer windows are needed and not visible, call `visualizer_status`, then `bring_visualizer_to_front("streamer")` or `bring_visualizer_to_front("matrix")`.
 - The matrix visualizer shows logical electrode plan/executor progression. The streamer shows live physical feedback from microscope or whole-chip camera.
-- Use `set_streamer_source(source="microscope")` for droplet-scale work and `set_streamer_source(source="camera")` for whole-chip overview.
+- Use `set_streamer_source(source="microscope")` for droplet-scale work. Do not treat `set_streamer_source(source="camera")` alone as whole-cartridge visualization; it changes the video source but does not by itself choose the correct fixed stage/executor view.
 - Streamer should default to microscope feed, electrode overlay enabled, coordinates disabled unless debugging.
 - Use `visualizer_frame(visualizer="streamer", frame_source="processed")` for annotated views and `frame_source="raw"` for unannotated frames when available.
 - If no live frame appears after warmup, pause hardware work and ask the user.
 - Stop visualizers with `stop_visualizer("streamer")` and `stop_visualizer("matrix")` when finished or before closing; `close_system` should also release them.
 
 Stage movement:
-- Prefer `move_stage(...)` for direct stage moves. Examples: `move_stage(preset="manual_injection")`, `move_stage(preset="whole_chip_camera")`, or `move_stage(position={"Y": 47000})`.
+- Prefer `move_stage(...)` for direct stage moves. Examples: `move_stage(preset="manual_injection")` or `move_stage(preset="whole_chip_camera")`.
 - Prefer execution view modes for viewing during execution: `execute_segment_to_breakpoint(execution_view_mode="follow_droplets")` or `execute_segment_to_breakpoint(execution_view_mode="whole_chip_camera", verify_positions=false)`.
 - Use `set_execution_view_mode(mode="follow_droplets")` before microscope verification or droplet-scale imaging.
-- Use `set_execution_view_mode(mode="whole_chip_camera")` for whole-chip overview before a fixed-view segment.
-- Never call guessed stage methods such as `xy_stage.move_to`. Low-level fallback only: `module_call(module="xy_stage", method="move_axis_to_position", arguments={"axis": "Y", "target_position": 47000}, wait_if_busy=true)`.
+- Use `set_execution_view_mode(mode="whole_chip_camera")` for whole-cartridge/whole-chip overview before a fixed-view segment. This applies the camera source, camera/light preset, fixed stage position, and disables droplet-follow stage tracking.
+- Never call guessed stage methods such as `xy_stage.move_to`. If a low-level fallback is unavoidable, first read the named preset from `config.json` and pass that value; do not use memorized absolute stage coordinates.
 
 ## Planning And Execution Rhythm
 Planning only changes logical state. Hardware moves only through `execute_segment_to_breakpoint`, `start_plan`, `resume_plan`, or explicit hardware calls.
@@ -97,12 +98,14 @@ Rules:
 - Planned-only actions are invisible to the physical system, and batch planning prevents adaptation to physical feedback.
 - Do not plan all legs of a square path and execute once. Create/activate and execute; retarget leg 1, plan, execute, inspect; repeat for remaining legs.
 - Treat requested final droplet count as the experimental goal, not permission for one large SIPP move. Extract and route in small physical batches.
+- For `plan_move` on real hardware, retarget and plan at most `5-10` active droplets per call. Prefer `5` when droplets are `2 x 2`, routes cross/reorder, the layout is dense, or targets are near another droplet's vital space. Execute and inspect each movement batch before assigning targets for the next batch. Do not retarget `20+` droplets and then call one large `plan_move()` unless the user explicitly asks for offline bulk planning and accepts the risk.
 - Plan only to the next visual/temperature check, injection confirmation, extraction validation, user decision, or risky transition.
 - Leave `remove_duplicate_frames=false` during normal real-hardware operation. Use it only for explicit duplicate-frame debugging after inspecting the resulting plan.
 - Prefer `execute_segment_to_breakpoint` for normal segment execution. It clears old breakpoints by default, adds the target breakpoint, chooses `start_plan` for a new run or `resume_plan` for a partial run, and uses `wait_mode="auto"` so short segments finish inline and long segments run as a background wait.
-- Default execution frame delay is `1.0` second, and that is the correct normal operating pace. Omit `frame_delay` unless the user explicitly asks for another speed; never invent sub-second execution.
+- Default execution frame delay is `1.0` second, and that is the correct normal operating pace. Omit `frame_delay` unless the user explicitly asks for another speed; never invent a faster or slower non-default delay.
 - For background execution waits, do not make repeated immediate `execution_wait_status()` calls. Use the returned `recommended_wait_seconds`, `next_check_after_seconds`, or `recommended_status_call`; if the timer returns `running=true`, repeat one timer wait using the new recommendation.
 - Use manual `add_breakpoint` plus `start_plan`/`resume_plan` plus `start_execute_until_breakpoint` only when you need non-default breakpoint handling.
+- Use `resume_timeline(reason=...)` before starting a new active work block if `timeline_status()` says the logical timeline is paused and `system_loaded` is not `false`. If `system_loaded=false`, load the DropLogic system first; the timeline is intentionally off while no system exists. Use `pause_timeline(reason=...)` when the user goal is complete, when you are about to stop working, or when waiting for a human decision. This records a stopped interval in the dashboard timeline without adding plan frames or pausing hardware execution; use `pause_plan()` for real hardware execution pauses.
 - `start_plan` starts from frame `0`. Never use it directly to continue a paused or partially executed run.
 - `resume_plan` is for unusual recovery/debug cases. If `start_plan` says it would restart from frame `0`, treat that as a safety stop.
 - `current_frame` is the next frame to execute; `executor_status.last_frame.index` is the last physical frame sent. After a breakpoint, resume should continue from the next unexecuted frame.
@@ -117,13 +120,16 @@ Planning primitive tools:
 - Use `plan_activation_frame(event_type="activation")` after creating a reservoir or droplets that only need footprint activation.
 - Use `plan_move(...)` after setting droplet targets with `update_droplet_target(s)`.
 - Use `trim_plan_tail(keep_frames=N)` only to delete unexecuted planned tail frames. It rejects cuts that would remove already executed/applied frames; after trimming, inspect the timeline before planning new frames.
-- For large coordinated moves, use `plan_move(planning_timeout=1200, background=true)`, then poll `planning_job_status()`. Dashboard agent calls may force `background=true` with a bounded timeout for safety.
+- For large coordinated moves that are still within the `5-10` droplet hardware batch limit, use `plan_move(planning_timeout=1200, background=true)`, then poll `planning_job_status()`. Dashboard agent calls may force `background=true` with a bounded timeout for safety. If a request involves more droplets, split it into executed movement batches instead of increasing the timeout and planning all droplets together.
 - Do not put labels, checkpoints, notes, or other metadata in `plan_move(options=...)`. Only documented planner options belong there; unknown options are ignored by MCP and reported as `ignored_options`.
 - Use `plan_reservoir_extraction(...)` for extracting one or more droplets from a reservoir.
 - Use `plan_isometric_split(...)`, `plan_mix(...)`, and `plan_merge(...)` for those named operations.
 - These tools only append/update the logical plan. Always inspect the tool result/`plan_summary()` before execution.
 - For `plan_reservoir_extraction`, `plan_isometric_split`, `plan_mix`, and `plan_merge`, treat `ok=false`, `primitive_validation.ok=false`, `result=null`, or `planning_success=false` as a failed primitive. Do not execute it, do not continue as if it succeeded, and do not use it as completion evidence.
 - If planning fails, times out, or returns `planning_success=false`, split into waypoints or smaller groups.
+- `plan_move` plans every active droplet whose target differs from its current position. It does not only plan the droplets named in the most recent `update_droplet_targets` call. Before each movement batch, reset non-batch droplets to their current positions or include them deliberately in the staged move.
+- `update_droplet_target(s)` validates the proposed final active-droplet layout and current-space reservations before mutating targets. Read `target_validation`: if `ok=false`, do not call `plan_move`; use `target_validation.suggested_targets` when present, or choose different targets/intermediate parking positions. Warnings such as `pending_targets_not_in_request` mean an older pending target will still move if you call `plan_move`.
+- After each `plan_move`/`planning_job_status`/execution result, treat `targets_reached` as authoritative for that segment. If only droplets `2-6` are listed as reached, only that batch moved; do not claim or proceed as if droplets `7-26` reached final positions until their own batches have been retargeted, planned, executed, and reported in `targets_reached`.
 - For `plan_merge`, first move non-merge droplets away from the merge target and avoid targets inside another droplet's vital space. Prefer merging into an open hub 4-8 electrodes away from nearby droplets, then execute the merge segment before any `plan_mix` or final routing.
 - A successful `plan_merge` must return the merged droplet id. The merged-away input droplets can remain in `droplets_summary()` for history, but their `active=false` flag and absence from `plan.active_droplet_ids` means they are not planning candidates. Plan only active droplets unless the user explicitly asks to restore or correct an inactive one.
 - After a failed merge/split/mix attempt, refresh `execution_status_summary(include_droplets=true, include_plan=true)` and reason from the last executed frame. Do not trust logical droplet positions from a failed, unexecuted plan; correct them only from visual/user confirmation.
@@ -138,17 +144,18 @@ Droplet tools:
 - Valid batch entry: `{"id": 1, "origin": [42, 1], "target": [30, 30], "width": 1, "height": 1}`.
 - After `add_droplets`, verify `created_count == requested_count` and `droplets.total_droplets` increased; otherwise stop and report the error.
 - Retarget with `update_droplet_targets(targets=[{"id": 1, "target": [30, 30]}])` or `update_droplet_targets(targets={"1": [30, 30]})`; do not delete/recreate just to retarget.
+- Choose all movement targets so final footprints and vital spaces do not overlap any active droplet's current or final footprint. If the final target for a droplet uses space currently occupied or protected by another active droplet, first move the blocker to an intermediate parking position, execute that segment, then retarget to the final layout.
 - Use `update_droplet_position` only after visual/user confirmation that the physical droplet is at that coordinate.
 - `update_droplet_targets` returns compact count/id summary by default. Set `include_summary=true` only when the full droplet summary is needed.
 - `delete_droplet(droplet_id=...)` removes the logical droplet and, by default, clears that droplet's electrodes in the next plan frame (`persist_electrodes=false`). Use `persist_electrodes=true` only for explicit supervised debugging where the physical/electrical footprint must remain active; otherwise it leaves ghost electrodes that can confuse later planning and visual interpretation.
 - For droplets larger than `1 x 1`, default `vital_space=2` and at least `2` electrodes between extraction targets/reservoir exits unless specified otherwise.
-- SIPP gets expensive with many droplets, dense routes, narrow corridors, overlapping vital spaces, or crossing/reordering. Prefer smaller batches, especially above about 10 active droplets.
+- SIPP gets expensive with many droplets, dense routes, narrow corridors, overlapping vital spaces, or crossing/reordering. For hardware, keep each movement planning batch to `5-10` droplets maximum and prefer `5` in crowded or crossing layouts.
 - Check that intended final positions and vital spaces do not intersect current droplet positions. If they do, do not ask SIPP to solve the swap in one call; move the blockers to intermediate parking positions first.
 
 Reservoir and injection rules:
 - Default cartridge family: Acxel 16k.
 - User injections enter from lateral input holes; hole definitions belong in cartridge JSON.
-- Manual injection/loading position is `config.json.presets.stage.manual_injection.position`; current BoxMini preset is `Y=47000`.
+- Manual injection/loading position is `config.json.presets.stage.manual_injection.position`; use `move_stage(preset="manual_injection")` instead of hardcoded stage coordinates.
 - Unless user or cartridge JSON defines blocked/no-go regions, assume the matrix is usable.
 - Reservoirs for injected liquid should be near the relevant border but not on the border. Leave at least one row/column margin.
 - Before asking the user to inject, reservoir electrodes must already be active on the real matrix. Create reservoir, execute activation, verify/inspect it, then move to injection position or tell the user to inject.
@@ -171,31 +178,38 @@ Choose mode from user intent/liquid behavior:
 
 Extraction workflow:
 1. If reservoir was just injected near an input hole, relocate it `5-10` electrodes from edge, execute, and verify.
-2. Plan the next extraction batch or single-droplet extraction only.
-3. Inspect `plan_summary()`; if `planning_success=false`, do not execute. Reduce batch size, change spacing/offsets, or ask.
+2. Plan the next extraction batch or single-droplet extraction only. Do not append several extraction batches before executing and inspecting the current batch.
+3. Inspect `plan_summary()`; if `planning_success=false`, do not execute. Reduce batch size, use a larger reservoir, change direction, or adjust/increase the stagger/spacing. On BoxMini hardware, do not make a failed `2 x 2` linear extraction fit by reducing row/column spacing below `4`.
 4. Execute the segment with `execute_segment_to_breakpoint(frame_number=null)`.
 5. If execution starts a background wait, call `execution_wait_status(wait_seconds=<recommended_wait_seconds>)` and repeat only if the timer returns `running=true`.
 6. Verify extracted droplets before routing unless the user explicitly requested unattended execution.
 
 Extraction parameters:
-- For linear extraction of `2 x 2` or larger droplets, pass `linear_drop_shape=[2, 2]`, `linear_space_per_row=2`, `linear_space_per_col=2`, and `linear_vital_space=2`. Do not rely on `split_size` alone for linear mode.
-- Linear extraction positions must fit fully inside the reservoir footprint before severing. Large `linear_offset` values can create logical droplets outside the reservoir and should fail. For compact reservoirs such as `8 x 6` extracting four `2 x 2` droplets with spacing `2`, prefer `linear_offset=0`; if extraction fails, reduce offset/count/spacing or use a larger reservoir/different direction.
+- For linear extraction of `2 x 2` or larger droplets, pass `linear_drop_shape=[2, 2]`, `linear_space_per_row>=4`, `linear_space_per_col>=4`, `linear_vital_space=2`, `linear_post_separation_steps=3`, and a staggered `linear_offset` unless the user explicitly asks for denser packing. Linear extraction is much more reliable when the extraction grid uses well-spaced rows and columns; do not pack a dense one-electrode/two-electrode chain and then declare extraction failure from vision alone.
+- In linear extraction, `linear_space_per_row` and `linear_space_per_col` are clear side-to-side gaps between droplets, not the pitch from one droplet origin to the next. The placement pitch is droplet size plus gap. Required minimum clear gap is `2 * droplet height` for rows and `2 * droplet width` for columns, so `2 x 2` droplets need row and column gaps of at least `4`.
+- `linear_post_separation_steps` makes the reservoir keep sweeping a few electrodes after the last droplet has severed. Keep the BoxMini default at `3` so the reservoir tail clears the extracted droplets before inspection or the next extraction batch.
+- Use staggered linear extraction geometry for multi-droplet `2 x 2` batches. Good default: `linear_offset=2` with `linear_space_per_row>=4` and `linear_space_per_col>=4`, if the stagger stays inside the reservoir sweep strip. With `linear_direction=[0, 1]` or `[0, -1]`, `linear_offset` shifts the starting row on alternating columns. With `linear_direction=[1, 0]` or `[-1, 0]`, it shifts the starting column on alternating rows. This creates an even/odd column or row stagger instead of perfectly aligned extracted droplets.
+- Linear extraction droplets only need to fit inside the moving reservoir sweep, not inside the initial reservoir footprint along the sweep direction. It is valid for later columns/rows to be created once the reservoir reaches them, and the last row/column does not need to be exhausted before planning the next one. Large `linear_offset` values that move droplets outside the orthogonal sweep strip should still fail. For compact reservoirs, reduce droplet count per extraction batch, use a larger reservoir, extract in multiple smaller batches, or choose a different direction/mode. Do not reduce `linear_space_per_row` or `linear_space_per_col` below `4` on BoxMini hardware just to make a batch fit, unless the user explicitly asks for a dense/simulation-only layout.
+- For `split_mode="1to2"` or `split_mode="1to3"`, `steps` is one two-integer offset `[row_offset, col_offset]`, not a list of step vectors. Example: `steps=[0, 8]` extracts east/right of the reservoir; `steps=[8, 0]` extracts south/down. Use `split_size=[2, 2]` for a `2 x 2` 1-to-3 central droplet and tune `separation_steps` for harder liquids.
+- `1to3` extracts one droplet per call. If linear extraction repeatedly fails, plan one `1to3` extraction, execute, verify, then repeat from the updated reservoir state instead of asking `1to3` for many droplets at once.
 
 Validation:
 - If execution used `whole_chip_camera`, do not run microscope/YOLO verification during movement. Pause, switch deliberately to `follow_droplets`/microscope, then verify.
-- Otherwise, verify extracted droplets with `verify_droplets` at the current executor frame. Use up to `3` short checks for a newly extracted droplet before declaring it missing.
+- Otherwise, verify extracted droplets with `verify_droplets` at the current executor frame. Always save verification frames by passing `save_frames_path` to a run-specific debug folder; in cockpit/dashboard mode this path may be added automatically, but still check `frame_files` in the result before trusting a failed check.
+- Use up to `3` short checks for a newly extracted droplet before declaring it missing. If `frame_files` are missing/null or the user says they can see electrodes/droplets, treat the result as inconclusive and inspect saved frames or ask for confirmation instead of deleting logical droplets.
 - If found, mark the droplet valid and route it in a later segment.
 - If missing, delete that logical droplet or execute an explicit planned cleanup if the protocol defines one, then retry extraction.
 - If the same extraction fails more than `3` times, stop and ask unless user requested unattended full-protocol run. For unattended runs, log/return force-accepted/skipped and continue by protocol.
 - Do not route unverified droplets unless protocol/user allows force-accepting failed checks.
 
 ## Execution View Modes And Diagnostics
-- Default execution view: `follow_droplets`. PlanExecutor may move the XY stage to keep active droplets under microscope view.
+- Default execution view for a fresh run is `follow_droplets`. If a fixed view such as `whole_chip_camera` is already configured, omitting `execution_view_mode` preserves that current view; do not rely on omission to switch views.
 - Use `execute_segment_to_breakpoint(execution_view_mode="whole_chip_camera", verify_positions=false)` for fixed whole-chip execution. This applies `config.json.presets.imaging.whole_chip_camera`, switches streamer to camera, moves to fixed overview stage position, and disables droplet-follow tracking.
 - Use `execute_segment_to_breakpoint(execution_view_mode="follow_droplets")` for normal microscope-follow execution.
 - Use `set_execution_view_mode(mode="follow_droplets")` before microscope droplet checks, visual correction, or model verification.
 - `whole_chip_camera` and `follow_droplets` are mutually exclusive. Do not switch streamer/stage while a segment is running.
 - In `whole_chip_camera` or fixed-stage execution, keep `verify_positions=false`. Executor verification is not passive: it moves stage, changes light, and calls microscope droplet verification.
+- If the user asks for whole cartridge/chip visualization, call `set_execution_view_mode(mode="whole_chip_camera")` or execute with `execution_view_mode="whole_chip_camera", verify_positions=false`; do not compute a stage position from electrode calibration or camera/microscope geometry.
 - If execution returns `started_wait=false` or `reason="execution_view_not_ready"`, do not restart hardware. Inspect diagnostics, wait/correct the view, then retry execution.
 - In `whole_chip_camera`, execution should not move XY stage frame-by-frame or change camera/light preset. If frames are far slower than `frame_delay`, view goes black, stage moves, or light changes, pause/stop and inspect diagnostics.
 - If stage moves but matrix visualizer/physical matrix does not update, pause/stop. Inspect `executor_status`, `runtime_status(detail="full")`, `matrix_summary(source="state")`, and `visualizer_status`.
@@ -212,23 +226,27 @@ Light safety:
 - To turn illumination off, call top-level `light_off()`. Do not guess low-level `module_call(module="light", method="switch_light", ...)`.
 - To set illumination outside an imaging capture, call `set_light_state(light_on=..., coaxial_intensity=..., ring_intensity=...)`. Intensities are `0` to `99`; positive coaxial/ring values turn the master light on automatically. Passing both intensities as `0` turns the master light off.
 
-Default imaging settings:
-- Manual injection monitoring: `Brightfield`, auto exposure `False`, exposure `3600` us, coaxial `5`, ring `0`. If `set_exposure` fails, do not retry blindly; use state updates or `module_call(module="microscope", method="set_parameter", arguments={"param_type":"float_value","node_name":"ExposureTime","node_value":3600})`.
-- Brightfield droplet verification: `Brightfield`, auto exposure `False`, exposure `72000` us, gain `0`, coaxial `4`, ring `0`.
-- Whole-chip camera overview: source of truth `config.json.presets.imaging.whole_chip_camera`; current preset `X=84480`, `Y=5029`, `Z=4202`; streamer `camera`; camera auto exposure `False`; exposure `72000` us; gain `0`; coaxial `0`; ring `30`. Return to microscope before droplet/model checks.
-- IVT RNA condensate detection only: prefer `configure_microscope_imaging(channel="FAM", exposure_time=4800000, gain=0, coaxial_intensity=99, ring_intensity=0)`. FAM: exposure `4800000` us, gain `0`, coaxial `99`, ring `0`, auto exposure `False`. Brightfield crop: exposure `72000` us, gain `0`, coaxial `4`, ring `0`. Crop droplets `true`, padding `50`, confidence `0.25`.
+Preset-based imaging settings:
+- `config.json.presets` is the source of truth for imaging, light, and named stage positions. Do not copy numeric exposure, gain, illumination, or stage coordinates from this guide or from old run history.
+- For FAM fluorescence, melting curves, or fluorescence time series, use the current `config.json.presets.imaging.microscope_fam` preset. Inspect or apply the preset at run time; do not hardcode FAM exposure/gain/light values in tool arguments unless the user explicitly overrides them.
+- For brightfield inspection or droplet verification, use the current `config.json.presets.imaging.microscope_brightfield` preset unless a tool documents its own internal verification settings.
+- For melting-curve captures, pass a channel name such as `channels=["FAM"]` or a preset reference; let the tool resolve current saved preset values. Do not restate or send exposure/gain/light numbers just because an older document or run mentioned them.
+- For fixed whole-cartridge overview, use `config.json.presets.imaging.whole_chip_camera` via `execute_segment_to_breakpoint(execution_view_mode="whole_chip_camera", verify_positions=false)`, `set_execution_view_mode(mode="whole_chip_camera")`, or `move_stage(preset="whole_chip_camera")` as appropriate. Return to microscope before droplet/model checks.
+- Manual injection monitoring should use the configured brightfield/manual-injection presets where available. If hardware rejects an exposure/gain change, do not retry blindly; inspect state and only use low-level `module_call(...)` with values read from the current preset or explicit user instructions.
+- IVT RNA condensate detection is protocol-specific. Use `detect_condensates` with its documented arguments and current imaging presets rather than embedding fixed FAM/Brightfield camera values.
 
 Batch imaging:
 - For repeated droplet imaging, prefer `capture_droplet_images(...)` over raw `module_call(... capture_image ...)`.
 - `capture_droplet_images` moves to each droplet, applies channel/exposure/gain/light, turns light master on when needed, waits for hardware, discards/warmups frames, captures, and writes files with OpenCV.
 - Do not assume low-level `capture_image(save_path=...)` saves a file; some modules return arrays without writing.
+- Do not save images with bare filenames or repo-root paths such as `cartridge_30C.png` or `run_images`. Use the managed capture output returned by the tool, or an explicit absolute user/run artifact path. Relative image paths are resolved under `DROPLOGIC_CAPTURE_ROOT` or, by default, `Documents/DropLogic/captures`.
 - If metadata points to missing files, retake those captures with `capture_droplet_images`.
 - Default `capture_source="streamer"` captures from the warmed live stream after discard/warmup frames.
 - Use `capture_source="pause_streamer"` only for direct/full-resolution microscope capture; it stops/restarts streamer and restores low light.
 - During multi-channel capture, light stays configured through all channels for the current droplet and is restored after that droplet's channel set.
 - Each capture includes requested settings and best-effort exposure/gain readback; use it to audit melting curves.
-- Defaults: channels `["Brightfield", "FAM"]`; Brightfield exposure `72000` us, gain `0`, coaxial `4`, ring `0`; FAM exposure `4800000` us, gain `0`, coaxial `99`, ring `0`.
-- For melting curves/time series, call `capture_droplet_images(droplet_ids=[...], channels=["Brightfield","FAM"], output_dir=..., temperature_label=..., metadata={...})` at each temperature/time point.
+- For melting curves/time series with a photo at every step, prefer `start_melting_curve_capture(...)` so the runtime itself performs `set/wait/hold -> capture -> next step`. Use `capture_mode="droplets", channels=["FAM"]` for per-droplet fluorescence with current saved presets, or `capture_mode="whole_chip_camera"` when the user explicitly wants whole-cartridge overview photos. Poll `melting_curve_capture_status()` until complete; use `cancel_melting_curve_capture()` to stop.
+- If you do not use `start_melting_curve_capture`, you must explicitly repeat one step at a time: `temperature_hold(...)`, wait for that single step to complete, then `capture_droplet_images(droplet_ids=[...], channels=["FAM"], output_dir=..., temperature_label=..., metadata={...})`. Do not start one long background temperature routine for a curve that needs images at every step.
 - Do not batch-image while executor is moving or `whole_chip_camera` fixed-stage execution is active. Pause at breakpoint and switch to microscope/follow mode first.
 
 Vision tools:
@@ -239,7 +257,8 @@ Vision tools:
 
 ## Temperature
 - Use `temperature_hold(target_c=..., hold_seconds=...)` for short single-setpoint waits.
-- For long ramps, per-degree waits, `require_settle=true`, or multi-minute holds, use `start_temperature_routine(steps=[...], require_settle=true)` and poll `temperature_routine_status()`.
+- For temperature-only long ramps, per-degree waits, `require_settle=true`, or multi-minute holds with no per-step imaging, use `start_temperature_routine(steps=[...], require_settle=true)` and poll `temperature_routine_status()`.
+- Do not use `start_temperature_routine` for melting curves or time series that require photos at each step; that routine only controls temperature and does not trigger camera captures. Use `start_melting_curve_capture` instead.
 - Use `cancel_temperature_routine()` before changing strategy or closing if a background routine is active.
 - Do not keep one MCP call open for a long ramp. If no background routine exists, drive the ramp with short set/poll calls.
 

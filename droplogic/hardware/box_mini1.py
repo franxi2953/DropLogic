@@ -9,6 +9,7 @@ from .modules.xy_stage import XYStageModule
 from .modules.microscope import MicroscopeModule
 from .modules.camera import CameraModule
 from .modules.light import LightModule
+from .modules.electrode_matrix.voltage_profiles import resolve_initial_voltage_profile
 from ..utils.visualizer import StreamerVisualizer, MatrixVisualizer
 import numpy as np
 import serial
@@ -66,7 +67,7 @@ class BOXMini(DropSystem):
             reset_matrix=reset_matrix,
         )
         version = electrode_config.get("version", "DMLite")
-        voltage = int(electrode_config.get("voltage", 55))
+        initial_voltages = resolve_initial_voltage_profile(electrode_config)
 
         # Define serial locks
         self._temperature_lock = threading.Lock()
@@ -89,7 +90,7 @@ class BOXMini(DropSystem):
             None,  # Deprecated argument
             rows, columns,
             version=version,
-            initial_voltage=voltage,
+            initial_voltage=initial_voltages,
             debug=False
         )
         self.capacitive_feedback = CapacitiveFeedbackModule(self, self.state.get("capacitive_feedback", {}).get("version", "CapacitiveFeedbackV1"))
@@ -309,7 +310,7 @@ class BOXMini(DropSystem):
             
             with self._electrode_matrix_lock:
                 if param_name == "voltage":
-                    voltage = int(value)
+                    voltage = value
                     retries = 10
                     while retries > 0:
                         try:
@@ -600,9 +601,10 @@ class BOXMini(DropSystem):
                 
             # Initialize Electrode Matrix with config voltage
             if self.electrode_matrix:
-                voltage = int(self.state.get("electrode_matrix", {}).get("voltage", 55))
-                self.electrode_matrix.set_voltage(voltage)
-                self.logger.info(f"Electrode matrix initialized with voltage: {voltage}V")
+                matrix_state = self.state.get("electrode_matrix", {})
+                initial_voltages = resolve_initial_voltage_profile(matrix_state)
+                self.electrode_matrix.set_voltage(initial_voltages)
+                self.logger.info(f"Electrode matrix initialized with voltage profile: {initial_voltages}")
                 
             # Initialize Light with config values
             if self.light:

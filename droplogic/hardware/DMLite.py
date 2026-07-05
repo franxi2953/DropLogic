@@ -1,6 +1,7 @@
 from ..base import DropSystem, Priority
 from typing import Any
 from .modules.electrode_matrix import ElectrodeMatrixModule
+from .modules.electrode_matrix.voltage_profiles import resolve_initial_voltage_profile
 from ..utils.advanced_drop import AdvancedDrop
 from ..utils.visualizer import MatrixVisualizer
 import numpy as np
@@ -48,8 +49,7 @@ class DMLite(DropSystem):
             reset_matrix=reset_matrix,
         )
         version = electrode_config.get("version", "DMLite")
-        voltage = int(electrode_config.get("voltage", 40))
-        initial_voltages = electrode_config.get("initial_voltages", voltage)
+        initial_voltages = resolve_initial_voltage_profile(electrode_config)
 
         # Define lock for electrode matrix
         self._electrode_matrix_lock = threading.Lock()

@@ -292,6 +292,16 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         )
 
     @mcp.tool()
+    def matrix_voltage_status() -> Dict[str, Any]:
+        """Query the active electrode matrix voltage channels."""
+        return _runtime_call(runtime.matrix_voltage_status)
+
+    @mcp.tool()
+    def set_matrix_voltage(values: List[int]) -> Dict[str, Any]:
+        """Set the active electrode matrix voltage profile. Pass 1, 4, or 9 values."""
+        return _runtime_call(runtime.set_matrix_voltage, values)
+
+    @mcp.tool()
     def set_matrix_cells(
         value: int,
         cells: Optional[List[List[int]]] = None,
@@ -414,8 +424,13 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         output_path: Optional[str] = None,
         max_width: Optional[int] = None,
         max_height: Optional[int] = None,
+        image_quality: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Return a matrix or streamer frame as base64 and/or a saved image path."""
+        """Return a matrix or streamer frame as base64 and/or a saved image path.
+
+        Relative output_path values are saved under the managed DropLogic capture
+        directory, not the current working directory.
+        """
         return _runtime_call(
             runtime.visualizer_frame,
             visualizer=visualizer,
@@ -425,6 +440,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
             output_path=output_path,
             max_width=max_width,
             max_height=max_height,
+            image_quality=image_quality,
         )
 
     @mcp.tool()
@@ -476,7 +492,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         coordinates: Optional[bool] = None,
         bring_to_front: bool = False,
     ) -> Dict[str, Any]:
-        """Switch the BoxMini live streamer between microscope and camera."""
+        """Switch only streamer source; use set_execution_view_mode for whole-chip positioning."""
         return _runtime_call(
             runtime.set_streamer_source,
             source=source,
@@ -518,17 +534,17 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
     @mcp.tool()
     def configure_microscope_imaging(
         channel: str = "Brightfield",
-        exposure_time: int = 72000,
-        gain: int = 0,
-        coaxial_intensity: int = 4,
-        ring_intensity: int = 0,
-        auto_exposure: bool = False,
+        exposure_time: Optional[int] = None,
+        gain: Optional[int] = None,
+        coaxial_intensity: Optional[int] = None,
+        ring_intensity: Optional[int] = None,
+        auto_exposure: Optional[bool] = None,
         restart_streamer: bool = True,
         bring_to_front: bool = False,
         stabilization_wait: float = 0.5,
         queue_timeout_seconds: float = 10.0,
     ) -> Dict[str, Any]:
-        """Configure microscope imaging safely, restarting streamer if needed."""
+        """Configure microscope imaging safely; pass only channel/preset to use current saved presets."""
         return _runtime_call(
             runtime.configure_microscope_imaging,
             channel=channel,
@@ -573,7 +589,11 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         wait_before_check: float = 0.5,
         wait_after_check: float = 0.5,
     ) -> Dict[str, Any]:
-        """Move to droplets and save images for channel profiles."""
+        """Move to droplets and save images; channel strings like FAM resolve current saved imaging presets.
+
+        If output_dir is omitted or relative, images are saved under the managed
+        DropLogic capture directory instead of the repository root.
+        """
         return _runtime_call(
             runtime.capture_droplet_images,
             droplet_ids=droplet_ids,
@@ -642,6 +662,77 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
     def cancel_temperature_routine() -> Dict[str, Any]:
         """Cancel the active background temperature routine."""
         return _runtime_call(runtime.cancel_temperature_routine)
+
+    @mcp.tool()
+    def start_melting_curve_capture(
+        start_c: Optional[float] = None,
+        end_c: Optional[float] = None,
+        step_c: float = 0.5,
+        temperature_steps: Optional[List[Dict[str, Any]]] = None,
+        hold_seconds: float = 300.0,
+        droplet_ids: Optional[List[int]] = None,
+        channels: Optional[List[Any]] = None,
+        output_dir: Optional[str] = None,
+        capture_mode: str = "droplets",
+        visualizer: str = "streamer",
+        frame_source: str = "device_raw",
+        tolerance_c: float = 0.5,
+        settle_timeout_seconds: float = 600.0,
+        sample_interval_seconds: float = 5.0,
+        require_settle: bool = True,
+        max_samples_per_step: int = 20,
+        stop_on_error: bool = True,
+        metadata: Optional[Dict[str, Any]] = None,
+        capture_source: str = "streamer",
+        restart_streamer: bool = True,
+        restore_low_light: bool = True,
+        image_format: str = "png",
+        wait_before_check: float = 0.5,
+        wait_after_check: float = 0.5,
+    ) -> Dict[str, Any]:
+        """Run a background melting curve and capture an image after every temperature step.
+
+        Use capture_mode='droplets' with channels like ['FAM'] for per-droplet
+        fluorescence from saved presets, or capture_mode='whole_chip_camera' for
+        fixed whole-cartridge overview photos.
+        """
+        return _runtime_call(
+            runtime.start_melting_curve_capture,
+            start_c=start_c,
+            end_c=end_c,
+            step_c=step_c,
+            temperature_steps=temperature_steps,
+            hold_seconds=hold_seconds,
+            droplet_ids=droplet_ids,
+            channels=channels,
+            output_dir=output_dir,
+            capture_mode=capture_mode,
+            visualizer=visualizer,
+            frame_source=frame_source,
+            tolerance_c=tolerance_c,
+            settle_timeout_seconds=settle_timeout_seconds,
+            sample_interval_seconds=sample_interval_seconds,
+            require_settle=require_settle,
+            max_samples_per_step=max_samples_per_step,
+            stop_on_error=stop_on_error,
+            metadata=metadata,
+            capture_source=capture_source,
+            restart_streamer=restart_streamer,
+            restore_low_light=restore_low_light,
+            image_format=image_format,
+            wait_before_check=wait_before_check,
+            wait_after_check=wait_after_check,
+        )
+
+    @mcp.tool()
+    def melting_curve_capture_status() -> Dict[str, Any]:
+        """Return compact status for the active or last melting-curve capture."""
+        return _runtime_call(runtime.melting_curve_capture_status)
+
+    @mcp.tool()
+    def cancel_melting_curve_capture() -> Dict[str, Any]:
+        """Cancel the active melting-curve capture."""
+        return _runtime_call(runtime.cancel_melting_curve_capture)
 
     @mcp.tool()
     def create_droplet(
@@ -764,6 +855,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         linear_drop_shape: Optional[Any] = None,
         linear_direction: Optional[List[int]] = None,
         linear_vital_space: Optional[int] = None,
+        linear_post_separation_steps: Optional[int] = 3,
         remove_duplicate_frames: bool = False,
         background: bool = False,
         options: Optional[Dict[str, Any]] = None,
@@ -785,6 +877,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
             linear_drop_shape=linear_drop_shape,
             linear_direction=linear_direction,
             linear_vital_space=linear_vital_space,
+            linear_post_separation_steps=linear_post_separation_steps,
             remove_duplicate_frames=remove_duplicate_frames,
             background=background,
             **(options or {}),
@@ -909,7 +1002,13 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         save_frames_path: Optional[str] = None,
         debug: bool = False,
     ) -> Dict[str, Any]:
-        """Verify droplet positions for a plan frame."""
+        """Verify droplet positions for a plan frame.
+
+        Pass save_frames_path to save one brightfield debug image per checked
+        droplet; failed checks without saved frames should be treated as
+        inconclusive during real BoxMini operation. Relative save_frames_path
+        values are saved under the managed DropLogic capture directory.
+        """
         return _runtime_call(
             runtime.verify_droplets,
             frame_idx=frame_idx,
@@ -934,7 +1033,11 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         brightfield_exposure: int = 3600,
         brightfield_light: int = 30,
     ) -> Dict[str, Any]:
-        """Detect condensates using AdvancedDrop vision support."""
+        """Detect condensates using AdvancedDrop vision support.
+
+        Relative save/debug image paths are saved under the managed DropLogic
+        capture directory.
+        """
         return _runtime_call(
             runtime.detect_condensates,
             crop_droplet=crop_droplet,
@@ -990,7 +1093,11 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         timeout_seconds: float = 30.0,
         poll_interval: float = 0.1,
     ) -> Dict[str, Any]:
-        """Low-level hardware module call. Prefer dedicated MCP tools for planning, execution, imaging, state, and temperature."""
+        """Low-level hardware module call. Prefer dedicated MCP tools for planning, execution, imaging, state, and temperature.
+
+        For camera/microscope capture_image, relative save paths are resolved
+        under the managed DropLogic capture directory.
+        """
         return _runtime_call(
             runtime.module_call,
             module,
@@ -1021,14 +1128,14 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         record_streamer: bool = False,
         matrix_filename: Optional[str] = None,
         streamer_filename: Optional[str] = None,
-        execution_view_mode: str = "follow_droplets",
+        execution_view_mode: Optional[str] = None,
         fixed_stage_position: Optional[Any] = None,
         prepare_execution_view: bool = True,
         execution_view_timeout_seconds: float = 60.0,
         restart_from_beginning: bool = False,
         allow_failed_plan: bool = False,
     ) -> Dict[str, Any]:
-        """Start PlanExecutor from frame 0 unless a partial run needs resume_plan."""
+        """Start PlanExecutor from frame 0; omit execution_view_mode to preserve current view."""
         return _runtime_call(
             runtime.start_plan,
             frame_delay=frame_delay,
@@ -1071,12 +1178,75 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         preset: Optional[str] = None,
         wait_timeout_seconds: float = 20.0,
         poll_interval: float = 0.1,
+        wait_for_queue: bool = True,
+        wait_for_completion: bool = True,
     ) -> Dict[str, Any]:
         """Move the XY stage using a named preset or explicit X/Y/Z axis values."""
         return _runtime_call(
             runtime.move_stage,
             position=position,
             preset=preset,
+            wait_timeout_seconds=wait_timeout_seconds,
+            poll_interval=poll_interval,
+            wait_for_queue=wait_for_queue,
+            wait_for_completion=wait_for_completion,
+        )
+
+    @mcp.tool()
+    def calibration_stage_set_speed(speed_key: str = "2") -> Dict[str, Any]:
+        """Apply the same manual jog speed used by the standalone calibration tool."""
+        return _runtime_call(runtime.calibration_stage_set_speed, speed_key=speed_key)
+
+    @mcp.tool()
+    def calibration_stage_position() -> Dict[str, Any]:
+        """Read the current hardware stage position for calibration recording."""
+        return _runtime_call(runtime.calibration_stage_position)
+
+    @mcp.tool()
+    def set_stage_motion_speed(speed_key: str = "fast") -> Dict[str, Any]:
+        """Apply an XY stage motion speed preset: slow, medium, or fast."""
+        return _runtime_call(runtime.set_stage_motion_speed, speed_key=speed_key)
+
+    @mcp.tool()
+    def stage_motion_params() -> Dict[str, Any]:
+        """Read the current XY stage velocity and acceleration parameters."""
+        return _runtime_call(runtime.stage_motion_params)
+
+    @mcp.tool()
+    def set_stage_motion_params(velocity: float, acceleration: float) -> Dict[str, Any]:
+        """Apply explicit XY stage velocity and acceleration parameters."""
+        return _runtime_call(
+            runtime.set_stage_motion_params,
+            velocity=velocity,
+            acceleration=acceleration,
+        )
+
+    @mcp.tool()
+    def calibration_stage_jog(
+        axis: Optional[str] = None,
+        direction: int = 0,
+        stop_all: bool = False,
+    ) -> Dict[str, Any]:
+        """Start/refresh/stop continuous calibration jogging on X/Y/Z."""
+        return _runtime_call(
+            runtime.calibration_stage_jog,
+            axis=axis,
+            direction=direction,
+            stop_all=stop_all,
+        )
+
+    @mcp.tool()
+    def calibration_stage_move_to_target(
+        position: Any,
+        speed_key: str = "2",
+        wait_timeout_seconds: float = 20.0,
+        poll_interval: float = 0.05,
+    ) -> Dict[str, Any]:
+        """Move to a guided calibration target using calibration travel speed."""
+        return _runtime_call(
+            runtime.calibration_stage_move_to_target,
+            position=position,
+            speed_key=speed_key,
             wait_timeout_seconds=wait_timeout_seconds,
             poll_interval=poll_interval,
         )
@@ -1102,6 +1272,21 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         return _runtime_call(runtime.executor_status)
 
     @mcp.tool()
+    def timeline_status() -> Dict[str, Any]:
+        """Return logical timeline pause/resume status and stopped intervals."""
+        return _runtime_call(runtime.timeline_status)
+
+    @mcp.tool()
+    def pause_timeline(reason: str = "") -> Dict[str, Any]:
+        """Stop logical timeline accumulation without pausing hardware execution."""
+        return _runtime_call(runtime.pause_timeline, reason=reason, source="agent")
+
+    @mcp.tool()
+    def resume_timeline(reason: str = "") -> Dict[str, Any]:
+        """Resume logical timeline accumulation and record the stopped duration."""
+        return _runtime_call(runtime.resume_timeline, reason=reason, source="agent")
+
+    @mcp.tool()
     def add_breakpoint(frame_number: int) -> Dict[str, Any]:
         """Add a frame breakpoint."""
         return _runtime_call(runtime.add_breakpoint, frame_number)
@@ -1117,6 +1302,11 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         return _runtime_call(runtime.clear_breakpoints)
 
     @mcp.tool()
+    def executor_frame_history(limit: int = 1000) -> Dict[str, Any]:
+        """Return compact per-frame PlanExecutor timing diagnostics."""
+        return _runtime_call(runtime.executor_frame_history, limit=limit)
+
+    @mcp.tool()
     def execute_segment_to_breakpoint(
         frame_number: Optional[int] = None,
         timeout_seconds: Optional[float] = None,
@@ -1127,7 +1317,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         frame_delay: float = 1.0,
         verify_positions: bool = False,
         enable_visualizers: bool = False,
-        execution_view_mode: str = "follow_droplets",
+        execution_view_mode: Optional[str] = None,
         fixed_stage_position: Optional[Any] = None,
         prepare_execution_view: bool = True,
         execution_view_timeout_seconds: float = 60.0,
@@ -1135,7 +1325,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         inline_wait_max_seconds: Optional[float] = None,
         inline_wait_margin_seconds: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Add a breakpoint, start/resume PlanExecutor, then wait inline or in background."""
+        """Add a breakpoint and execute; omit execution_view_mode to preserve current view."""
         return _runtime_call(
             runtime.execute_segment_to_breakpoint,
             frame_number=frame_number,

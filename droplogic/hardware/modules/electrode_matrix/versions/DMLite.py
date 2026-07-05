@@ -4,6 +4,7 @@ import platform
 import time
 from pathlib import Path
 
+from ..voltage_profiles import DEFAULT_INITIAL_VOLTAGE_PROFILE
 from droplogic.utils.logging_config import setup_droplogic_logger
 from droplogic.utils.native_runtime import resolve_dll
 
@@ -152,7 +153,7 @@ class DMLite:
         device=None,
         rows=128,
         columns=128,
-        initial_voltage=55,
+        initial_voltage=DEFAULT_INITIAL_VOLTAGE_PROFILE,
         debug=False,
         port=1,
         baud_rate=9600,

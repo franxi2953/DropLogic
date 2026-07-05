@@ -74,6 +74,34 @@
             }
         },
         "imaging": {
+            "microscope_brightfield": {
+                "streamer_source": "microscope",
+                "channel": "Brightfield",
+                "microscope_settings": {
+                    "auto_exposure": false,
+                    "exposure_time": 12000,
+                    "gain": 0
+                },
+                "light_settings": {
+                    "coaxial_intensity": 30,
+                    "ring_intensity": 0
+                },
+                "notes": "Microscope Brightfield inspection preset."
+            },
+            "microscope_fam": {
+                "streamer_source": "microscope",
+                "channel": "FAM",
+                "microscope_settings": {
+                    "auto_exposure": false,
+                    "exposure_time": 5000000,
+                    "gain": 12
+                },
+                "light_settings": {
+                    "coaxial_intensity": 99,
+                    "ring_intensity": 0
+                },
+                "notes": "Microscope FAM fluorescence inspection preset."
+            },
             "whole_chip_camera": {
                 "position": {
                     "X": 84480,
@@ -100,12 +128,17 @@
         "VID": "0x04BC",
         "rows": 128,
         "columns": 128,
-        "voltage": 55,
+        "voltage": 60,
         "initial_voltages": [
             60,
             55,
-            0,
-            0
+            55,
+            55,
+            55,
+            55,
+            55,
+            55,
+            55
         ],
         "matrix": [],
         "version": "DMLite"
@@ -118,22 +151,22 @@
             }
         },
         "chip_origin": {
-            "X": 59297,
-            "Y": 8554,
-            "Z": 9803
+            "X": 61609,
+            "Y": 8544,
+            "Z": 10242
         },
         "electrode_mapping": {
             "offset_x": 0,
             "offset_y": 0,
             "inter_row": [
-                -250.03149606299212,
-                -0.25984251968503935,
-                -3.9133858267716537
+                -250.29921259842519,
+                -0.1732283464566929,
+                -6.645669291338582
             ],
             "inter_column": [
-                1.2598425196850394,
-                -50.00787401574803,
-                7.559055118110236
+                1.2283464566929134,
+                -49.99212598425197,
+                7.811023622047244
             ]
         },
         "backlash_steps": {

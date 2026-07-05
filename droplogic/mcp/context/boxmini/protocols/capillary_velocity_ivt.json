@@ -5,49 +5,31 @@
   "application": "IVT RNA condensates",
   "description": "Capillary velocity defaults for BoxMini IVT RNA-condensate experiments.",
   "injection": {
-    "stage_y_position": 47000,
+    "stage_preset": "stage.manual_injection",
     "monitoring": {
-      "channel": "Brightfield",
-      "auto_exposure": false,
-      "exposure_time_us": 3600,
-      "coaxial_intensity": 5,
-      "ring_intensity": 0
+      "preset_ref": "imaging.microscope_brightfield"
     },
     "return_behavior": "restore_previous_y"
   },
   "brightfield_verification": {
-    "channel": "Brightfield",
-    "auto_exposure": false,
-    "exposure_time_us": 72000,
-    "gain": 0,
-    "coaxial_intensity": 4,
-    "ring_intensity": 0
+    "preset_ref": "imaging.microscope_brightfield"
   },
   "detect_condensates": {
     "scope": "IVT RNA condensates only",
     "requires_fam_imaging": true,
     "fluorescence": {
-      "channel": "FAM",
-      "auto_exposure": false,
-      "exposure_time_us": 4800000,
-      "gain": 0,
-      "coaxial_intensity": 99,
-      "ring_intensity": 0
+      "preset_ref": "imaging.microscope_fam"
     },
     "brightfield_crop": {
-      "channel": "Brightfield",
-      "auto_exposure": false,
-      "exposure_time_us": 72000,
-      "gain": 0,
-      "coaxial_intensity": 4,
-      "ring_intensity": 0
+      "preset_ref": "imaging.microscope_brightfield"
     },
     "crop_droplet": true,
     "crop_padding": 50,
     "confidence_threshold": 0.25
   },
   "notes": [
-    "Keep this file as the application-specific default for the capillary velocity IVT workflow.",
+    "Resolve preset_ref entries from the current config.json presets at run time; do not copy numeric imaging or stage values from this file.",
+    "Keep this file as the application-specific shape/workflow default for the capillary velocity IVT workflow.",
     "Future experiments can replace it with their own protocol profile through --context-dir."
   ]
 }

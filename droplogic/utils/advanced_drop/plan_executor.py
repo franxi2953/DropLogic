@@ -5,6 +5,7 @@ Provides non-blocking execution of droplet plans with real-time position updates
 Supports dynamic plan modification during execution.
 """
 
+import copy
 import threading
 import time
 import logging
@@ -82,6 +83,7 @@ class PlanExecutor:
         # Execution state
         self.state = ExecutionState()
         self.frame_delay = 1.0
+        self.frame_delay_mode = "period"
         self.verify_positions = False
         self.enable_visualizers = False
 
@@ -114,6 +116,8 @@ class PlanExecutor:
         self.last_frame_duration_seconds = None
         self.last_frame_error = None
         self.last_matrix_queue_wait = None
+        self.frame_history = []
+        self.frame_history_limit = 5000
         self._active_frame_started_at = None
         self.last_applied_frame_index = None
         self.last_applied_frame_matrix = None
@@ -121,6 +125,7 @@ class PlanExecutor:
         self.last_applied_frame_plan_id = None
         self.last_applied_frame_plan_frame_count = None
         self.last_applied_frame_active_droplet_ids = []
+        self.last_applied_frame_droplets = []
         self.last_applied_frame_at = None
         self.matrix_update_attempts = 2
         self.matrix_update_retry_delay_seconds = 0.25
@@ -340,6 +345,7 @@ class PlanExecutor:
                 last_update=time.time()
             )
             self._clear_last_applied_frame()
+            self.frame_history = []
 
             logger.info(f"Starting execution with plan: {len(self.current_plan.frames) if self.current_plan else 0} frames")
 
@@ -838,6 +844,8 @@ class PlanExecutor:
                     'plan_frame_count': self.last_applied_frame_plan_frame_count,
                     'active_droplet_ids': list(self.last_applied_frame_active_droplet_ids or []),
                 },
+                'frame_history_count': len(self.frame_history),
+                'recent_frame_history': list(self.frame_history[-10:]),
             }
 
     def configure_stage_tracking(self, mode="follow_droplets", fixed_stage_position=None, move_now=False):
@@ -1224,10 +1232,14 @@ class PlanExecutor:
                     time.sleep(0.1)
                     continue
 
-                # Wait before next frame (but allow interruption)
+                # Wait before next frame (but allow interruption).
+                # frame_delay is the target frame period, not extra sleep after
+                # hardware I/O. Slow matrix writes therefore reduce/consume the
+                # wait instead of making a 1 Hz plan run at 0.4 Hz.
                 if self.frame_delay > 0:
-                    # Sleep in small increments to allow for interruption
-                    remaining_delay = self.frame_delay
+                    frame_finished_at = time.time()
+                    frame_started_at = self.last_frame_started_at or frame_finished_at
+                    remaining_delay = max(0.0, float(self.frame_delay) - (frame_finished_at - frame_started_at))
                     while remaining_delay > 0 and not self.stop_event.is_set():
                         sleep_time = min(0.1, remaining_delay)  # Sleep in 100ms chunks
                         time.sleep(sleep_time)
@@ -1346,6 +1358,7 @@ class PlanExecutor:
                 self.last_frame_finished_at - frame_started_at,
                 3,
             )
+            self._append_frame_history(frame_idx)
 
         except Exception as e:
             finished_at = time.time()
@@ -1355,11 +1368,60 @@ class PlanExecutor:
                 "type": type(e).__name__,
                 "message": str(e),
             }
+            self._append_frame_history(frame_idx)
             logger.error(f"Frame execution error at {frame_idx}: {e}")
             with self.execution_lock:
                 self.state.is_executing = False
             self.stop_event.set()
             raise
+
+    def _append_frame_history(self, frame_idx: int):
+        """Store compact per-frame executor timing for post-run diagnostics."""
+        entry = {
+            "index": int(frame_idx),
+            "started_at": self.last_frame_started_at,
+            "finished_at": self.last_frame_finished_at,
+            "duration_seconds": self.last_frame_duration_seconds,
+            "error": self.last_frame_error,
+            "matrix_queue_wait": self._compact_matrix_queue_wait(self.last_matrix_queue_wait),
+        }
+        with self.execution_lock:
+            self.frame_history.append(entry)
+            limit = max(10, int(getattr(self, "frame_history_limit", 5000) or 5000))
+            if len(self.frame_history) > limit:
+                self.frame_history = self.frame_history[-limit:]
+
+    def _compact_matrix_queue_wait(self, value):
+        """Keep queue diagnostics useful without retaining every queue object."""
+        if not isinstance(value, dict):
+            return None
+        queue_wait = value.get("queue_wait") if isinstance(value.get("queue_wait"), dict) else {}
+        queues = queue_wait.get("queues") if isinstance(queue_wait.get("queues"), dict) else {}
+        high = queues.get("HIGH") if isinstance(queues.get("HIGH"), dict) else {}
+        last_command = high.get("last_command") if isinstance(high.get("last_command"), dict) else {}
+        queued_at = last_command.get("queued_at")
+        processed_at = last_command.get("processed_at")
+        command_latency = None
+        try:
+            if queued_at is not None and processed_at is not None:
+                command_latency = round(float(processed_at) - float(queued_at), 6)
+        except Exception:
+            command_latency = None
+        return {
+            "ok": value.get("ok"),
+            "successful_attempt": value.get("successful_attempt"),
+            "attempts_count": len(value.get("attempts") or []),
+            "pending_commands": queue_wait.get("pending_commands"),
+            "timed_out": bool(queue_wait.get("timed_out")),
+            "hardware_errors_count": len(queue_wait.get("hardware_errors") or []),
+            "high_queue": {
+                "queue_size": high.get("queue_size"),
+                "unfinished_tasks": high.get("unfinished_tasks"),
+                "last_path": last_command.get("path"),
+                "last_ok": last_command.get("ok"),
+                "command_latency_seconds": command_latency,
+            },
+        }
 
     def _update_droplet_positions(self, frame_idx: int, active_droplets=None):
         """Update droplet positions based on current frame."""
@@ -1376,11 +1438,24 @@ class PlanExecutor:
             matrix_copy = frame_matrix
 
         active_ids = []
-        for droplet in active_droplets or []:
-            try:
-                active_ids.append(int(droplet.id))
-            except Exception:
-                continue
+        active_by_frame = getattr(self.current_plan, "active_droplets_per_frame", None) or []
+        if 0 <= int(frame_idx) < len(active_by_frame):
+            for item in active_by_frame[int(frame_idx)] or []:
+                try:
+                    active_ids.append(int(item))
+                except Exception:
+                    continue
+        elif active_droplets:
+            for droplet in active_droplets or []:
+                try:
+                    active_ids.append(int(droplet.id))
+                except Exception:
+                    continue
+
+        try:
+            droplet_snapshot = copy.deepcopy(list(getattr(self.advanced_drop, "droplets", None) or []))
+        except Exception:
+            droplet_snapshot = list(getattr(self.advanced_drop, "droplets", None) or [])
 
         with self.execution_lock:
             self.last_applied_frame_index = int(frame_idx)
@@ -1393,6 +1468,7 @@ class PlanExecutor:
                 else None
             )
             self.last_applied_frame_active_droplet_ids = active_ids
+            self.last_applied_frame_droplets = droplet_snapshot
             self.last_applied_frame_at = time.time()
 
         callback = self.on_frame_applied
@@ -1417,6 +1493,7 @@ class PlanExecutor:
             self.last_applied_frame_plan_id = None
             self.last_applied_frame_plan_frame_count = None
             self.last_applied_frame_active_droplet_ids = []
+            self.last_applied_frame_droplets = []
             self.last_applied_frame_at = None
 
     def _handle_visualization(self):

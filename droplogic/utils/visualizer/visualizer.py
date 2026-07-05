@@ -134,9 +134,15 @@ class StreamerVisualizer:
         self.frame_lock = threading.Lock()
         self.raw_frame = None
         self.proc_frame = None
+        self.frame_sequence = 0
+        self.raw_frame_updated_at = None
+        self.proc_frame_sequence = 0
+        self.proc_frame_updated_at = None
         self.thread = None
         self.capture_thread = None
+        self.processor_thread = None
         self.display_thread = None
+        self._process_event = threading.Event()
         self.host_platform = _resolve_host_platform(self.box)
         self._display_active = False
         self._headless_active = False
@@ -195,6 +201,7 @@ class StreamerVisualizer:
             self._headless_active
             or self._display_active
             or (self.capture_thread is not None and self.capture_thread.is_alive())
+            or (self.processor_thread is not None and self.processor_thread.is_alive())
             or (self.display_thread is not None and self.display_thread.is_alive())
         )
 
@@ -212,6 +219,12 @@ class StreamerVisualizer:
             daemon=True,
             name=f"{self.window_name}_capture",
         )
+        self.processor_thread = threading.Thread(
+            target=self._process_loop,
+            daemon=True,
+            name=f"{self.window_name}_processor",
+        )
+        self.processor_thread.start()
         self.capture_thread.start()
 
         if not self.window_enabled:
@@ -255,6 +268,7 @@ class StreamerVisualizer:
         DONT MODIFY THE raw_frame VARIABLE!"""
 
         self.external_frame_processor = fn
+        self._process_event.set()
 
     def _capture_loop(self):
         while not self.flag_exit.is_set():
@@ -276,19 +290,19 @@ class StreamerVisualizer:
                         # Ensure frame is in color format (BGR) for consistent processing
                         if len(frame.shape) == 2:  # Grayscale
                             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                        raw = frame.copy()
                         with self.frame_lock:
-                            self.raw_frame = frame.copy()
-                            try:
-                                self.proc_frame = self.internal_frame_processor(self.raw_frame.copy())
-                                if self.external_frame_processor is not None:
-                                    self.proc_frame = self.external_frame_processor(self.proc_frame)
-                            except Exception:
-                                self.proc_frame = self.raw_frame.copy()
+                            self.frame_sequence += 1
+                            self.raw_frame = raw
+                            self.raw_frame_updated_at = time.time()
+                        self._process_event.set()
                     else:
                         # If frame is None (camera closed), clear the frames
                         with self.frame_lock:
                             self.raw_frame = None
                             self.proc_frame = None
+                            self.raw_frame_updated_at = None
+                            self.proc_frame_updated_at = None
                 except Exception as e:
                     # Log the error but don't crash the thread
                     self.logger.warning(f"Capture error: {e}")
@@ -296,9 +310,37 @@ class StreamerVisualizer:
                     with self.frame_lock:
                         self.raw_frame = None
                         self.proc_frame = None
+                        self.raw_frame_updated_at = None
+                        self.proc_frame_updated_at = None
 
             # Frame rate pacing (e.g., 50 ms = 20 fps)
             # time.sleep(self.exposure_time)
+
+    def _process_loop(self):
+        last_processed_sequence = 0
+        while not self.flag_exit.is_set():
+            self._process_event.wait(timeout=0.2)
+            self._process_event.clear()
+
+            with self.frame_lock:
+                sequence = int(self.frame_sequence)
+                if sequence <= last_processed_sequence or self.raw_frame is None:
+                    continue
+                raw = self.raw_frame.copy()
+
+            try:
+                processed = self.internal_frame_processor(raw.copy())
+                if self.external_frame_processor is not None:
+                    processed = self.external_frame_processor(processed)
+            except Exception:
+                processed = raw
+
+            with self.frame_lock:
+                if sequence >= self.proc_frame_sequence:
+                    self.proc_frame = processed
+                    self.proc_frame_sequence = sequence
+                    self.proc_frame_updated_at = time.time()
+                    last_processed_sequence = sequence
 
     def _display_loop(self, stop_condition=None):
         self._display_active = True
@@ -822,6 +864,26 @@ class StreamerVisualizer:
         with self.frame_lock:
             return self.raw_frame.copy() if self.raw_frame is not None else None
 
+    def get_latest_frame(self):
+        """
+        Return the freshest displayable frame.
+
+        Processed frames are preferred when they match the latest raw capture. If
+        overlay processing is still catching up, return the raw frame to avoid
+        showing a stale image in low-latency dashboards.
+        """
+        with self.frame_lock:
+            if (
+                self.proc_frame is not None
+                and self.proc_frame_sequence >= self.frame_sequence
+            ):
+                return self.proc_frame.copy()
+            if self.raw_frame is not None:
+                return self.raw_frame.copy()
+            if self.proc_frame is not None:
+                return self.proc_frame.copy()
+        return self.get_snapshot_frame()
+
     def get_processed_frame(self):
         """
         Get the last buffered processed frame without blocking the frame refreshing process.
@@ -834,6 +896,43 @@ class StreamerVisualizer:
         """
         with self.frame_lock:
             return self.proc_frame.copy() if self.proc_frame is not None else None
+
+    def get_frame_metadata(self, source="latest"):
+        source = (source or "latest").lower()
+        with self.frame_lock:
+            raw_sequence = int(self.frame_sequence)
+            proc_sequence = int(self.proc_frame_sequence)
+            if source == "processed":
+                sequence = proc_sequence
+                updated_at = self.proc_frame_updated_at
+            elif source == "raw":
+                sequence = raw_sequence
+                updated_at = self.raw_frame_updated_at
+            elif source == "snapshot":
+                if self.proc_frame is not None:
+                    sequence = proc_sequence
+                    updated_at = self.proc_frame_updated_at
+                    source = "processed"
+                else:
+                    sequence = raw_sequence
+                    updated_at = self.raw_frame_updated_at
+                    source = "raw"
+            else:
+                if self.proc_frame is not None and proc_sequence >= raw_sequence:
+                    sequence = proc_sequence
+                    updated_at = self.proc_frame_updated_at
+                    source = "processed"
+                else:
+                    sequence = raw_sequence
+                    updated_at = self.raw_frame_updated_at
+                    source = "raw"
+            return {
+                "source": source,
+                "sequence": sequence,
+                "raw_sequence": raw_sequence,
+                "processed_sequence": proc_sequence,
+                "updated_at": updated_at,
+            }
 
     def get_snapshot_frame(self):
         """
@@ -862,6 +961,7 @@ class StreamerVisualizer:
 
     def stop(self):
         self.flag_exit.set()
+        self._process_event.set()
         self._headless_active = False
         current_thread = threading.current_thread()
 
@@ -871,7 +971,7 @@ class StreamerVisualizer:
             except Exception:
                 pass
 
-        for thread_name in ("capture_thread", "display_thread", "thread"):
+        for thread_name in ("capture_thread", "processor_thread", "display_thread", "thread"):
             thread = getattr(self, thread_name, None)
             if thread and thread is not current_thread and thread.is_alive():
                 thread.join(timeout=0.75)
@@ -885,6 +985,7 @@ class StreamerVisualizer:
         if self.thread is self.display_thread:
             self.thread = None
         self.display_thread = None
+        self.processor_thread = None
         self.capture_thread = None
         self._display_active = False
 

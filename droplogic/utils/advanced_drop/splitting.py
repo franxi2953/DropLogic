@@ -71,6 +71,7 @@ def reservoir_extraction(
     linear_drop_shape: Optional[Union[Tuple[int,int], Set[Tuple[int,int]]]] = None,
     linear_direction: Optional[Tuple[int,int]] = None,
     linear_vital_space: Optional[int] = None,
+    linear_post_separation_steps: Optional[int] = 3,
 ) -> Tuple[List[Droplet], DropletPlan]:
     """
     Extract a droplet from a reservoir (core splitting function).
@@ -98,6 +99,7 @@ def reservoir_extraction(
         new_droplet_id: ID for the new droplet (None = auto-generate next available ID)
         halo_size: Size of unactivated electrode halo around extracted droplet (1to2 only)
         separation_steps: Number of steps for moving droplets to separate from each other (1to3 only)
+        linear_post_separation_steps: Extra reservoir sweep steps after the last linear droplet is severed.
 
     Returns:
         Tuple of (updated_droplets, updated_droplet_plan)
@@ -159,6 +161,11 @@ def reservoir_extraction(
                 drop_shape=linear_shape,
                 direction=(linear_direction if linear_direction is not None else (1, 0)),
                 droplet_vital_space=(linear_vital_space if linear_vital_space is not None else inferred_vital_space),
+                post_separation_steps=(
+                    3
+                    if linear_post_separation_steps is None
+                    else int(linear_post_separation_steps)
+                ),
             )
 
         updated_droplets, new_plan = _split_linear(
@@ -1232,12 +1239,13 @@ def _split_1to3(
 @dataclass
 class LinearConfig:
     drops_number: int          # total number of drops to create
-    space_per_row: int           # electrode pitch between rows (orthogonal to sweep)
-    space_per_col: int        # electrode pitch between columns (along sweep)
+    space_per_row: int        # clear side-to-side gap between droplet rows
+    space_per_col: int        # clear side-to-side gap between droplet columns
     offset: int = 0    # starting offset from the reservoir
     drop_shape: Union[Tuple[int,int], Set[Tuple[int,int]]] = (1,1)
     direction: Tuple[int,int] = (1,0)
     droplet_vital_space: Optional[int] = None
+    post_separation_steps: int = 3  # extra reservoir sweep steps after final severing
 
 
 def _linear_drop_dimensions(drop_shape: Union[Tuple[int,int], Set[Tuple[int,int]]]) -> Tuple[int, int]:
@@ -1256,7 +1264,12 @@ def _linear_drop_dimensions(drop_shape: Union[Tuple[int,int], Set[Tuple[int,int]
 
 def _default_linear_spacing_for_shape(drop_shape: Union[Tuple[int,int], Set[Tuple[int,int]]]) -> int:
     height, width = _linear_drop_dimensions(drop_shape)
-    return 2 if height > 1 or width > 1 else 1
+    return max(1, 2 * max(height, width))
+
+
+def _minimum_linear_side_spacing(drop_shape: Union[Tuple[int,int], Set[Tuple[int,int]]]) -> Tuple[int, int]:
+    height, width = _linear_drop_dimensions(drop_shape)
+    return max(1, 2 * height), max(1, 2 * width)
 
 
 def _validate_linear_cfg(cfg: LinearConfig, logger) -> None:
@@ -1269,11 +1282,26 @@ def _validate_linear_cfg(cfg: LinearConfig, logger) -> None:
         raise ValueError("space_per_col must be a positive integer.")
     if cfg.droplet_vital_space is not None and cfg.droplet_vital_space < 0:
         raise ValueError("droplet_vital_space must be a non-negative integer.")
+    if cfg.post_separation_steps < 0:
+        raise ValueError("post_separation_steps must be a non-negative integer.")
     if not (isinstance(cfg.drop_shape, (tuple, list)) or isinstance(cfg.drop_shape, set)):
         raise ValueError("drop_shape must be either a tuple/list (height, width) or a set of (row, col) offsets.")
     if isinstance(cfg.drop_shape, (tuple, list)):
         if len(cfg.drop_shape) != 2 or not all(isinstance(x, int) and x > 0 for x in cfg.drop_shape):
             raise ValueError("If drop_shape is a tuple/list, it must be of the form (height, width) with positive integers.")
+    min_row_gap, min_col_gap = _minimum_linear_side_spacing(cfg.drop_shape)
+    if cfg.space_per_row < min_row_gap:
+        raise ValueError(
+            "space_per_row is the clear side-to-side gap between droplets and "
+            f"must be at least twice the droplet height ({min_row_gap}) for "
+            f"drop_shape={cfg.drop_shape}. Increase linear_space_per_row or use a smaller droplet."
+        )
+    if cfg.space_per_col < min_col_gap:
+        raise ValueError(
+            "space_per_col is the clear side-to-side gap between droplets and "
+            f"must be at least twice the droplet width ({min_col_gap}) for "
+            f"drop_shape={cfg.drop_shape}. Increase linear_space_per_col or use a smaller droplet."
+        )
     if not (isinstance(cfg.direction, (tuple, list)) and len(cfg.direction) == 2 and all(isinstance(x, int) for x in cfg.direction)):
         raise ValueError("direction must be a tuple/list of two integers (row_direction, column_direction).")
 
@@ -1319,8 +1347,10 @@ def _split_linear(
     initial_frame = np.zeros(matrix_shape, dtype=np.int32)
     # Reservoir stays active throughout
     res_positions = get_droplet_positions(reservoir_droplet, reservoir_droplet.origin_corner)
-    # Snapshot original reservoir absolute positions for validation later
-    original_reservoir_positions = set(res_positions)
+    res_top_row, res_bottom_row, res_left_col, res_right_col = get_droplet_bounds(
+        reservoir_droplet,
+        reservoir_droplet.origin_corner,
+    )
     for x, y in res_positions:
         if 0 <= x < matrix_shape[0] and 0 <= y < matrix_shape[1]:
             initial_frame[x, y] = 1
@@ -1375,7 +1405,8 @@ def _split_linear(
     # Create the rest of the droplets.
     # if moving right or left, move along rows first, then columns
     # if moving up or down, move along columns first, then rows
-    # we move accross the reservoir shape to create droplets, and attending to the space_per_row and space_per_col. if a droplet doesnt fit (including its shape), we move to the next row/column
+    # Create a grid of extracted droplets. space_per_row/space_per_col are
+    # clear side-to-side gaps, so the placement pitch is droplet size + gap.
     created_droplets = 0
     droplet_id_counter = max((d.id for d in droplets), default=0) + 1
     current_origin = list(initial_droplet_origin)
@@ -1404,12 +1435,25 @@ def _split_linear(
             vital_space=extracted_vital_space
         )
         new_positions = get_droplet_positions(new_droplet, new_droplet.origin_corner)
-        if not set(new_positions).issubset(original_reservoir_positions):
+        drop_top, drop_bottom, drop_left, drop_right = get_droplet_bounds(new_droplet, new_droplet.origin_corner)
+        if not all(0 <= x < matrix_shape[0] and 0 <= y < matrix_shape[1] for x, y in new_positions):
             raise ValueError(
-                "Linear extraction generated a droplet outside the reservoir footprint: "
+                "Linear extraction generated a droplet outside the matrix bounds: "
                 f"droplet {new_droplet.id} at {new_droplet.origin_corner}. "
                 "Reduce linear_offset, reduce linear_drops_number, use smaller spacing, "
-                "or choose a larger reservoir/another linear_direction."
+                "or choose another linear_direction/origin."
+            )
+        if cfg.direction[1] != 0 and (drop_top < res_top_row or drop_bottom > res_bottom_row):
+            raise ValueError(
+                "Linear extraction generated a droplet outside the reservoir sweep strip: "
+                f"droplet {new_droplet.id} at {new_droplet.origin_corner}. "
+                "Reduce linear_offset, use smaller linear_space_per_row, or use a taller reservoir."
+            )
+        if cfg.direction[0] != 0 and (drop_left < res_left_col or drop_right > res_right_col):
+            raise ValueError(
+                "Linear extraction generated a droplet outside the reservoir sweep strip: "
+                f"droplet {new_droplet.id} at {new_droplet.origin_corner}. "
+                "Reduce linear_offset, use smaller linear_space_per_col, or use a wider reservoir."
             )
         for existing_droplet in created_linear_droplets:
             if check_vital_space_conflict(
@@ -1502,11 +1546,37 @@ def _split_linear(
     
     # Severed droplets
     severed = set()
+    post_separation_remaining: Optional[int] = None
     
-    # Move until all are severed
+    # Move until all are severed.  Later columns/rows may be outside the initial
+    # reservoir footprint; they become valid when the reservoir sweep covers them.
     electrodes_out = set()
-    max_steps = 100
+    required_sweep_steps = 100
+    if created_droplets_list:
+        if dir_col > 0:
+            required_sweep_steps = max(
+                max(get_droplet_bounds(d, d.origin_corner)[3] + cfg.space_per_col - res_left_col + 1 for d in created_droplets_list),
+                0,
+            )
+        elif dir_col < 0:
+            required_sweep_steps = max(
+                max(res_right_col - get_droplet_bounds(d, d.origin_corner)[2] + cfg.space_per_col + 1 for d in created_droplets_list),
+                0,
+            )
+        elif dir_row > 0:
+            required_sweep_steps = max(
+                max(get_droplet_bounds(d, d.origin_corner)[1] + cfg.space_per_row - res_top_row + 1 for d in created_droplets_list),
+                0,
+            )
+        elif dir_row < 0:
+            required_sweep_steps = max(
+                max(res_bottom_row - get_droplet_bounds(d, d.origin_corner)[0] + cfg.space_per_row + 1 for d in created_droplets_list),
+                0,
+            )
+    max_steps = max(100, required_sweep_steps + max(0, cfg.post_separation_steps) + 5)
     for step in range(max_steps):
+        res_positions = get_droplet_positions(reservoir_droplet, current_res_pos)
+
         # Update activated droplets: check if any new ones are now fully contained
         for d in created_droplets_list:
             if d.id not in activated:
@@ -1520,7 +1590,6 @@ def _split_linear(
         frame = np.zeros(matrix_shape, dtype=np.int32)
         
         # Add reservoir
-        res_positions = get_droplet_positions(reservoir_droplet, current_res_pos)
         for x, y in res_positions:
             if 0 <= x < matrix_shape[0] and 0 <= y < matrix_shape[1]:
                 frame[x, y] = 1
@@ -1730,9 +1799,12 @@ def _split_linear(
         for d in created_droplets_list:
             new_plan.droplet_trajectories[d.id].append(d.origin_corner)
         
-        # If all severed, break
         if len(severed) == len(created_droplets_list):
-            break
+            if post_separation_remaining is None:
+                post_separation_remaining = cfg.post_separation_steps
+            if post_separation_remaining <= 0:
+                break
+            post_separation_remaining -= 1
         
         # Move reservoir
         current_res_pos = (current_res_pos[0] + dir_row, current_res_pos[1] + dir_col)
@@ -1747,6 +1819,8 @@ def _split_linear(
         reservoir_droplet.origin_corner = final_corner
         reservoir_droplet.target_corner = final_corner
 
+    new_plan.frame_count = len(new_plan.frames)
+
     missing_active = [
         d.id
         for d in created_droplets_list
@@ -1756,6 +1830,14 @@ def _split_linear(
         raise ValueError(
             "Linear extraction failed to activate all created droplets. "
             f"Inactive droplet ids: {missing_active}. "
+            "Adjust linear_offset, spacing, direction, or reservoir size."
+        )
+
+    missing_severed = [d.id for d in created_droplets_list if d.id not in severed]
+    if missing_severed:
+        raise ValueError(
+            "Linear extraction failed to sever all created droplets from the reservoir sweep. "
+            f"Unsevered droplet ids: {missing_severed}. "
             "Adjust linear_offset, spacing, direction, or reservoir size."
         )
 

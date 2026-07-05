@@ -1,8 +1,11 @@
+from .voltage_profiles import DEFAULT_INITIAL_VOLTAGE_PROFILE
+
+
 class ElectrodeMatrixFactory:
     """Factory class for creating electrode matrix controller instances."""
 
     @staticmethod
-    def create_matrix(device, rows, columns, version, initial_voltage=55, debug=False):
+    def create_matrix(device, rows, columns, version, initial_voltage=DEFAULT_INITIAL_VOLTAGE_PROFILE, debug=False):
         """
         Create an electrode matrix controller instance.
         

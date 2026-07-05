@@ -1,4 +1,5 @@
 from .electrode_matrix_factory import ElectrodeMatrixFactory
+from .voltage_profiles import DEFAULT_INITIAL_VOLTAGE_PROFILE
 
 class ElectrodeMatrixModule:
     """
@@ -15,7 +16,7 @@ class ElectrodeMatrixModule:
         # Future versions can be added here.
     }
 
-    def __init__(self, parent, device, rows, columns, version="DMLite", initial_voltage=55, debug=False):
+    def __init__(self, parent, device, rows, columns, version="DMLite", initial_voltage=DEFAULT_INITIAL_VOLTAGE_PROFILE, debug=False):
         """
         :param parent: A reference to a higher-level system or controller.
         :param device: Optional backend-specific device/configuration object.

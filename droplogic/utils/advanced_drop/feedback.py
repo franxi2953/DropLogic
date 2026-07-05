@@ -141,6 +141,7 @@ class DropletPositionValidator:
 
         results = {}
         frame_files = {}
+        self.last_stage_movements = []
 
         original_settings = self._snapshot_brightfield_standard_setup()
         try:
@@ -380,7 +381,7 @@ class DropletPositionValidator:
             stage_coords = calculate_droplet_center(droplet_id, electrode_pos, self.advanced_drop.droplets, self.logger)
             # Move stage to droplet center position using update_state queuing system
             if move_stage:
-                
+                move_started_at = time.time()
                 self.logger.info(f"Moving stage to droplet {droplet_id} center -> stage {stage_coords}")
                 # Use the DropSystem's update_state method to trigger the stage movement immediately
                 self.system_context.update_state("xy_stage.position", stage_coords)
@@ -404,6 +405,19 @@ class DropletPositionValidator:
                     self.logger.warning(f"Stage motion timeout after {timeout}s for droplet {droplet_id}")
                 else:
                     self.logger.debug(f"Stage motion completed for droplet {droplet_id}")
+                actual_stage_position = self._read_stage_position()
+                self.last_stage_movements.append({
+                    "droplet_id": int(droplet_id),
+                    "electrode_position": [
+                        int(electrode_pos[0]),
+                        int(electrode_pos[1]),
+                    ],
+                    "target_position": dict(stage_coords),
+                    "actual_position": actual_stage_position or dict(stage_coords),
+                    "motion_complete": bool(motion_complete),
+                    "started_at": move_started_at,
+                    "finished_at": time.time(),
+                })
             else:
                 self._stage_was_moved = False  # Track that stage was not moved
 
@@ -491,6 +505,25 @@ class DropletPositionValidator:
         except Exception as e:
             self.logger.error(f"Error checking droplet {droplet_id} at position {electrode_pos}: {e}")
             return False, None
+
+    def _read_stage_position(self) -> Optional[Dict[str, int]]:
+        """Read the current hardware stage position for verification metadata."""
+        stage = getattr(self, "stage", None)
+        if stage is None or not hasattr(stage, "get_position"):
+            return None
+        values: Dict[str, int] = {}
+        for axis in ("X", "Y", "Z"):
+            try:
+                value = stage.get_position(axis)
+            except Exception:
+                return None
+            if value is None:
+                return None
+            try:
+                values[axis] = int(value)
+            except Exception:
+                return None
+        return values
 
     def _wait_for_motion_blur_settlement(self):
         """Wait for motion blur to settle before capturing frames."""
