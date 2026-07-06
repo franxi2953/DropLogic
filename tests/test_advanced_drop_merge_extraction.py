@@ -198,6 +198,41 @@ class MergeRegressionTests(unittest.TestCase):
         self.assertFalse(validation["ok"])
         self.assertEqual(overlap_issues[0]["cells"], [[10, 10]])
 
+    def test_core_merge_validation_parks_blocker_outside_product_space(self):
+        unit_shape = {(0, 0)}
+        droplets = [
+            make_droplet(1, (10, 9), unit_shape, vital_space=1),
+            make_droplet(2, (20, 20), unit_shape, vital_space=1),
+            make_droplet(9, (10, 10), unit_shape, vital_space=1),
+        ]
+
+        validation = validate_merge_target_layout(
+            droplets,
+            [1, 2],
+            (10, 10),
+            active_droplet_ids=[1, 2, 9],
+            matrix_shape=[30, 30],
+        )
+
+        self.assertFalse(validation["ok"])
+        parking_target = validation["blocker_parking_suggestions"]["9"]["target"]
+        self.assertIsNotNone(parking_target)
+
+        relocated = [
+            make_droplet(1, (10, 9), unit_shape, vital_space=1),
+            make_droplet(2, (20, 20), unit_shape, vital_space=1),
+            make_droplet(9, parking_target, unit_shape, vital_space=1),
+        ]
+        retry_validation = validate_merge_target_layout(
+            relocated,
+            [1, 2],
+            (10, 10),
+            active_droplet_ids=[1, 2, 9],
+            matrix_shape=[30, 30],
+        )
+
+        self.assertTrue(retry_validation["ok"])
+
 
 class LinearExtractionRegressionTests(unittest.TestCase):
     def make_reservoir_case(self):

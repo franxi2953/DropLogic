@@ -598,6 +598,7 @@ def validate_merge_target_layout(
         active_droplets=active_droplets,
         blocker_ids=start_blockers,
         matrix_shape=normalized_shape,
+        reserved_droplets=[(virtual_product, target_corner)],
     )
 
     reason = "merge_target_valid"
@@ -777,6 +778,7 @@ def suggest_merge_blocker_parking_targets(
     active_droplets: List[Any],
     blocker_ids: Set[int],
     matrix_shape: Optional[List[int]],
+    reserved_droplets: Optional[List[Tuple[Any, Tuple[int, int]]]] = None,
 ) -> Dict[str, Dict[str, Any]]:
     if not blocker_ids:
         return {}
@@ -797,6 +799,7 @@ def suggest_merge_blocker_parking_targets(
             current_corners=current_corners,
             final_corners=search_corners,
             matrix_shape=matrix_shape,
+            reserved_droplets=reserved_droplets,
         )
         if candidate is None or candidate == requested:
             suggestions[str(blocker_id)] = {
@@ -834,6 +837,7 @@ def nearest_available_droplet_target(
     current_corners: Dict[int, Tuple[int, int]],
     final_corners: Dict[int, Tuple[int, int]],
     matrix_shape: Optional[List[int]],
+    reserved_droplets: Optional[List[Tuple[Any, Tuple[int, int]]]] = None,
 ) -> Tuple[Optional[Tuple[int, int]], Optional[str]]:
     if matrix_shape and len(matrix_shape) >= 2:
         search_limit = max(int(matrix_shape[0]), int(matrix_shape[1]))
@@ -873,6 +877,7 @@ def nearest_available_droplet_target(
                 current_corners=current_corners,
                 final_corners=final_corners,
                 matrix_shape=matrix_shape,
+                reserved_droplets=reserved_droplets,
             )
             if ok:
                 return (int(candidate[0]), int(candidate[1])), "closest_available_target"
@@ -888,6 +893,7 @@ def target_candidate_available(
     current_corners: Dict[int, Tuple[int, int]],
     final_corners: Dict[int, Tuple[int, int]],
     matrix_shape: Optional[List[int]],
+    reserved_droplets: Optional[List[Tuple[Any, Tuple[int, int]]]] = None,
 ) -> Tuple[bool, Optional[str]]:
     candidate_corner = (int(candidate_corner[0]), int(candidate_corner[1]))
     candidate_final_corners = dict(final_corners)
@@ -901,7 +907,8 @@ def target_candidate_available(
     if droplet is None:
         return False, "droplet_not_active"
 
-    for row, col in get_droplet_positions(droplet, candidate_corner):
+    candidate_positions = get_droplet_positions(droplet, candidate_corner)
+    for row, col in candidate_positions:
         if not target_cell_in_bounds(row, col, matrix_shape):
             return False, "out_of_bounds"
 
@@ -912,7 +919,7 @@ def target_candidate_available(
             continue
         other_final = tuple(candidate_final_corners.get(other_id, current_corners[other_id]))
         other_positions = get_droplet_positions(other, other_final)
-        for cell in get_droplet_positions(droplet, candidate_corner):
+        for cell in candidate_positions:
             if cell in other_positions:
                 return False, "footprint_overlap"
         if check_vital_space_conflict(droplet, candidate_corner, other, other_final):
@@ -924,6 +931,19 @@ def target_candidate_available(
             tuple(current_corners[other_id]),
         ):
             return False, "target_uses_current_reserved_space"
+
+    for reserved_droplet, reserved_corner in reserved_droplets or []:
+        reserved_corner = tuple(reserved_corner)
+        reserved_positions = get_droplet_positions(reserved_droplet, reserved_corner)
+        if candidate_positions & reserved_positions:
+            return False, "reserved_footprint_overlap"
+        if check_vital_space_conflict(
+            droplet,
+            candidate_corner,
+            reserved_droplet,
+            reserved_corner,
+        ):
+            return False, "reserved_vital_space_conflict"
 
     return True, None
 
