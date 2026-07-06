@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-import numpy as np
-
 from .common import (
     check_vital_space_conflict,
     create_droplet,
     get_droplet_positions,
+)
+from .merge import (
+    _apply_forced_dimensions,
+    _build_square_pruned_shape,
+    _relax_shape_safe,
 )
 
 
@@ -654,30 +657,15 @@ def build_merge_product_shape(
     forced_height: Optional[int] = None,
 ) -> Set[Tuple[int, int]]:
     total = max(1, int(total_electrodes or 0))
-    width = int(forced_width) if forced_width is not None else None
-    height = int(forced_height) if forced_height is not None else None
-    if width is not None and height is not None:
-        rows, cols = height, width
-    elif width is not None:
-        rows, cols = int(np.ceil(total / max(1, width))), max(1, width)
-    elif height is not None:
-        rows, cols = max(1, height), int(np.ceil(total / max(1, height)))
-    else:
-        side = int(np.ceil(np.sqrt(total)))
-        rows, cols = side, side
-
-    shape = [(row, col) for row in range(rows) for col in range(cols)]
-    if len(shape) > total:
-        center_row, center_col = rows // 2, cols // 2
-        shape = sorted(
+    shape = _build_square_pruned_shape(total)
+    if forced_width is not None or forced_height is not None:
+        shape = _apply_forced_dimensions(
             shape,
-            key=lambda cell: (
-                abs(cell[0] - center_row) + abs(cell[1] - center_col),
-                cell[0],
-                cell[1],
-            ),
-        )[:total]
-    return set(shape)
+            total,
+            forced_width=forced_width,
+            forced_height=forced_height,
+        )
+    return _relax_shape_safe(shape)
 
 
 def merge_product_vital_space(

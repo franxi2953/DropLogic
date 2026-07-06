@@ -17,6 +17,7 @@ from droplogic.utils.advanced_drop.common import (
 from droplogic.utils.advanced_drop.merge import merge
 from droplogic.utils.advanced_drop.splitting import reservoir_extraction
 from droplogic.utils.advanced_drop.validation import (
+    build_merge_product_shape,
     validate_droplet_target_layout,
     validate_merge_target_layout,
 )
@@ -132,6 +133,36 @@ class MergeRegressionTests(unittest.TestCase):
         self.assertFalse(validation["ok"])
         self.assertEqual(validation["reason"], "stage_blockers_before_merge")
         self.assertIn("7", validation["blocker_parking_suggestions"])
+
+    def test_core_merge_validation_uses_forced_row_major_footprint(self):
+        droplets = [
+            make_droplet(1, (0, 0), {(0, 0), (0, 1)}),
+            make_droplet(2, (5, 5), {(0, 0), (0, 1), (1, 0)}),
+            make_droplet(9, (10, 10), {(0, 0)}),
+        ]
+
+        self.assertEqual(
+            build_merge_product_shape(5, forced_width=3, forced_height=3),
+            {(0, 0), (0, 1), (0, 2), (1, 0), (1, 1)},
+        )
+
+        validation = validate_merge_target_layout(
+            droplets,
+            [1, 2],
+            (10, 10),
+            active_droplet_ids=[1, 2, 9],
+            matrix_shape=[128, 128],
+            forced_width=3,
+            forced_height=3,
+        )
+
+        overlap_issues = [
+            issue
+            for issue in validation["blocking_issues"]
+            if issue["type"] == "merge_target_footprint_overlap"
+        ]
+        self.assertFalse(validation["ok"])
+        self.assertEqual(overlap_issues[0]["cells"], [[10, 10]])
 
 
 class LinearExtractionRegressionTests(unittest.TestCase):
