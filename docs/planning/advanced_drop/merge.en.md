@@ -41,6 +41,8 @@ merged_id = ad.merge([1, 2], target=3)
 
 When `target` is a droplet ID, the other droplets merge into that droplet's current position.
 
+If the target droplet ID is also present in `droplet_ids`, it is treated as the merge destination and removed from the input list. At least one other input droplet is still required.
+
 ## Shape Control
 
 By default, DropLogic builds a compact merged footprint from the total electrode count.
@@ -69,6 +71,28 @@ merged_id = ad.merge(
 ```
 
 This is useful when droplets need extra electrical support at the merge destination.
+
+## Target Validation
+
+Use `validate_merge_target_layout()` to diagnose the merge hub before appending plan frames:
+
+```python
+validation = ad.validate_merge_target_layout(
+    droplet_ids=[1, 2],
+    target=(40, 40),
+)
+
+if not validation["ok"]:
+    print(validation["blocking_issues"])
+    print(validation.get("suggested_target"))
+    print(validation.get("blocker_parking_suggestions"))
+```
+
+The helper is pure: it does not mutate droplets or `ad.plan`. It checks for missing inputs, out-of-bounds merged footprints, active non-merge droplets that overlap the target footprint or vital space, and merge inputs that start inside another active droplet's reserved current space. When possible it returns a nearby `suggested_target` and per-droplet `blocker_parking_suggestions`.
+
+For merge-into-existing operations, the merged product keeps the target droplet's `vital_space`, including `0`. For coordinate targets that create a new merged droplet, the product defaults to `vital_space=1`.
+
+MCP `plan_merge` calls this validation before planning. Unsafe hubs return `ok=false` with `primitive_validation.merge_target_validation` and may include `primitive_validation.recommended_action`. If a suggested target for an existing target droplet includes `retry_arguments`, use those arguments rather than only replacing the coordinate.
 
 ## Event Labels
 

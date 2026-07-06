@@ -88,6 +88,25 @@ system.advanced_drop.move(mode="sipp")
 
 Reminder: `move()` only plans droplets whose current position differs from their target. If a droplet is already at target, call `update_droplet_target()` first.
 
+Before staging a multi-droplet move, use `AdvancedDrop.validate_droplet_target_layout()` to check the proposed final active-droplet layout without mutating droplet state:
+
+```python
+targets = {
+    1: (70, 20),
+    2: (72, 28),
+}
+validation = system.advanced_drop.validate_droplet_target_layout(targets)
+
+if validation["ok"]:
+    for droplet_id, target in targets.items():
+        system.advanced_drop.droplets.update_droplet_target(droplet_id, target)
+else:
+    print(validation["blocking_issues"])
+    print(validation["suggested_targets"])
+```
+
+The validation result reports new footprint overlaps, vital-space conflicts, out-of-bounds targets, targets that use another active droplet's current reserved space, and older pending targets that would also move. It also suggests nearby legal replacements when it can. MCP `update_droplet_target` and `update_droplet_targets` call this core validation automatically and reject unsafe updates before planning.
+
 `update_droplet_position()` changes the logical current position. Prefer `system.advanced_drop.correct_droplet_position()` if you are correcting after a hardware mismatch, because that also appends a correction frame to the plan.
 
 ## Inspect Droplets
@@ -112,6 +131,8 @@ system.advanced_drop.clear()
 `delete_droplet()` removes the droplet object. It does not automatically rewrite old plan frames.
 
 `clear()` resets the droplet list and the current plan. Use it when starting a new protocol in the same Python session.
+
+Through MCP, prefer `clear_droplet_state(reset_executor=true)` for the same logical reset because it also resets the `PlanExecutor` cursor. It does not deactivate physical electrodes; call `emergency_stop(deactivate_electrodes=true)` first when hardware should be turned off.
 
 ## Push a Manual Frame
 

@@ -13,6 +13,7 @@ system.advanced_drop
 - 透過 `system.advanced_drop.droplets` 管理液滴
 - 建立同更新 `DropletPlan` 物件
 - 規劃基於 SIPP 嘅移動
+- 喺修改狀態或追加 plan frames 前驗證目標 layout 同 merge hub
 - 為分割、合併、混合同抽取建立操作計劃
 - 將規劃輸出連接到 `PlanExecutor`
 - 當系統有相機同 stage 模組時，可選連接到 vision-based validation
@@ -64,6 +65,7 @@ system.visualizers.matrix.set_matrix_rotation(0)
 
 - **液滴管理**：建立、更新、檢查同刪除邏輯液滴。
 - **移動**：為目標唔同於目前位置嘅液滴規劃 SIPP movement。
+- **目標同 merge validation**：喺唔修改液滴或 plan 嘅情況下診斷 active-droplet target layout 同 merge hub。
 - **分割同抽取**：由 reservoirs 抽取液滴，或者將一滴分成對稱子滴。
 - **合併**：將多滴 route 到一個目標 footprint。
 - **混合**：運行 split-recombine 或 2D loop mixing patterns。
@@ -98,6 +100,7 @@ print(plan.planning_success)
 - `droplogic/utils/advanced_drop/move.py`
 - `droplogic/utils/advanced_drop/splitting.py`
 - `droplogic/utils/advanced_drop/merge.py`
+- `droplogic/utils/advanced_drop/validation.py`
 - `droplogic/utils/advanced_drop/mixing.py`
 - `droplogic/utils/advanced_drop/feedback.py`
 

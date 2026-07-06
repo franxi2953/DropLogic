@@ -28,9 +28,10 @@ import cv2
 import numpy as np
 
 from .context_store import DropLogicMCPContextStore
-from droplogic.utils.advanced_drop.common import (
-    check_vital_space_conflict,
-    get_droplet_positions,
+from droplogic.utils.advanced_drop.validation import (
+    merge_failure_recommendation,
+    validate_droplet_target_layout,
+    validate_merge_target_layout,
 )
 from droplogic.utils.drop_vision.imaging_capture import (
     capture_channel_frame,
@@ -246,6 +247,7 @@ class DropLogicMCPRuntime:
     REAL_SYSTEMS = {"dmlite", "boxmini", "box_mini", "box_mini1"}
     ADVANCED_DROP_SYNC_MOVE_MAX_ACTIVE = 5
     ADVANCED_DROP_SYNC_MOVE_MAX_TIMEOUT = 45.0
+    ADVANCED_DROP_HARDWARE_MOVE_MAX_ACTIVE = 10
     EXECUTE_SEGMENT_INLINE_WAIT_MAX_SECONDS = 75.0
     EXECUTE_SEGMENT_INLINE_WAIT_MARGIN_SECONDS = 8.0
     EXECUTION_WAIT_STATUS_MAX_WAIT_SECONDS = 30.0
@@ -308,6 +310,10 @@ class DropLogicMCPRuntime:
         self._real_hardware_lock_system: Optional[str] = None
         self.dashboard_scene_path = os.environ.get("DROPLOGIC_DASHBOARD_SCENE_PATH")
         self._dashboard_scene_write_lock = threading.RLock()
+        self._dashboard_scene_writer_thread: Optional[threading.Thread] = None
+        self._dashboard_scene_writer_event = threading.Event()
+        self._dashboard_scene_writer_stop_event = threading.Event()
+        self._dashboard_scene_writer_min_interval_seconds = 0.08
         self._dashboard_timeline_cache_key: Optional[Tuple[Any, ...]] = None
         self._dashboard_timeline_cache: Optional[Dict[str, Any]] = None
         self._mjpeg_server = None
@@ -589,9 +595,10 @@ class DropLogicMCPRuntime:
             return
 
         def _write_scene(_event: Optional[Dict[str, Any]] = None) -> None:
-            self.write_dashboard_scene_snapshot()
+            self.request_dashboard_scene_snapshot()
 
         try:
+            self._start_dashboard_scene_writer_thread()
             executor.on_frame_applied = _write_scene
         except Exception:
             pass
@@ -605,6 +612,54 @@ class DropLogicMCPRuntime:
                 executor.on_frame_applied = None
         except Exception:
             pass
+        self._stop_dashboard_scene_writer_thread()
+
+    def request_dashboard_scene_snapshot(self) -> None:
+        if not self.dashboard_scene_path:
+            return
+        self._start_dashboard_scene_writer_thread()
+        self._dashboard_scene_writer_event.set()
+
+    def _start_dashboard_scene_writer_thread(self) -> None:
+        if not self.dashboard_scene_path:
+            return
+        thread = self._dashboard_scene_writer_thread
+        if thread is not None and thread.is_alive():
+            return
+        self._dashboard_scene_writer_stop_event.clear()
+        self._dashboard_scene_writer_event.clear()
+        self._dashboard_scene_writer_thread = threading.Thread(
+            target=self._dashboard_scene_writer_loop,
+            name=f"DropLogicDashboardSceneWriter-{self.session_id}",
+            daemon=True,
+        )
+        self._dashboard_scene_writer_thread.start()
+
+    def _stop_dashboard_scene_writer_thread(self) -> None:
+        self._dashboard_scene_writer_stop_event.set()
+        self._dashboard_scene_writer_event.set()
+        thread = self._dashboard_scene_writer_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
+        self._dashboard_scene_writer_thread = None
+
+    def _dashboard_scene_writer_loop(self) -> None:
+        last_write = 0.0
+        while not self._dashboard_scene_writer_stop_event.is_set():
+            if not self._dashboard_scene_writer_event.wait(timeout=0.5):
+                continue
+            self._dashboard_scene_writer_event.clear()
+            if self._dashboard_scene_writer_stop_event.is_set():
+                break
+            elapsed = time.monotonic() - last_write
+            remaining = float(self._dashboard_scene_writer_min_interval_seconds) - elapsed
+            if remaining > 0 and self._dashboard_scene_writer_stop_event.wait(remaining):
+                break
+            try:
+                self.write_dashboard_scene_snapshot()
+                last_write = time.monotonic()
+            except Exception:
+                pass
 
     # ---------------------------------------------------------------------
     # Read/observe
@@ -1205,9 +1260,9 @@ class DropLogicMCPRuntime:
             "executor": status.get("executor"),
         }
         if include_plan:
-            summary["plan"] = status.get("plan")
+            summary["plan"] = self._compact_plan_for_status_summary(status.get("plan"))
         if include_droplets:
-            summary["droplets"] = status.get("droplets")
+            summary["droplets"] = self._compact_droplets_for_status_summary(status.get("droplets"))
         if include_visualizers:
             summary["visualizers"] = status.get("visualizers")
 
@@ -1246,6 +1301,104 @@ class DropLogicMCPRuntime:
                 summary["execution_wait"] = {"error": str(exc)}
 
         return self.to_jsonable(summary)
+
+    def _compact_plan_for_status_summary(self, plan: Any) -> Any:
+        if not isinstance(plan, dict):
+            return plan
+
+        events = plan.get("events") if isinstance(plan.get("events"), list) else []
+        trajectories = plan.get("trajectories") if isinstance(plan.get("trajectories"), dict) else {}
+        active_ids = plan.get("active_droplet_ids") if isinstance(plan.get("active_droplet_ids"), list) else []
+        selected_trajectories: Dict[str, Any] = {}
+        active_keys = {str(item) for item in active_ids}
+        for key, value in trajectories.items():
+            if len(selected_trajectories) >= 12:
+                break
+            if str(key) in active_keys or len(trajectories) <= 12:
+                selected_trajectories[str(key)] = self.to_jsonable(value)
+
+        recent_events = [
+            self._compact_plan_event_for_status_summary(event)
+            for event in events[-6:]
+        ]
+
+        compact = {
+            "available": plan.get("available"),
+            "frame_count": plan.get("frame_count"),
+            "planning_success": plan.get("planning_success"),
+            "active_droplet_ids": active_ids,
+            "targets_reached": plan.get("targets_reached"),
+            "event_count": plan.get("event_count", len(events)),
+            "recent_events": recent_events,
+            "trajectory_count": len(trajectories),
+            "trajectories": selected_trajectories,
+        }
+        if len(events) > len(recent_events):
+            compact["events_omitted"] = len(events) - len(recent_events)
+        conflicts = plan.get("conflicts_resolved")
+        if isinstance(conflicts, list) and conflicts:
+            compact["conflicts_resolved_count"] = len(conflicts)
+            compact["recent_conflicts_resolved"] = self.to_jsonable(conflicts[-4:])
+        return {key: value for key, value in compact.items() if value not in (None, {}, [])}
+
+    def _compact_plan_event_for_status_summary(self, event: Any) -> Any:
+        if not isinstance(event, (list, tuple)) or len(event) < 2:
+            return self.to_jsonable(event)
+        frame = event[0]
+        event_type = event[1]
+        metadata = event[2] if len(event) > 2 and isinstance(event[2], dict) else {}
+        keep_keys = {
+            "description",
+            "droplet_id",
+            "droplet_ids",
+            "event_id",
+            "frame_span",
+            "new_droplet_id",
+            "new_droplet_ids",
+            "primitive",
+            "reservoir_droplet_id",
+            "stage",
+        }
+        compact_metadata = {
+            str(key): self.to_jsonable(value)
+            for key, value in metadata.items()
+            if str(key) in keep_keys
+        }
+        return [self.to_jsonable(frame), self.to_jsonable(event_type), compact_metadata]
+
+    def _compact_droplets_for_status_summary(self, droplets: Any) -> Any:
+        if not isinstance(droplets, dict):
+            return droplets
+        entries = droplets.get("droplets") if isinstance(droplets.get("droplets"), list) else []
+        active_ids = droplets.get("active_droplet_ids") if isinstance(droplets.get("active_droplet_ids"), list) else []
+        active_keys = {str(item) for item in active_ids}
+        selected = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if len(selected) >= 16:
+                break
+            if entry.get("active") or str(entry.get("id")) in active_keys or len(entries) <= 16:
+                selected.append(
+                    {
+                        "id": entry.get("id"),
+                        "active": entry.get("active"),
+                        "current_position": entry.get("current_position"),
+                        "target_position": entry.get("target_position"),
+                        "at_target": entry.get("at_target"),
+                        "shape_size": entry.get("shape_size"),
+                        "vital_space": entry.get("vital_space"),
+                    }
+                )
+        compact = {
+            "total_droplets": droplets.get("total_droplets"),
+            "active_droplet_ids": active_ids,
+            "has_plan": droplets.get("has_plan"),
+            "droplets": selected,
+        }
+        if len(entries) > len(selected):
+            compact["droplets_omitted"] = len(entries) - len(selected)
+        return {key: value for key, value in compact.items() if value not in (None, {}, [])}
 
     def _compact_job_for_status_summary(
         self,
@@ -1607,6 +1760,7 @@ class DropLogicMCPRuntime:
                     "cancel_melting_curve_capture",
                 ],
                 "droplets": [
+                    "clear_droplet_state",
                     "create_droplet",
                     "add_droplets",
                     "delete_droplet",
@@ -2811,7 +2965,7 @@ class DropLogicMCPRuntime:
         self,
         target_c: float,
         hold_seconds: float,
-        tolerance_c: float = 0.5,
+        tolerance_c: float = 0.2,
         settle_timeout_seconds: float = 600.0,
         sample_interval_seconds: float = 5.0,
         require_settle: bool = False,
@@ -2832,7 +2986,7 @@ class DropLogicMCPRuntime:
     def temperature_sweep(
         self,
         steps: List[Dict[str, Any]],
-        tolerance_c: float = 0.5,
+        tolerance_c: float = 0.2,
         settle_timeout_seconds: float = 600.0,
         sample_interval_seconds: float = 5.0,
         require_settle: bool = False,
@@ -2885,7 +3039,7 @@ class DropLogicMCPRuntime:
     def start_temperature_routine(
         self,
         steps: List[Dict[str, Any]],
-        tolerance_c: float = 0.5,
+        tolerance_c: float = 0.2,
         settle_timeout_seconds: float = 600.0,
         sample_interval_seconds: float = 5.0,
         require_settle: bool = True,
@@ -2982,7 +3136,7 @@ class DropLogicMCPRuntime:
         capture_mode: str = "droplets",
         visualizer: str = "streamer",
         frame_source: str = "device_raw",
-        tolerance_c: float = 0.5,
+        tolerance_c: float = 0.2,
         settle_timeout_seconds: float = 600.0,
         sample_interval_seconds: float = 5.0,
         require_settle: bool = True,
@@ -3470,6 +3624,88 @@ class DropLogicMCPRuntime:
                 "plan": self.plan_summary(advanced_drop.plan),
             }
 
+    def clear_droplet_state(
+        self,
+        reset_executor: bool = True,
+    ) -> Dict[str, Any]:
+        """Clear all AdvancedDrop droplets/plan and optionally reset the executor cursor."""
+        advanced_drop = self.require_advanced_drop()
+        with self._lock:
+            executor = getattr(advanced_drop, "executor", None)
+            executor_status_before = None
+            executor_thread_alive_after_stop = False
+            if executor is not None:
+                try:
+                    executor_status_before = self.to_jsonable(executor.status())
+                except Exception:
+                    executor_status_before = None
+                try:
+                    executor.stop()
+                except Exception:
+                    pass
+                executor_thread = getattr(executor, "executor_thread", None)
+                if executor_thread is not None:
+                    try:
+                        executor_thread_alive_after_stop = bool(executor_thread.is_alive())
+                    except Exception:
+                        executor_thread_alive_after_stop = True
+                    if executor_thread_alive_after_stop:
+                        try:
+                            executor.stop_event.set()
+                        except Exception:
+                            pass
+
+            advanced_drop.clear()
+
+            executor_status_after = None
+            if reset_executor and executor is not None:
+                with getattr(executor, "execution_lock", self._lock):
+                    executor.current_plan = advanced_drop.plan
+                    try:
+                        executor.state = type(executor.state)()
+                    except Exception:
+                        pass
+                    try:
+                        executor.clear_breakpoints()
+                    except Exception:
+                        executor.breakpoints = set()
+                    try:
+                        executor.breakpoint_reached.clear()
+                    except Exception:
+                        pass
+                    try:
+                        if executor_thread_alive_after_stop:
+                            executor.stop_event.set()
+                        else:
+                            executor.stop_event.clear()
+                    except Exception:
+                        pass
+                    executor.frame_history = []
+                    executor.last_frame_index = None
+                    executor.last_frame_started_at = None
+                    executor.last_frame_finished_at = None
+                    executor.last_frame_duration_seconds = None
+                    executor.last_frame_error = None
+                    executor.last_matrix_queue_wait = None
+                    if hasattr(executor, "_clear_last_applied_frame"):
+                        executor._clear_last_applied_frame()
+                try:
+                    executor_status_after = self.to_jsonable(executor.status())
+                except Exception:
+                    executor_status_after = None
+
+            return {
+                "ok": True,
+                "cleared": True,
+                "reset_executor": bool(reset_executor),
+                "executor_status_before": executor_status_before,
+                "executor_status_after": executor_status_after,
+                "droplets": self.to_jsonable(
+                    advanced_drop.droplets.get_droplets_summary()
+                ),
+                "plan": self.plan_summary(advanced_drop.plan),
+            }
+
     def update_droplet_target(
         self, droplet_id: int, target: Iterable[int]
     ) -> Dict[str, Any]:
@@ -3508,7 +3744,7 @@ class DropLogicMCPRuntime:
         targets: Any,
         include_summary: bool = False,
     ) -> Dict[str, Any]:
-        """Update many droplet targets in one compact MCP response."""
+        """Validate and update many droplet targets in one compact MCP response."""
         advanced_drop = self.require_advanced_drop()
         normalized = []
         errors = []
@@ -3641,433 +3877,46 @@ class DropLogicMCPRuntime:
         advanced_drop: Any,
         target_updates: Dict[int, Tuple[int, int]],
     ) -> Dict[str, Any]:
-        """Validate the final active-droplet layout after applying target updates.
+        validator = getattr(advanced_drop, "validate_droplet_target_layout", None)
+        if callable(validator):
+            return self.to_jsonable(validator(target_updates))
+        active_droplets = self._active_droplets_for_target_validation(advanced_drop)
+        return self.to_jsonable(
+            validate_droplet_target_layout(
+                active_droplets=active_droplets,
+                target_updates=target_updates,
+                matrix_shape=self._target_validation_matrix_shape(advanced_drop),
+            )
+        )
 
-        New footprint/vital-space conflicts caused by the proposed targets are
-        blocking. Conflicts already present in the current physical layout are
-        reported as warnings so callers can still reset targets to current
-        positions.
-        """
-        target_updates = {
-            int(droplet_id): tuple(target)
-            for droplet_id, target in (target_updates or {}).items()
-        }
-        requested_ids = sorted(target_updates)
+    def _validate_merge_target_layout(
+        self,
+        advanced_drop: Any,
+        arguments: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        validator = getattr(advanced_drop, "validate_merge_target_layout", None)
+        if callable(validator):
+            return self.to_jsonable(
+                validator(
+                    droplet_ids=arguments.get("droplet_ids") or [],
+                    target=arguments.get("target"),
+                    forced_width=arguments.get("forced_width"),
+                    forced_height=arguments.get("forced_height"),
+                )
+            )
         active_droplets = self._active_droplets_for_target_validation(advanced_drop)
         active_ids = [int(getattr(droplet, "id")) for droplet in active_droplets]
-        matrix_shape = self._target_validation_matrix_shape(advanced_drop)
-
-        current_corners: Dict[int, Tuple[int, int]] = {}
-        final_corners: Dict[int, Tuple[int, int]] = {}
-        for droplet in active_droplets:
-            droplet_id = int(getattr(droplet, "id"))
-            current_corners[droplet_id] = tuple(getattr(droplet, "origin_corner"))
-            final_corners[droplet_id] = tuple(
-                target_updates.get(
-                    droplet_id,
-                    getattr(droplet, "target_corner", getattr(droplet, "origin_corner")),
-                )
-            )
-
-        pending_ids = [
-            droplet_id
-            for droplet_id in active_ids
-            if current_corners.get(droplet_id) != final_corners.get(droplet_id)
-        ]
-        pending_not_requested = [
-            droplet_id for droplet_id in pending_ids if droplet_id not in requested_ids
-        ]
-
-        blocking = []
-        warnings = []
-        for droplet in active_droplets:
-            droplet_id = int(getattr(droplet, "id"))
-            final_corner = final_corners[droplet_id]
-            final_positions = get_droplet_positions(droplet, final_corner)
-            out_of_bounds = [
-                [row, col]
-                for row, col in sorted(final_positions)
-                if not self._target_cell_in_bounds(row, col, matrix_shape)
-            ]
-            if not out_of_bounds:
-                continue
-            issue = {
-                "type": "out_of_bounds",
-                "droplet_id": droplet_id,
-                "target": final_corner,
-                "matrix_shape": matrix_shape,
-                "cells": out_of_bounds[:10],
-                "cell_count": len(out_of_bounds),
-            }
-            if droplet_id in requested_ids or final_corner != current_corners[droplet_id]:
-                blocking.append(issue)
-            else:
-                warnings.append({**issue, "warning": "preexisting_out_of_bounds"})
-
-        final_occupied: Dict[Tuple[int, int], int] = {}
-        current_occupied: Dict[Tuple[int, int], int] = {}
-        for droplet in active_droplets:
-            droplet_id = int(getattr(droplet, "id"))
-            for cell in get_droplet_positions(droplet, current_corners[droplet_id]):
-                current_occupied.setdefault(cell, droplet_id)
-            for cell in get_droplet_positions(droplet, final_corners[droplet_id]):
-                other_id = final_occupied.setdefault(cell, droplet_id)
-                if other_id == droplet_id:
-                    continue
-                current_same = (
-                    current_occupied.get(cell) in {other_id, droplet_id}
-                    and current_corners.get(other_id) == final_corners.get(other_id)
-                    and current_corners.get(droplet_id) == final_corners.get(droplet_id)
-                )
-                issue = {
-                    "type": "footprint_overlap",
-                    "droplet_ids": [other_id, droplet_id],
-                    "cell": [cell[0], cell[1]],
-                    "targets": {
-                        str(other_id): final_corners.get(other_id),
-                        str(droplet_id): final_corners.get(droplet_id),
-                    },
-                }
-                if current_same:
-                    warnings.append({**issue, "warning": "preexisting_overlap"})
-                else:
-                    blocking.append(issue)
-
-        preexisting_pair_conflicts = set()
-        for index, droplet_a in enumerate(active_droplets):
-            id_a = int(getattr(droplet_a, "id"))
-            for droplet_b in active_droplets[index + 1:]:
-                id_b = int(getattr(droplet_b, "id"))
-                pair = tuple(sorted((id_a, id_b)))
-                current_conflict = check_vital_space_conflict(
-                    droplet_a,
-                    current_corners[id_a],
-                    droplet_b,
-                    current_corners[id_b],
-                )
-                if current_conflict:
-                    preexisting_pair_conflicts.add(pair)
-                final_conflict = check_vital_space_conflict(
-                    droplet_a,
-                    final_corners[id_a],
-                    droplet_b,
-                    final_corners[id_b],
-                )
-                if not final_conflict:
-                    continue
-                issue = {
-                    "type": "vital_space_conflict",
-                    "droplet_ids": [id_a, id_b],
-                    "targets": {
-                        str(id_a): final_corners[id_a],
-                        str(id_b): final_corners[id_b],
-                    },
-                    "vital_spaces": {
-                        str(id_a): int(getattr(droplet_a, "vital_space", 0) or 0),
-                        str(id_b): int(getattr(droplet_b, "vital_space", 0) or 0),
-                    },
-                }
-                if pair in preexisting_pair_conflicts:
-                    warnings.append({**issue, "warning": "preexisting_vital_space_conflict"})
-                else:
-                    blocking.append(issue)
-
-        for index, droplet_a in enumerate(active_droplets):
-            id_a = int(getattr(droplet_a, "id"))
-            for droplet_b in active_droplets[index + 1:]:
-                id_b = int(getattr(droplet_b, "id"))
-                final_conflict = check_vital_space_conflict(
-                    droplet_a,
-                    final_corners[id_a],
-                    droplet_b,
-                    final_corners[id_b],
-                )
-                if final_conflict:
-                    continue
-                for mover, mover_id, blocker, blocker_id in (
-                    (droplet_a, id_a, droplet_b, id_b),
-                    (droplet_b, id_b, droplet_a, id_a),
-                ):
-                    if final_corners[mover_id] == current_corners[mover_id]:
-                        continue
-                    if not check_vital_space_conflict(
-                        mover,
-                        final_corners[mover_id],
-                        blocker,
-                        current_corners[blocker_id],
-                    ):
-                        continue
-                    blocking.append(
-                        {
-                            "type": "target_uses_current_reserved_space",
-                            "moving_droplet_id": mover_id,
-                            "blocking_droplet_id": blocker_id,
-                            "moving_target": final_corners[mover_id],
-                            "blocking_current_position": current_corners[blocker_id],
-                            "message": (
-                                "SIPP reserves active droplets' current footprints/vital "
-                                "spaces during a move. Move the blocking droplet to an "
-                                "intermediate parking position and execute that segment first."
-                            ),
-                        }
-                    )
-
-        if pending_not_requested:
-            warnings.append(
-                {
-                    "type": "pending_targets_not_in_request",
-                    "droplet_ids": pending_not_requested,
-                    "message": (
-                        "plan_move moves every active droplet whose target differs from "
-                        "its current position, including these droplets. Reset them to "
-                        "their current positions or include them intentionally before planning."
-                    ),
-                }
-            )
-        if len(pending_ids) > 10:
-            warnings.append(
-                {
-                    "type": "large_move_batch",
-                    "pending_target_count": len(pending_ids),
-                    "message": (
-                        "For real hardware, split movement into executed batches of "
-                        "5-10 droplets and prefer 5 in dense layouts."
-                    ),
-                }
-            )
-
-        suggested_targets = {}
-        if blocking and requested_ids:
-            suggested_targets = self._suggest_available_droplet_targets(
-                active_droplets=active_droplets,
-                current_corners=current_corners,
-                final_corners=final_corners,
-                requested_targets=target_updates,
-                blocking_issues=blocking,
-                matrix_shape=matrix_shape,
-            )
-
         return self.to_jsonable(
-            {
-                "ok": not blocking,
-                "requested_target_ids": requested_ids,
-                "active_droplet_ids": active_ids,
-                "pending_target_ids": pending_ids,
-                "pending_target_ids_not_in_request": pending_not_requested,
-                "blocking_issue_count": len(blocking),
-                "blocking_issues": blocking[:20],
-                "suggestion_count": len(suggested_targets),
-                "suggested_targets": suggested_targets,
-                "warning_count": len(warnings),
-                "warnings": warnings[:20],
-                "matrix_shape": matrix_shape,
-            }
-        )
-
-    def _suggest_available_droplet_targets(
-        self,
-        *,
-        active_droplets: List[Any],
-        current_corners: Dict[int, Tuple[int, int]],
-        final_corners: Dict[int, Tuple[int, int]],
-        requested_targets: Dict[int, Tuple[int, int]],
-        blocking_issues: List[Dict[str, Any]],
-        matrix_shape: Optional[List[int]],
-    ) -> Dict[str, Dict[str, Any]]:
-        requested_ids = {int(droplet_id) for droplet_id in requested_targets}
-        affected_ids = self._target_suggestion_affected_ids(
-            blocking_issues,
-            requested_ids,
-        )
-        if not affected_ids:
-            affected_ids = set(requested_ids)
-
-        droplets_by_id = {
-            int(getattr(droplet, "id")): droplet
-            for droplet in active_droplets
-            if getattr(droplet, "id", None) is not None
-        }
-        suggested = {}
-        search_corners = dict(final_corners)
-
-        for droplet_id in sorted(affected_ids):
-            droplet = droplets_by_id.get(droplet_id)
-            requested = requested_targets.get(droplet_id)
-            if droplet is None or requested is None:
-                continue
-
-            requested = tuple(requested)
-            if self._target_candidate_available(
-                droplet_id=droplet_id,
-                candidate_corner=requested,
-                active_droplets=active_droplets,
-                current_corners=current_corners,
-                final_corners=search_corners,
-                matrix_shape=matrix_shape,
-            )[0]:
-                search_corners[droplet_id] = requested
-                continue
-
-            candidate, reason = self._nearest_available_droplet_target(
-                droplet_id=droplet_id,
-                requested_corner=requested,
-                active_droplets=active_droplets,
-                current_corners=current_corners,
-                final_corners=search_corners,
-                matrix_shape=matrix_shape,
+            validate_merge_target_layout(
+                droplets=list(getattr(advanced_drop, "droplets", []) or []),
+                droplet_ids=arguments.get("droplet_ids") or [],
+                target=arguments.get("target"),
+                active_droplet_ids=active_ids,
+                matrix_shape=self._target_validation_matrix_shape(advanced_drop),
+                forced_width=arguments.get("forced_width"),
+                forced_height=arguments.get("forced_height"),
             )
-            if candidate is None:
-                suggested[str(droplet_id)] = {
-                    "target": None,
-                    "from": requested,
-                    "reason": "no_available_target_found",
-                    "message": (
-                        "No nearby legal target was found within the cartridge. "
-                        "Move blockers to parking positions or reduce the batch size."
-                    ),
-                }
-                continue
-
-            search_corners[droplet_id] = candidate
-            suggested[str(droplet_id)] = {
-                "target": candidate,
-                "from": requested,
-                "manhattan_distance": (
-                    abs(int(candidate[0]) - int(requested[0]))
-                    + abs(int(candidate[1]) - int(requested[1]))
-                ),
-                "reason": reason or "closest_available_target",
-                "message": (
-                    "Closest available target found while keeping the other "
-                    "requested targets and active droplets reserved."
-                ),
-            }
-
-        return suggested
-
-    @staticmethod
-    def _target_suggestion_affected_ids(
-        blocking_issues: List[Dict[str, Any]],
-        requested_ids: set,
-    ) -> set:
-        affected = set()
-        for issue in blocking_issues:
-            issue_type = issue.get("type")
-            if issue_type == "out_of_bounds":
-                droplet_id = issue.get("droplet_id")
-                if droplet_id in requested_ids:
-                    affected.add(int(droplet_id))
-            elif issue_type in {"footprint_overlap", "vital_space_conflict"}:
-                for droplet_id in issue.get("droplet_ids", []) or []:
-                    if droplet_id in requested_ids:
-                        affected.add(int(droplet_id))
-            elif issue_type == "target_uses_current_reserved_space":
-                droplet_id = issue.get("moving_droplet_id")
-                if droplet_id in requested_ids:
-                    affected.add(int(droplet_id))
-        return affected
-
-    def _nearest_available_droplet_target(
-        self,
-        *,
-        droplet_id: int,
-        requested_corner: Tuple[int, int],
-        active_droplets: List[Any],
-        current_corners: Dict[int, Tuple[int, int]],
-        final_corners: Dict[int, Tuple[int, int]],
-        matrix_shape: Optional[List[int]],
-    ) -> Tuple[Optional[Tuple[int, int]], Optional[str]]:
-        if matrix_shape and len(matrix_shape) >= 2:
-            search_limit = max(int(matrix_shape[0]), int(matrix_shape[1]))
-        else:
-            search_limit = 64
-
-        requested_row, requested_col = int(requested_corner[0]), int(requested_corner[1])
-        last_reason = None
-        for radius in range(search_limit + 1):
-            candidates = []
-            for row_delta in range(-radius, radius + 1):
-                col_distance = radius - abs(row_delta)
-                if col_distance == 0:
-                    candidates.append((requested_row + row_delta, requested_col))
-                else:
-                    candidates.append(
-                        (requested_row + row_delta, requested_col - col_distance)
-                    )
-                    candidates.append(
-                        (requested_row + row_delta, requested_col + col_distance)
-                    )
-            for candidate in sorted(
-                set(candidates),
-                key=lambda item: (
-                    abs(item[0] - requested_row) + abs(item[1] - requested_col),
-                    max(abs(item[0] - requested_row), abs(item[1] - requested_col)),
-                    abs(item[0] - requested_row),
-                    abs(item[1] - requested_col),
-                    item[0],
-                    item[1],
-                ),
-            ):
-                ok, reason = self._target_candidate_available(
-                    droplet_id=droplet_id,
-                    candidate_corner=candidate,
-                    active_droplets=active_droplets,
-                    current_corners=current_corners,
-                    final_corners=final_corners,
-                    matrix_shape=matrix_shape,
-                )
-                if ok:
-                    return (int(candidate[0]), int(candidate[1])), "closest_available_target"
-                last_reason = reason
-        return None, last_reason
-
-    def _target_candidate_available(
-        self,
-        *,
-        droplet_id: int,
-        candidate_corner: Tuple[int, int],
-        active_droplets: List[Any],
-        current_corners: Dict[int, Tuple[int, int]],
-        final_corners: Dict[int, Tuple[int, int]],
-        matrix_shape: Optional[List[int]],
-    ) -> Tuple[bool, Optional[str]]:
-        candidate_corner = (int(candidate_corner[0]), int(candidate_corner[1]))
-        candidate_final_corners = dict(final_corners)
-        candidate_final_corners[int(droplet_id)] = candidate_corner
-        droplets_by_id = {
-            int(getattr(droplet, "id")): droplet
-            for droplet in active_droplets
-            if getattr(droplet, "id", None) is not None
-        }
-        droplet = droplets_by_id.get(int(droplet_id))
-        if droplet is None:
-            return False, "droplet_not_active"
-
-        for row, col in get_droplet_positions(droplet, candidate_corner):
-            if not self._target_cell_in_bounds(row, col, matrix_shape):
-                return False, "out_of_bounds"
-
-        moving = candidate_corner != tuple(current_corners.get(int(droplet_id), candidate_corner))
-        for other in active_droplets:
-            other_id = int(getattr(other, "id"))
-            if other_id == int(droplet_id):
-                continue
-            other_final = tuple(candidate_final_corners.get(other_id, current_corners[other_id]))
-            other_positions = get_droplet_positions(other, other_final)
-            for cell in get_droplet_positions(droplet, candidate_corner):
-                if cell in other_positions:
-                    return False, "footprint_overlap"
-            if check_vital_space_conflict(droplet, candidate_corner, other, other_final):
-                return False, "vital_space_conflict"
-            if moving and check_vital_space_conflict(
-                droplet,
-                candidate_corner,
-                other,
-                tuple(current_corners[other_id]),
-            ):
-                return False, "target_uses_current_reserved_space"
-
-        return True, None
+        )
 
     def _active_droplets_for_target_validation(self, advanced_drop: Any) -> List[Any]:
         droplets = list(getattr(advanced_drop, "droplets", []) or [])
@@ -4125,16 +3974,6 @@ class DropLogicMCPRuntime:
             except Exception:
                 pass
         return None
-
-    @staticmethod
-    def _target_cell_in_bounds(
-        row: int,
-        col: int,
-        matrix_shape: Optional[List[int]],
-    ) -> bool:
-        if not matrix_shape or len(matrix_shape) < 2:
-            return True
-        return 0 <= int(row) < int(matrix_shape[0]) and 0 <= int(col) < int(matrix_shape[1])
 
     def update_droplet_position(
         self, droplet_id: int, position: Iterable[int]
@@ -4239,7 +4078,7 @@ class DropLogicMCPRuntime:
         options: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Plan movement for current droplet targets; does not execute hardware."""
+        """Plan movement for current targets; real hardware rejects oversized active batches."""
         planner_options, ignored_options = self._sanitize_plan_move_options(
             options=options,
             extra=kwargs,
@@ -4252,6 +4091,7 @@ class DropLogicMCPRuntime:
         }
         if planning_timeout is not None:
             arguments["planning_timeout"] = planning_timeout
+        self._guard_hardware_plan_move_batch(background=background)
         result = self._plan_advanced_drop_primitive(
             "move",
             arguments,
@@ -4407,7 +4247,7 @@ class DropLogicMCPRuntime:
         remove_duplicate_frames: bool = False,
         background: bool = False,
     ) -> Dict[str, Any]:
-        """Plan merging droplets into one target; does not execute hardware."""
+        """Validate and plan merging droplets into one target; does not execute hardware."""
         arguments = {
             "droplet_ids": droplet_ids,
             "target": target,
@@ -4693,6 +4533,44 @@ class DropLogicMCPRuntime:
             return_full_result = bool(call_arguments.pop("return_full_result", False))
             if return_full_result and allow_full_result_override:
                 compact_result = False
+            if method == "merge":
+                merge_target_validation = self._validate_merge_target_layout(
+                    advanced_drop,
+                    call_arguments,
+                )
+                if not merge_target_validation.get("ok", True):
+                    primitive_validation = {
+                        "ok": False,
+                        "reason": "merge_target_layout_invalid",
+                        "message": (
+                            "AdvancedDrop merge target layout is unsafe; stage "
+                            "blockers away or choose another merge target before "
+                            "planning this merge."
+                        ),
+                        "merge_target_validation": merge_target_validation,
+                    }
+                    recommendation = merge_failure_recommendation(
+                        merge_target_validation
+                    )
+                    if recommendation:
+                        primitive_validation["recommended_action"] = recommendation
+                    return {
+                        "method": method,
+                        "result": None,
+                        "result_compact": bool(compact_result),
+                        "visualizer_recovery": self._recover_visualizer_if_needed(
+                            "matrix",
+                            was_running=matrix_was_running,
+                        ),
+                        "droplets": self.to_jsonable(
+                            advanced_drop.droplets.get_droplets_summary()
+                        ),
+                        "plan": self.plan_summary(
+                            getattr(advanced_drop, "plan", None)
+                        ),
+                        "ok": False,
+                        "primitive_validation": primitive_validation,
+                    }
             try:
                 result = func(**call_arguments)
             except Exception:
@@ -4749,6 +4627,24 @@ class DropLogicMCPRuntime:
                 response["droplets"] = self.to_jsonable(
                     advanced_drop.droplets.get_droplets_summary()
                 )
+                if method == "merge":
+                    primitive_validation = dict(response.get("primitive_validation") or {})
+                    try:
+                        merge_target_validation = self._validate_merge_target_layout(
+                            advanced_drop,
+                            call_arguments,
+                        )
+                        primitive_validation["merge_target_validation"] = (
+                            merge_target_validation
+                        )
+                        recommendation = merge_failure_recommendation(
+                            merge_target_validation
+                        )
+                        if recommendation:
+                            primitive_validation["recommended_action"] = recommendation
+                    except Exception as exc:
+                        primitive_validation["merge_target_validation_error"] = str(exc)
+                    response["primitive_validation"] = primitive_validation
             next_step = (
                 self._planning_next_step(method, plan_summary)
                 if response.get("ok", True)
@@ -4806,13 +4702,46 @@ class DropLogicMCPRuntime:
                 "allow_long_sync=true."
             )
 
+    def _guard_hardware_plan_move_batch(self, background: bool) -> None:
+        if str(self.system_name or "").lower() not in self.REAL_SYSTEMS:
+            return
+        active_count = self._advanced_drop_active_move_count()
+        if active_count <= self.ADVANCED_DROP_HARDWARE_MOVE_MAX_ACTIVE:
+            return
+        raise DropLogicMCPError(
+            "Refusing real-hardware plan_move for too many moving droplets in one "
+            "batch. Split the movement into executed batches of 5-10 droplets "
+            "and prefer 5 for 2x2 droplets, dense layouts, crossings, or long "
+            "routes. "
+            f"active_moving_droplets={active_count}, "
+            f"hardware_batch_limit={self.ADVANCED_DROP_HARDWARE_MOVE_MAX_ACTIVE}."
+        )
+
     def _advanced_drop_active_move_count(self) -> int:
         try:
-            droplets = self.require_advanced_drop().droplets
+            advanced_drop = self.require_advanced_drop()
+            droplets = advanced_drop.droplets
+            plan = getattr(advanced_drop, "plan", None)
+            active_ids = None
+            if plan is not None and getattr(plan, "frames", None):
+                active_by_frame = getattr(plan, "active_droplets_per_frame", None)
+                if active_by_frame and active_by_frame[-1] is not None:
+                    parsed_active_ids = set()
+                    for droplet_id in active_by_frame[-1]:
+                        try:
+                            parsed_active_ids.add(int(droplet_id))
+                        except Exception:
+                            continue
+                    if parsed_active_ids:
+                        active_ids = parsed_active_ids
             return sum(
                 1
                 for droplet in droplets
-                if getattr(droplet, "origin_corner", None)
+                if (
+                    active_ids is None
+                    or int(getattr(droplet, "id", -1)) in active_ids
+                )
+                and getattr(droplet, "origin_corner", None)
                 != getattr(droplet, "target_corner", None)
             )
         except Exception:
@@ -7413,7 +7342,7 @@ class DropLogicMCPRuntime:
                 }
             )
 
-        detailed_frame_limit = 240
+        detailed_frame_limit = 80
         include_detailed_frames = frame_count <= detailed_frame_limit
         timeline_frames = []
         for frame_index, frame_matrix in enumerate(frames):
@@ -8283,29 +8212,42 @@ class DropLogicMCPRuntime:
         if not path:
             return
         output_path = os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
-        try:
-            scene = self.dashboard_scene()
-        except Exception:
-            scene = {
-                "available": False,
-                "reason": "scene_snapshot_error",
-                "updated_at": time.time(),
-            }
-        try:
-            output_dir = os.path.dirname(output_path)
-            if output_dir:
-                os.makedirs(output_dir, exist_ok=True)
-            temp_path = f"{output_path}.{os.getpid()}.tmp"
-            with open(temp_path, "w", encoding="utf-8") as handle:
-                json.dump(
-                    self.to_jsonable(scene),
-                    handle,
-                    ensure_ascii=True,
-                    separators=(",", ":"),
+        with self._dashboard_scene_write_lock:
+            temp_path = ""
+            try:
+                scene = self.dashboard_scene()
+            except Exception:
+                scene = {
+                    "available": False,
+                    "reason": "scene_snapshot_error",
+                    "updated_at": time.time(),
+                }
+            try:
+                output_dir = os.path.dirname(output_path)
+                if output_dir:
+                    os.makedirs(output_dir, exist_ok=True)
+                fd, temp_path = tempfile.mkstemp(
+                    prefix=f"{os.path.basename(output_path)}.{os.getpid()}.",
+                    suffix=".tmp",
+                    dir=output_dir or None,
+                    text=True,
                 )
-            os.replace(temp_path, output_path)
-        except Exception:
-            pass
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(
+                        self.to_jsonable(scene),
+                        handle,
+                        ensure_ascii=True,
+                        separators=(",", ":"),
+                    )
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temp_path, output_path)
+            except Exception:
+                if temp_path:
+                    try:
+                        os.remove(temp_path)
+                    except OSError:
+                        pass
 
     def save_protocol(self, output_path: str) -> Dict[str, Any]:
         """Save the current plan and droplets to a pickle protocol file."""
@@ -9579,6 +9521,35 @@ class DropLogicMCPRuntime:
         max_samples = max(1, int(max_samples))
 
         set_result = system.update_state("temperature.target", target)
+        target_queue_timeout = 15.0 if settle_timeout <= 0 else min(max(settle_timeout, 15.0), 30.0)
+        target_queue_wait = self._wait_for_hardware_queue_empty(
+            timeout_seconds=target_queue_timeout,
+            poll_interval=0.05,
+        )
+        if not target_queue_wait.get("ok", False):
+            return {
+                "ok": False,
+                "target_c": target,
+                "hold_seconds": hold_seconds,
+                "settled": False,
+                "set_result": self.to_jsonable(set_result),
+                "target_queue_wait": self.to_jsonable(target_queue_wait),
+                "samples": [],
+                "error": "temperature target command failed before hold",
+            }
+        confirmed_target = self._read_temperature_target_state(system)
+        if confirmed_target is not None and abs(float(confirmed_target) - target) > 1e-6:
+            return {
+                "ok": False,
+                "target_c": target,
+                "hold_seconds": hold_seconds,
+                "settled": False,
+                "set_result": self.to_jsonable(set_result),
+                "target_queue_wait": self.to_jsonable(target_queue_wait),
+                "confirmed_target_c": confirmed_target,
+                "samples": [],
+                "error": "temperature target reverted before hold",
+            }
         samples = []
         settled = False
         settle_started = time.time()
@@ -9596,6 +9567,19 @@ class DropLogicMCPRuntime:
             self._append_compact_sample(samples, sample, max_samples)
             if status_callback is not None:
                 status_callback(sample)
+            changed_target = self._read_temperature_target_state(system)
+            if changed_target is not None and abs(float(changed_target) - target) > 1e-6:
+                return {
+                    "ok": False,
+                    "target_c": target,
+                    "hold_seconds": hold_seconds,
+                    "settled": settled,
+                    "set_result": self.to_jsonable(set_result),
+                    "target_queue_wait": self.to_jsonable(target_queue_wait),
+                    "confirmed_target_c": changed_target,
+                    "samples": samples,
+                    "error": "temperature target changed during hold",
+                }
             if sample["within_tolerance"]:
                 settled = True
                 break
@@ -9606,6 +9590,7 @@ class DropLogicMCPRuntime:
                     "hold_seconds": hold_seconds,
                     "settled": settled,
                     "set_result": self.to_jsonable(set_result),
+                    "target_queue_wait": self.to_jsonable(target_queue_wait),
                     "samples": samples,
                     "error": "cancelled",
                 }
@@ -9619,6 +9604,7 @@ class DropLogicMCPRuntime:
                         "hold_seconds": hold_seconds,
                         "settled": settled,
                         "set_result": self.to_jsonable(set_result),
+                        "target_queue_wait": self.to_jsonable(target_queue_wait),
                         "samples": samples,
                         "error": "cancelled",
                     }
@@ -9632,6 +9618,7 @@ class DropLogicMCPRuntime:
                 "hold_seconds": hold_seconds,
                 "settled": False,
                 "set_result": self.to_jsonable(set_result),
+                "target_queue_wait": self.to_jsonable(target_queue_wait),
                 "samples": samples,
                 "error": "temperature did not settle within tolerance before timeout",
             }
@@ -9650,6 +9637,19 @@ class DropLogicMCPRuntime:
             self._append_compact_sample(samples, sample, max_samples)
             if status_callback is not None:
                 status_callback(sample)
+            changed_target = self._read_temperature_target_state(system)
+            if changed_target is not None and abs(float(changed_target) - target) > 1e-6:
+                return {
+                    "ok": False,
+                    "target_c": target,
+                    "hold_seconds": hold_seconds,
+                    "settled": settled,
+                    "set_result": self.to_jsonable(set_result),
+                    "target_queue_wait": self.to_jsonable(target_queue_wait),
+                    "confirmed_target_c": changed_target,
+                    "samples": samples,
+                    "error": "temperature target changed during hold",
+                }
             if stop_event is not None and stop_event.is_set():
                 return {
                     "ok": False,
@@ -9657,6 +9657,7 @@ class DropLogicMCPRuntime:
                     "hold_seconds": hold_seconds,
                     "settled": settled,
                     "set_result": self.to_jsonable(set_result),
+                    "target_queue_wait": self.to_jsonable(target_queue_wait),
                     "samples": samples,
                     "error": "cancelled",
                 }
@@ -9672,6 +9673,7 @@ class DropLogicMCPRuntime:
                         "hold_seconds": hold_seconds,
                         "settled": settled,
                         "set_result": self.to_jsonable(set_result),
+                        "target_queue_wait": self.to_jsonable(target_queue_wait),
                         "samples": samples,
                         "error": "cancelled",
                     }
@@ -9700,15 +9702,31 @@ class DropLogicMCPRuntime:
             "tolerance_c": tolerance,
             "final_temperature_c": final_temperature,
             "set_result": self.to_jsonable(set_result),
+            "target_queue_wait": self.to_jsonable(target_queue_wait),
             "samples": samples,
         }
+
+    def _read_temperature_target_state(self, system) -> Optional[float]:
+        try:
+            state = getattr(system, "state", {}) or {}
+            temperature = state.get("temperature", {})
+            target = temperature.get("target", temperature.get("target_c"))
+            if target is None:
+                return None
+            return float(target)
+        except Exception:
+            return None
 
     def _read_temperature_value(self):
         system = self.require_system()
         module = getattr(system, "temperature", None)
         if module is None or not hasattr(module, "get_temperature"):
             return None
+        lock = getattr(system, "_temperature_lock", None)
         try:
+            if lock is not None:
+                with lock:
+                    return module.get_temperature()
             return module.get_temperature()
         except Exception as exc:
             self._record_error("temperature:get_temperature", exc)

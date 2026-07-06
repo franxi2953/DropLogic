@@ -104,6 +104,7 @@ agent 通常应通过 `AdvancedDrop` 和 `PlanExecutor` 控制实验，而不是
 
 | Tool | 用途 |
 | --- | --- |
+| `clear_droplet_state` | 清空逻辑液滴和 plan frames，并可选择重置 executor cursor |
 | `create_droplet` | 创建一个液滴 |
 | `add_droplets` | 创建多个液滴 |
 | `delete_droplet` | 从逻辑液滴列表删除液滴 |
@@ -111,6 +112,8 @@ agent 通常应通过 `AdvancedDrop` 和 `PlanExecutor` 控制实验，而不是
 | `update_droplet_targets` | 规划前批量更改目标 |
 | `update_droplet_position` | 校正逻辑当前位置 |
 | `droplets_summary` | 检查所有液滴 |
+
+`update_droplet_target` 和 `update_droplet_targets` 会在修改目标前验证最终 active-droplet layout。如果结果包含 `target_validation.ok=false`，目标不会被修改；调用 `plan_move` 前先检查 `blocking_issues`、`warnings` 和 `suggested_targets`。在已加载 runtime 中开始干净的逻辑协议时使用 `clear_droplet_state(reset_executor=true)`；它只重置 AdvancedDrop 状态，不关闭物理电极，所以需要关电极时先调用 `emergency_stop(deactivate_electrodes=true)`。
 
 ### Planning Primitive Tools
 
@@ -130,6 +133,10 @@ agent 通常应通过 `AdvancedDrop` 和 `PlanExecutor` 控制实验，而不是
 | `save_protocol` | 将当前 plan 和 droplets 保存到 pickle |
 
 大规模或困难规划应使用 `background=true`，然后轮询 `planning_job_status()`，不要让一个 MCP request 长时间阻塞。通用 `advanced_drop_call` / `list_advanced_drop_methods` 只在 `--allow-unsafe-tools` 下作为 debug surface 注册。
+
+在 DMLite 和 BOXMini 等真实硬件上，`plan_move` 会拒绝单次调用中超过 10 个 active moving droplets。把移动拆成已执行的 5-10 个液滴批次；密集布局、交叉、长路径或 2 x 2 液滴优先使用 5 个一批。
+
+`plan_merge` 会通过 core AdvancedDrop validation API 预检查 merge hub。不安全的 hub 返回 `ok=false` 和 `primitive_validation.merge_target_validation`，并可能包含 `blocker_parking_suggestions`、`suggested_target` 或 `recommended_action`，用于先移动阻挡液滴或在附近 hub 重试。
 
 ### Execution Tools
 
@@ -184,6 +191,20 @@ MCP server 不是视频流服务器。agents 可以轮询 `visualizer_frame` 获
 | `detect_condensates` | 从当前 imaging setup 运行 condensate detection |
 
 无 live imaging 时可以使用 debug mode。
+
+### Temperature Tools
+
+| Tool | 用途 |
+| --- | --- |
+| `temperature_hold` | 设置单个目标温度，等待/保持，并返回紧凑 samples |
+| `start_temperature_routine` | 后台运行一组 temperature hold steps |
+| `temperature_routine_status` | 检查当前或上一次 temperature routine |
+| `cancel_temperature_routine` | 取消当前 temperature routine |
+| `start_melting_curve_capture` | 每个温度 step hold 后捕获图像 |
+| `melting_curve_capture_status` | 检查当前或上一次 melting-curve capture |
+| `cancel_melting_curve_capture` | 取消当前 melting-curve capture |
+
+Temperature holds 和 routines 默认使用 `tolerance_c=0.2`。runtime 会等待硬件命令队列稳定，确认目标没有回退，并在等待或 hold 期间被其他目标替换时让该 step 失败。
 
 ## Safety
 

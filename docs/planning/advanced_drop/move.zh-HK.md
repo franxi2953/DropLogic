@@ -53,6 +53,8 @@ plan = ad.move(
 
 只有 `origin_corner != target_corner` 嘅液滴會被規劃。已經喺目標位置嘅液滴喺擴展計劃時仍會作為 active droplets 保留。
 
+喺 simulator/offline 使用中，只要 planner 能求解，大型 coordinated moves 係有效嘅。透過 MCP 控制真實硬件時，`plan_move` 每次調用最多允許 10 個 active moving droplets；將大型 protocol 拆成已執行嘅 5-10 個液滴批次，密集或交叉 layout 使用更細批次。
+
 啟用 matrix visualizer 後，`PlanExecutor` 可以將保存嘅 `droplet_trajectories` 顯示為 route overlays。
 
 ## 常用 Planner 選項
