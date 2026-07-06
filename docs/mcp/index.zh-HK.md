@@ -104,6 +104,7 @@ agent 通常應該透過 `AdvancedDrop` 同 `PlanExecutor` 控制實驗，而唔
 
 | Tool | 用途 |
 | --- | --- |
+| `clear_droplet_state` | 清空邏輯液滴同 plan frames，並可選擇重置 executor cursor |
 | `create_droplet` | 建立一個液滴 |
 | `add_droplets` | 建立多個液滴 |
 | `delete_droplet` | 從邏輯液滴列表刪除液滴 |
@@ -111,6 +112,8 @@ agent 通常應該透過 `AdvancedDrop` 同 `PlanExecutor` 控制實驗，而唔
 | `update_droplet_targets` | 規劃前批量更改目標 |
 | `update_droplet_position` | 修正邏輯目前位置 |
 | `droplets_summary` | 檢查所有液滴 |
+
+`update_droplet_target` 同 `update_droplet_targets` 會喺修改目標前驗證最終 active-droplet layout。如果結果包含 `target_validation.ok=false`，目標唔會被修改；調用 `plan_move` 前先檢查 `blocking_issues`、`warnings` 同 `suggested_targets`。喺已載入 runtime 中開始乾淨邏輯 protocol 時使用 `clear_droplet_state(reset_executor=true)`；佢只重置 AdvancedDrop 狀態，唔關閉物理電極，所以需要關電極時先調用 `emergency_stop(deactivate_electrodes=true)`。
 
 ### Planning Primitive Tools
 
@@ -130,6 +133,10 @@ agent 通常應該透過 `AdvancedDrop` 同 `PlanExecutor` 控制實驗，而唔
 | `save_protocol` | 將目前 plan 同 droplets 保存到 pickle |
 
 大型或困難規劃應使用 `background=true`，然後輪詢 `planning_job_status()`，唔好令一個 MCP request 長時間阻塞。通用 `advanced_drop_call` / `list_advanced_drop_methods` 只會喺 `--allow-unsafe-tools` 下作為 debug surface 註冊。
+
+喺 DMLite 同 BOXMini 等真實硬件上，`plan_move` 會拒絕單次調用中超過 10 個 active moving droplets。將移動拆成已執行嘅 5-10 個液滴批次；密集 layout、交叉、長路徑或 2 x 2 液滴優先用 5 個一批。
+
+`plan_merge` 會透過 core AdvancedDrop validation API 預檢 merge hub。不安全嘅 hub 返回 `ok=false` 同 `primitive_validation.merge_target_validation`，並可能包含 `blocker_parking_suggestions`、`suggested_target` 或 `recommended_action`，用於先移動阻擋液滴或喺附近 hub 重試。
 
 ### Execution Tools
 
@@ -184,6 +191,20 @@ MCP server 唔係影片串流伺服器。agents 可以輪詢 `visualizer_frame` 
 | `detect_condensates` | 由目前 imaging setup 運行 condensate detection |
 
 冇 live imaging 時可以使用 debug mode。
+
+### Temperature Tools
+
+| Tool | 用途 |
+| --- | --- |
+| `temperature_hold` | 設定單個目標溫度，等待/保持，並返回緊湊 samples |
+| `start_temperature_routine` | 背景運行一組 temperature hold steps |
+| `temperature_routine_status` | 檢查目前或上一次 temperature routine |
+| `cancel_temperature_routine` | 取消目前 temperature routine |
+| `start_melting_curve_capture` | 每個溫度 step hold 後捕獲圖像 |
+| `melting_curve_capture_status` | 檢查目前或上一次 melting-curve capture |
+| `cancel_melting_curve_capture` | 取消目前 melting-curve capture |
+
+Temperature holds 同 routines 預設使用 `tolerance_c=0.2`。runtime 會等待硬件命令隊列穩定，確認目標冇回退，並喺等待或 hold 期間被其他目標取代時令該 step 失敗。
 
 ## Safety
 

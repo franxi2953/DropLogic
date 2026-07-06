@@ -108,6 +108,8 @@ plan = ad.move(
 
 Only droplets whose `origin_corner != target_corner` are planned. Droplets already at target are kept as active droplets when extending plans.
 
+For simulator/offline work, large coordinated moves are valid when the planner can solve them. For real hardware through MCP, movement planning is intentionally capped at 10 active moving droplets per call; split large protocols into executed 5-10 droplet batches and use smaller batches for dense or crossing layouts.
+
 When the matrix visualizer is enabled, `PlanExecutor` can display the stored `droplet_trajectories` as route overlays. The documentation GIFs use that same visualizer path layer so the arrows correspond to the actual planned trajectories.
 
 ## Useful Planner Options

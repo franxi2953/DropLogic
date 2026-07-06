@@ -3744,7 +3744,7 @@ class DropLogicMCPRuntime:
         targets: Any,
         include_summary: bool = False,
     ) -> Dict[str, Any]:
-        """Update many droplet targets in one compact MCP response."""
+        """Validate and update many droplet targets in one compact MCP response."""
         advanced_drop = self.require_advanced_drop()
         normalized = []
         errors = []
@@ -4078,7 +4078,7 @@ class DropLogicMCPRuntime:
         options: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Plan movement for current droplet targets; does not execute hardware."""
+        """Plan movement for current targets; real hardware rejects oversized active batches."""
         planner_options, ignored_options = self._sanitize_plan_move_options(
             options=options,
             extra=kwargs,
@@ -4247,7 +4247,7 @@ class DropLogicMCPRuntime:
         remove_duplicate_frames: bool = False,
         background: bool = False,
     ) -> Dict[str, Any]:
-        """Plan merging droplets into one target; does not execute hardware."""
+        """Validate and plan merging droplets into one target; does not execute hardware."""
         arguments = {
             "droplet_ids": droplet_ids,
             "target": target,

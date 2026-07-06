@@ -13,6 +13,7 @@ system.advanced_drop
 - manage droplets through `system.advanced_drop.droplets`
 - build and update `DropletPlan` objects
 - plan SIPP-based movement
+- validate target and merge layouts before mutating state or appending plan frames
 - create operation plans for splitting, merging, mixing, and extraction
 - connect planning output to `PlanExecutor`
 - optionally connect to vision-based validation when the system has the required camera and stage modules
@@ -102,6 +103,7 @@ system.visualizers.matrix.bg_rot = 0.0  # background image only
 
 - **Droplet management**: create, update, inspect, and delete logical droplets.
 - **Move**: plan SIPP movement for droplets whose target differs from their current position.
+- **Target and merge validation**: diagnose active-droplet target layouts and merge hubs without mutating droplets or plans.
 - **Split and extract**: extract droplets from reservoirs or split one droplet into symmetric subdroplets.
 - **Merge**: route droplets into one target footprint.
 - **Mix**: run split-recombine or 2D loop mixing patterns.
@@ -136,6 +138,7 @@ The result is stored as `ad.plan` and also returned from planning functions.
 - `droplogic/utils/advanced_drop/move.py`
 - `droplogic/utils/advanced_drop/splitting.py`
 - `droplogic/utils/advanced_drop/merge.py`
+- `droplogic/utils/advanced_drop/validation.py`
 - `droplogic/utils/advanced_drop/mixing.py`
 - `droplogic/utils/advanced_drop/feedback.py`
 

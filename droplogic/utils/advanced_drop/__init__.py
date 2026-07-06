@@ -6,6 +6,7 @@ and computer vision-based position validation on DMF chips.
 
 Key Features:
 - SIPP-based multi-droplet movement planning with collision avoidance
+- Pure target-layout and merge-hub validation helpers
 - Real-time droplet position validation using computer vision
 - Vital space enforcement and conflict resolution
 - Integration with DropSystem hardware systems
@@ -37,7 +38,7 @@ class AdvancedDrop:
     - droplets: Smart list with CRUD operations (create, read, update, delete)
     - executor: Asynchronous plan executor for non-blocking execution
     - Planning: SIPP-based multi-droplet path planning
-    - Validation: Computer vision-based position verification
+    - Validation: Geometry preflight helpers plus computer vision-based position verification
 
     Usage:
         advanced_drop = AdvancedDrop(system)
@@ -631,7 +632,7 @@ class AdvancedDrop:
         self,
         target_updates: Dict[int, Tuple[int, int]],
     ) -> Dict[str, Any]:
-        """Validate a proposed active-droplet target layout without mutating state."""
+        """Validate proposed active-droplet targets without mutating state."""
         return validate_droplet_target_layout(
             active_droplets=self._active_droplets_for_validation(),
             target_updates=target_updates,
@@ -645,7 +646,7 @@ class AdvancedDrop:
         forced_width: Optional[int] = None,
         forced_height: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Validate/diagnose a merge hub without mutating droplets or plan frames."""
+        """Validate and diagnose a merge hub without mutating droplets or plan frames."""
         if isinstance(droplet_ids, int):
             droplet_ids = [droplet_ids]
         active_droplets = self._active_droplets_for_validation()
@@ -1402,6 +1403,9 @@ class AdvancedDrop:
 
         Raises:
             ValueError: If droplet_ids is empty, contains invalid IDs, or target is invalid
+
+        See also:
+            validate_merge_target_layout() for pure preflight diagnostics.
         """
 
         if isinstance(droplet_ids, int):

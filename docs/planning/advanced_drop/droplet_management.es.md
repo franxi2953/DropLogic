@@ -83,6 +83,25 @@ system.advanced_drop.move(mode="sipp")
 
 `move()` solo planifica gotas cuya posicion actual difiere de su objetivo. Si una gota ya esta en destino, actualiza primero su objetivo.
 
+Antes de preparar un movimiento multi-gota, usa `AdvancedDrop.validate_droplet_target_layout()` para comprobar el layout final de gotas activas sin mutar estado:
+
+```python
+targets = {
+    1: (70, 20),
+    2: (72, 28),
+}
+validation = system.advanced_drop.validate_droplet_target_layout(targets)
+
+if validation["ok"]:
+    for droplet_id, target in targets.items():
+        system.advanced_drop.droplets.update_droplet_target(droplet_id, target)
+else:
+    print(validation["blocking_issues"])
+    print(validation["suggested_targets"])
+```
+
+El resultado informa de nuevos solapes de huella, conflictos de `vital_space`, objetivos fuera de matriz, objetivos que usan espacio reservado por otra gota activa en su posicion actual, y objetivos pendientes antiguos que tambien se moverian. Tambien sugiere reemplazos legales cercanos cuando puede. En MCP, `update_droplet_target` y `update_droplet_targets` llaman esta validacion core automaticamente y rechazan actualizaciones inseguras antes de planificar.
+
 `update_droplet_position()` cambia la posicion logica actual. Para corregir tras un desajuste fisico, prefiere `system.advanced_drop.correct_droplet_position()`, porque tambien anade un frame de correccion al plan.
 
 ## Inspeccionar Gotas
@@ -107,6 +126,8 @@ system.advanced_drop.clear()
 `delete_droplet()` elimina el objeto gota. No reescribe automaticamente frames antiguos.
 
 `clear()` reinicia la lista de gotas y el plan actual. Usalo al empezar un nuevo protocolo en la misma sesion Python.
+
+En MCP, prefiere `clear_droplet_state(reset_executor=true)` para el mismo reset logico porque tambien reinicia el cursor de `PlanExecutor`. No desactiva electrodos fisicos; llama primero `emergency_stop(deactivate_electrodes=true)` si el hardware debe apagarse.
 
 ## Enviar Un Frame Manual
 

@@ -106,6 +106,7 @@ Usa estas tools para definir y editar el conjunto logico de gotas:
 
 | Tool | Uso |
 | --- | --- |
+| `clear_droplet_state` | Limpia gotas logicas y frames de plan, y opcionalmente reinicia el cursor del executor |
 | `create_droplet` | Crea una gota |
 | `add_droplets` | Crea varias gotas |
 | `delete_droplet` | Elimina una gota de la lista logica |
@@ -113,6 +114,8 @@ Usa estas tools para definir y editar el conjunto logico de gotas:
 | `update_droplet_targets` | Cambia varios objetivos antes de planificar |
 | `update_droplet_position` | Corrige la posicion logica actual |
 | `droplets_summary` | Inspecciona todas las gotas |
+
+`update_droplet_target` y `update_droplet_targets` validan el layout final de gotas activas antes de mutar objetivos. Si el resultado contiene `target_validation.ok=false`, los objetivos no cambiaron; inspecciona `blocking_issues`, `warnings` y `suggested_targets` antes de llamar `plan_move`. Usa `clear_droplet_state(reset_executor=true)` al empezar un protocolo logico limpio en un runtime ya cargado; reinicia estado AdvancedDrop, no electrodos fisicos, asi que llama primero `emergency_stop(deactivate_electrodes=true)` si el hardware debe apagarse.
 
 ### Primitivas De Planificacion
 
@@ -132,6 +135,10 @@ Usa estas tools para anadir una primitiva logica al plan actual. No ejecutan har
 | `save_protocol` | Guarda plan y gotas en un pickle |
 
 Para movimientos grandes o planes dificiles, usa `background=true` y consulta `planning_job_status()` en vez de mantener una llamada MCP abierta.
+
+En hardware real como DMLite y BOXMini, `plan_move` rechaza mas de 10 gotas activas moviendose en una sola llamada. Divide el movimiento en lotes ejecutados de 5-10 gotas, prefiriendo 5 para layouts densos, cruces, rutas largas o gotas 2 x 2.
+
+`plan_merge` valida previamente el hub de fusion mediante la API core de AdvancedDrop. Los hubs inseguros devuelven `ok=false` con `primitive_validation.merge_target_validation`, y pueden incluir `blocker_parking_suggestions`, `suggested_target` o `recommended_action` para apartar bloqueadores o reintentar en un hub cercano.
 
 Ejemplo de planificacion de movimiento:
 
@@ -247,6 +254,20 @@ Modo debug sin imagen real:
 ```
 
 Para workflows reales de vision, el sistema cargado debe tener camara, microscopio, stage y modelos disponibles.
+
+### Temperatura
+
+| Tool | Uso |
+| --- | --- |
+| `temperature_hold` | Fija una temperatura, espera/mantiene y devuelve muestras compactas |
+| `start_temperature_routine` | Ejecuta una secuencia de holds de temperatura en background |
+| `temperature_routine_status` | Inspecciona la rutina de temperatura activa o ultima |
+| `cancel_temperature_routine` | Cancela la rutina de temperatura activa |
+| `start_melting_curve_capture` | Mantiene cada paso de temperatura y captura imagenes tras cada paso |
+| `melting_curve_capture_status` | Inspecciona la captura de curva activa o ultima |
+| `cancel_melting_curve_capture` | Cancela la captura de curva activa |
+
+Los holds y rutinas de temperatura usan `tolerance_c=0.2` por defecto. El runtime espera a que la cola de hardware se estabilice, confirma que el objetivo no haya revertido, y falla el paso si otro objetivo lo reemplaza durante la espera o el hold.
 
 ### Modulos
 

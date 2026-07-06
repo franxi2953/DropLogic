@@ -41,6 +41,8 @@ merged_id = ad.merge([1, 2], target=3)
 
 Cuando `target` es un ID, las otras gotas se fusionan en la posicion actual de esa gota.
 
+Si el ID de la gota destino tambien aparece en `droplet_ids`, se trata como destino de fusion y se elimina de la lista de entradas. Aun hace falta al menos otra gota de entrada.
+
 ## Control De Forma
 
 Por defecto, DropLogic construye una huella compacta a partir del numero total de electrodos.
@@ -69,6 +71,28 @@ merged_id = ad.merge(
 ```
 
 Esto es util cuando las gotas necesitan soporte electrico adicional en el destino.
+
+## Validacion De Objetivo
+
+Usa `validate_merge_target_layout()` para diagnosticar el hub de fusion antes de anadir frames al plan:
+
+```python
+validation = ad.validate_merge_target_layout(
+    droplet_ids=[1, 2],
+    target=(40, 40),
+)
+
+if not validation["ok"]:
+    print(validation["blocking_issues"])
+    print(validation.get("suggested_target"))
+    print(validation.get("blocker_parking_suggestions"))
+```
+
+El helper es puro: no muta gotas ni `ad.plan`. Comprueba entradas ausentes, huellas fusionadas fuera de matriz, gotas activas que no participan y solapan la huella o `vital_space` del objetivo, y entradas de fusion que empiezan dentro del espacio actual reservado por otra gota activa. Cuando puede, devuelve un `suggested_target` cercano y `blocker_parking_suggestions` por gota.
+
+En fusiones hacia una gota existente, el producto fusionado conserva el `vital_space` de la gota destino, incluido `0`. En objetivos por coordenada que crean una gota nueva, el producto usa `vital_space=1` por defecto.
+
+MCP `plan_merge` llama esta validacion antes de planificar. Los hubs inseguros devuelven `ok=false` con `primitive_validation.merge_target_validation` y pueden incluir `primitive_validation.recommended_action`. Si un objetivo sugerido para fusion hacia gota existente incluye `retry_arguments`, usa esos argumentos en vez de sustituir solo la coordenada.
 
 ## Etiquetas De Evento
 

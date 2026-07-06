@@ -69,6 +69,8 @@ plan = ad.move(
 
 Solo se planifican gotas cuyo `origin_corner != target_corner`. Las gotas que ya estan en objetivo se mantienen como gotas activas al extender planes.
 
+En simulador/offline, los movimientos coordinados grandes son validos cuando el planner puede resolverlos. En hardware real mediante MCP, `plan_move` esta limitado a 10 gotas activas moviendose por llamada; divide protocolos grandes en lotes ejecutados de 5-10 gotas y usa lotes mas pequenos para layouts densos o con cruces.
+
 Cuando el matrix visualizer esta activo, `PlanExecutor` puede mostrar `droplet_trajectories` como rutas superpuestas.
 
 ## Opciones Utiles Del Planner

@@ -41,6 +41,8 @@ merged_id = ad.merge([1, 2], target=3)
 
 當 `target` 係液滴 ID 時，其他液滴會合併到該液滴嘅目前位置。
 
+如果目標液滴 ID 亦出現在 `droplet_ids` 中，佢會被視為 merge destination 並由輸入列表移除；仍然需要至少一個其他輸入液滴。
+
 ## 形狀控制
 
 預設情況下，DropLogic 根據總電極數量建立緊湊嘅合併 footprint。需要特定幾何時用 `forced_width` 或 `forced_height`。
@@ -56,6 +58,28 @@ merged_id = ad.merge(
     hold_final_position=True,
 )
 ```
+
+## Target Validation
+
+使用 `validate_merge_target_layout()` 喺追加 plan frames 前診斷 merge hub：
+
+```python
+validation = ad.validate_merge_target_layout(
+    droplet_ids=[1, 2],
+    target=(40, 40),
+)
+
+if not validation["ok"]:
+    print(validation["blocking_issues"])
+    print(validation.get("suggested_target"))
+    print(validation.get("blocker_parking_suggestions"))
+```
+
+呢個 helper 係 pure：唔會修改 droplets 或 `ad.plan`。佢檢查缺失輸入、合併 footprint 越界、active non-merge droplets 同目標 footprint/vital space 衝突，以及 merge inputs 起始位置落在另一個 active droplet 目前保留空間中嘅情況。可行時會返回附近 `suggested_target` 同每個 blocker 嘅 `blocker_parking_suggestions`。
+
+merge into existing droplet 時，合併產物保留目標液滴嘅 `vital_space`，包括 `0`。座標目標建立新合併液滴時，產物預設使用 `vital_space=1`。
+
+MCP `plan_merge` 會喺規劃前調用呢個 validation。不安全 hub 返回 `ok=false` 同 `primitive_validation.merge_target_validation`，並可能包含 `primitive_validation.recommended_action`。如果 existing-target merge 嘅 suggested target 含有 `retry_arguments`，使用呢啲參數，而唔係只替換座標。
 
 ## 事件標籤
 

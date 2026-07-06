@@ -60,6 +60,25 @@ system.advanced_drop.move(mode="sipp")
 
 `move()` 只规划当前位置与目标不同的液滴。如果液滴已经在目标位置，请先更新目标。
 
+准备多液滴移动前，使用 `AdvancedDrop.validate_droplet_target_layout()` 在不修改液滴状态的情况下检查最终 active-droplet layout：
+
+```python
+targets = {
+    1: (70, 20),
+    2: (72, 28),
+}
+validation = system.advanced_drop.validate_droplet_target_layout(targets)
+
+if validation["ok"]:
+    for droplet_id, target in targets.items():
+        system.advanced_drop.droplets.update_droplet_target(droplet_id, target)
+else:
+    print(validation["blocking_issues"])
+    print(validation["suggested_targets"])
+```
+
+结果会报告新的 footprint overlap、`vital_space` conflict、out-of-bounds target、占用其他 active droplet 当前保留空间的目标，以及仍会被 `plan_move` 移动的旧 pending targets。可行时也会给出附近合法替代目标。MCP 的 `update_droplet_target` 和 `update_droplet_targets` 会自动调用这个 core validation，并在规划前拒绝不安全更新。
+
 `update_droplet_position()` 会改变逻辑当前位置。硬件位置不匹配后的修正应优先使用 `system.advanced_drop.correct_droplet_position()`，因为它还会向计划追加 correction frame。
 
 ## 检查液滴
@@ -80,6 +99,8 @@ system.advanced_drop.clear()
 ```
 
 `delete_droplet()` 删除液滴对象，但不会自动重写旧 plan frames。`clear()` 重置液滴列表和当前计划。
+
+通过 MCP 使用时，优先用 `clear_droplet_state(reset_executor=true)` 做同样的逻辑 reset，因为它也会重置 `PlanExecutor` cursor。它不会关闭物理电极；需要关电极时先调用 `emergency_stop(deactivate_electrodes=true)`。
 
 ## 推送手动 Frame
 

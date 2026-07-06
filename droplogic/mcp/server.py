@@ -785,7 +785,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
 
     @mcp.tool()
     def update_droplet_target(droplet_id: int, target: List[int]) -> Dict[str, Any]:
-        """Set one droplet target=[row,col]; planning still requires move/start_plan."""
+        """Set one droplet target=[row,col] after validating the active layout."""
         return _runtime_call(runtime.update_droplet_target, droplet_id, target)
 
     @mcp.tool()
@@ -793,7 +793,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         targets: Any,
         include_summary: bool = False,
     ) -> Dict[str, Any]:
-        """Set many droplet targets. Accepts [{"id":1,"target":[r,c]}] or {"1":[r,c]}."""
+        """Set many validated targets. Accepts [{"id":1,"target":[r,c]}] or {"1":[r,c]}."""
         return _runtime_call(
             runtime.update_droplet_targets,
             targets=targets,
@@ -836,7 +836,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         allow_long_sync: bool = False,
         options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Plan movement for current droplet targets; does not execute hardware."""
+        """Plan movement for current droplet targets; real hardware rejects oversized active batches."""
         return _runtime_call(
             runtime.plan_move,
             mode=mode,
@@ -948,7 +948,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         remove_duplicate_frames: bool = False,
         background: bool = False,
     ) -> Dict[str, Any]:
-        """Plan merging droplets into one target; does not execute hardware."""
+        """Plan merging droplets into one validated target; does not execute hardware."""
         return _runtime_call(
             runtime.plan_merge,
             droplet_ids=droplet_ids,

@@ -31,6 +31,9 @@ Module meaning:
 ## Matrix Planning
 - Default real-hardware execution cadence is `1.0` second between frames unless the active protocol explicitly sets another delay.
 - Use `AdvancedDrop` plans and `PlanExecutor`.
+- For a clean new logical protocol in MCP, use `clear_droplet_state(reset_executor=true)` instead of deleting droplets one by one. It clears AdvancedDrop droplets, removes old plan frames, and resets the executor cursor; it does not replace physical electrode deactivation when hardware must be turned off.
+- `update_droplet_target(s)` validates the proposed final active-droplet layout before mutating targets. If `target_validation.ok=false`, do not call `plan_move`; inspect `blocking_issues`, `warnings`, and `suggested_targets`, then stage blockers or choose new targets.
+- For DMLite real hardware, retarget and plan at most 5-10 active moving droplets per `plan_move` call. The MCP runtime rejects more than 10 active moving droplets; prefer 5 for dense layouts, crossings, long routes, or 2 x 2 droplets, then execute and inspect before the next batch.
 - Prefer breakpoints for inspection or long operations.
 - Add a breakpoint at the current target frame, often `len(plan.frames) - 1`.
 - Call `resume()` when the executor is paused or idle and frames remain.

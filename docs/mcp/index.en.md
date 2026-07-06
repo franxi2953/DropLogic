@@ -108,6 +108,7 @@ Use these to define and edit the logical droplet set:
 
 | Tool | Purpose |
 | --- | --- |
+| `clear_droplet_state` | Clear logical droplets and plan frames, optionally resetting the executor cursor |
 | `create_droplet` | Create one droplet |
 | `add_droplets` | Create many droplets |
 | `delete_droplet` | Remove a droplet from the logical droplet list |
@@ -115,6 +116,8 @@ Use these to define and edit the logical droplet set:
 | `update_droplet_targets` | Change many targets before planning |
 | `update_droplet_position` | Correct the logical current position |
 | `droplets_summary` | Inspect all droplets |
+
+`update_droplet_target` and `update_droplet_targets` validate the proposed final active-droplet layout before mutating targets. If the result contains `target_validation.ok=false`, the targets were not changed; inspect `blocking_issues`, `warnings`, and `suggested_targets` before calling `plan_move`. Use `clear_droplet_state(reset_executor=true)` when starting a clean logical protocol in an already-loaded runtime; it resets AdvancedDrop state, not physical electrodes, so call `emergency_stop(deactivate_electrodes=true)` first when hardware must be turned off.
 
 ### Planning Primitive Tools
 
@@ -134,6 +137,10 @@ Use these to add one logical planning primitive to the current plan. They do not
 | `save_protocol` | Save the current plan and droplets to a pickle file |
 
 For large moves or difficult plans, use `background=true` and poll `planning_job_status()` rather than holding one MCP request open.
+
+On real hardware systems such as DMLite and BOXMini, `plan_move` refuses more than 10 active moving droplets in one call. Split movement into executed batches of 5-10 droplets, preferring 5 for dense layouts, crossings, long routes, or 2 x 2 droplets.
+
+`plan_merge` preflights the merge hub through the core AdvancedDrop validation API. Unsafe hubs return `ok=false` with `primitive_validation.merge_target_validation`, and may include `blocker_parking_suggestions`, `suggested_target`, or `recommended_action` for staging blockers or retrying at a nearby hub.
 
 Example move planning call:
 
@@ -253,6 +260,20 @@ Debug mode can be used without live imaging:
 ```
 
 For real vision workflows, the loaded system must provide the relevant camera, microscope, stage, and detector support.
+
+### Temperature Tools
+
+| Tool | Purpose |
+| --- | --- |
+| `temperature_hold` | Set one target temperature, wait/hold, and return compact samples |
+| `start_temperature_routine` | Run a background sequence of temperature hold steps |
+| `temperature_routine_status` | Inspect the active or last temperature routine |
+| `cancel_temperature_routine` | Cancel the active temperature routine |
+| `start_melting_curve_capture` | Hold each temperature step and capture images after every step |
+| `melting_curve_capture_status` | Inspect the active or last melting-curve capture |
+| `cancel_melting_curve_capture` | Cancel the active melting-curve capture |
+
+Temperature holds and routines default to `tolerance_c=0.2`. The runtime waits for the hardware command queue to settle, confirms the target did not revert, and fails the step if another target replaces it during the wait or hold.
 
 ### Module Tools
 

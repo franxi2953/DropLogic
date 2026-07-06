@@ -13,6 +13,7 @@ system.advanced_drop
 - gestionar gotas mediante `system.advanced_drop.droplets`
 - crear y actualizar objetos `DropletPlan`
 - planificar movimiento basado en SIPP
+- validar layouts de objetivos y hubs de fusion antes de mutar estado o anadir frames
 - crear planes de division, fusion, mezcla y extraccion
 - conectar la salida de planificacion con `PlanExecutor`
 - conectarse opcionalmente a validacion por vision cuando el sistema tiene los modulos de camara y platina necesarios
@@ -87,6 +88,7 @@ la matriz logica.
 - `droplogic/utils/advanced_drop/move.py`
 - `droplogic/utils/advanced_drop/splitting.py`
 - `droplogic/utils/advanced_drop/merge.py`
+- `droplogic/utils/advanced_drop/validation.py`
 - `droplogic/utils/advanced_drop/mixing.py`
 - `droplogic/utils/advanced_drop/feedback.py`
 
