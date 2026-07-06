@@ -472,6 +472,7 @@ def validate_merge_target_layout(
         vital_space=merged_vital_space,
     )
 
+    target_id = None
     routing_active_droplets = list(active_droplets)
     if target_is_existing and target_droplet is not None:
         target_id = int(getattr(target_droplet, "id"))
@@ -608,6 +609,20 @@ def validate_merge_target_layout(
                 "not collide with active non-merge droplets."
             ),
         }
+        if target_is_existing and target_id is not None:
+            retry_droplet_ids = list(requested_ids)
+            if target_id not in retry_droplet_ids:
+                retry_droplet_ids.append(target_id)
+            retry_arguments = {
+                "droplet_ids": retry_droplet_ids,
+                "target": target_candidate,
+            }
+            if forced_width is not None:
+                retry_arguments["forced_width"] = forced_width
+            if forced_height is not None:
+                retry_arguments["forced_height"] = forced_height
+            suggested_target["target_droplet_id"] = target_id
+            suggested_target["retry_arguments"] = retry_arguments
 
     parking_suggestions = suggest_merge_blocker_parking_targets(
         active_droplets=routing_active_droplets,
@@ -671,16 +686,19 @@ def merge_failure_recommendation(
         for issue in merge_target_validation.get("blocking_issues", []) or []
         if isinstance(issue, dict)
     )
+    suggested_retry_reference = (
+        "primitive_validation.merge_target_validation.suggested_target.retry_arguments"
+        if isinstance(suggested_target, dict) and suggested_target.get("retry_arguments")
+        else "primitive_validation.merge_target_validation.suggested_target.target"
+    )
     if suggested_target and target_blocked and parking_suggestions:
         return (
             "Stage the listed blocking droplets to blocker_parking_suggestions, "
-            "execute that move, then retry plan_merge with primitive_validation."
-            "merge_target_validation.suggested_target.target."
+            f"execute that move, then retry plan_merge with {suggested_retry_reference}."
         )
     if suggested_target:
         return (
-            "Retry plan_merge with primitive_validation.merge_target_validation."
-            "suggested_target.target."
+            f"Retry plan_merge with {suggested_retry_reference}."
         )
     if parking_suggestions:
         return (

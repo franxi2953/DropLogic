@@ -613,7 +613,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
     def temperature_hold(
         target_c: float,
         hold_seconds: float,
-        tolerance_c: float = 0.5,
+        tolerance_c: float = 0.2,
         settle_timeout_seconds: float = 600.0,
         sample_interval_seconds: float = 5.0,
         require_settle: bool = False,
@@ -634,7 +634,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
     @mcp.tool()
     def start_temperature_routine(
         steps: List[Dict[str, Any]],
-        tolerance_c: float = 0.5,
+        tolerance_c: float = 0.2,
         settle_timeout_seconds: float = 600.0,
         sample_interval_seconds: float = 5.0,
         require_settle: bool = True,
@@ -676,7 +676,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         capture_mode: str = "droplets",
         visualizer: str = "streamer",
         frame_source: str = "device_raw",
-        tolerance_c: float = 0.5,
+        tolerance_c: float = 0.2,
         settle_timeout_seconds: float = 600.0,
         sample_interval_seconds: float = 5.0,
         require_settle: bool = True,

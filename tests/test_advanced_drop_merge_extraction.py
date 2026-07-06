@@ -1,4 +1,5 @@
 import copy
+import inspect
 import os
 import tempfile
 import threading
@@ -282,6 +283,32 @@ class MergeRegressionTests(unittest.TestCase):
         self.assertIn("suggested_target", validation)
         self.assertIn("blocker_parking_suggestions", recommendation)
         self.assertIn("suggested_target.target", recommendation)
+
+    def test_existing_target_alternate_hub_includes_target_in_retry_arguments(self):
+        unit_shape = {(0, 0)}
+        droplets = [
+            make_droplet(1, (3, 3), unit_shape, vital_space=1),
+            make_droplet(2, (20, 20), unit_shape, vital_space=1),
+            make_droplet(8, (10, 11), unit_shape, vital_space=1),
+            make_droplet(9, (10, 10), unit_shape, vital_space=1),
+        ]
+
+        validation = validate_merge_target_layout(
+            droplets,
+            [1, 2],
+            9,
+            active_droplet_ids=[1, 2, 8, 9],
+            matrix_shape=[30, 30],
+        )
+        recommendation = merge_failure_recommendation(validation)
+
+        self.assertFalse(validation["ok"])
+        suggested = validation["suggested_target"]
+        self.assertEqual(suggested["target_droplet_id"], 9)
+        self.assertEqual(suggested["retry_arguments"]["droplet_ids"], [1, 2, 9])
+        self.assertEqual(suggested["retry_arguments"]["target"], suggested["target"])
+        self.assertIn("suggested_target.retry_arguments", recommendation)
+        self.assertNotIn("suggested_target.target", recommendation)
 
 
 class LinearExtractionRegressionTests(unittest.TestCase):
@@ -634,6 +661,90 @@ class RuntimeRollbackRegressionTests(unittest.TestCase):
         self.assertEqual(advanced_drop.executor.frame_history, [])
         self.assertIsNone(advanced_drop.executor.last_frame_error)
         self.assertIsNone(advanced_drop.executor.last_applied_frame_index)
+
+    def test_clear_droplet_state_keeps_stop_event_set_for_live_executor_thread(self):
+        class FakeExecutionState:
+            def __init__(self, current_frame=0, total_frames=0):
+                self.is_executing = True
+                self.current_frame = current_frame
+                self.total_frames = total_frames
+                self.frames_executed = current_frame
+                self.execution_time = 0.0
+                self.last_update = 123.0
+
+        class FakeThread:
+            def is_alive(self):
+                return True
+
+        class FakeExecutor:
+            def __init__(self, plan):
+                self.execution_lock = threading.RLock()
+                self.state = FakeExecutionState(current_frame=2, total_frames=3)
+                self.current_plan = plan
+                self.executor_thread = FakeThread()
+                self.breakpoints = set()
+                self.breakpoint_reached = threading.Event()
+                self.stop_event = threading.Event()
+                self.frame_history = [{"index": 1}]
+                self.last_frame_index = 1
+                self.last_frame_started_at = 1.0
+                self.last_frame_finished_at = 2.0
+                self.last_frame_duration_seconds = 1.0
+                self.last_frame_error = None
+                self.last_matrix_queue_wait = None
+                self.stop_called = False
+
+            def stop(self):
+                self.stop_called = True
+                self.stop_event.set()
+                self.state.is_executing = False
+
+            def clear_breakpoints(self):
+                self.breakpoints.clear()
+
+            def status(self):
+                return {
+                    "is_executing": self.state.is_executing,
+                    "current_frame": self.state.current_frame,
+                    "total_frames": self.state.total_frames,
+                    "frames_executed": self.state.frames_executed,
+                    "breakpoints": sorted(self.breakpoints),
+                    "breakpoint_reached": self.breakpoint_reached.is_set(),
+                }
+
+        class FakeDroplets(list):
+            def get_droplets_summary(self):
+                return {"total_droplets": len(self), "droplets": [], "has_plan": True}
+
+        class FakeAdvancedDrop:
+            def __init__(self):
+                self.plan = make_plan([make_droplet(1, (10, 10))], active_ids=[1])
+                self.droplets = FakeDroplets([make_droplet(1, (10, 10))])
+                self.executor = FakeExecutor(self.plan)
+
+            def clear(self):
+                self.droplets = FakeDroplets()
+                self.plan = DropletPlan(
+                    frames=[],
+                    frame_count=0,
+                    droplet_trajectories={},
+                    active_droplets_per_frame=[],
+                    events=[],
+                    planning_success=True,
+                    conflicts_resolved=[],
+                    targets_reached={},
+                    event_id_per_frame=[],
+                )
+
+        runtime = DropLogicMCPRuntime()
+        advanced_drop = FakeAdvancedDrop()
+        runtime.system = SimpleNamespace(advanced_drop=advanced_drop)
+
+        result = runtime.clear_droplet_state()
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(advanced_drop.executor.stop_called)
+        self.assertTrue(advanced_drop.executor.stop_event.is_set())
 
     def test_update_droplet_targets_rejects_new_final_vital_conflict(self):
         droplet_1 = make_droplet(1, (10, 10))
@@ -1290,6 +1401,46 @@ class MeltingCurveCaptureRuntimeTests(unittest.TestCase):
         self.assertEqual(status["completed_steps"], 3)
         self.assertEqual(status["results"][-1]["capture"]["image_count"], 2)
         self.assertIn("31C", status["path"])
+
+
+class MCPServerWrapperRegressionTests(unittest.TestCase):
+    def test_temperature_tool_defaults_match_runtime_tolerance(self):
+        import builtins
+
+        original_print = builtins.print
+        from droplogic.mcp import server as mcp_server
+
+        tools = {}
+
+        class FakeMCP:
+            def tool(self):
+                def decorator(fn):
+                    tools[fn.__name__] = fn
+                    return fn
+
+                return decorator
+
+            def resource(self, _uri):
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+        original_build_fastmcp = mcp_server._build_fastmcp
+        try:
+            mcp_server._build_fastmcp = lambda name, host, port: FakeMCP()
+            mcp_server.build_server(DropLogicMCPRuntime())
+        finally:
+            mcp_server._build_fastmcp = original_build_fastmcp
+            builtins.print = original_print
+
+        for tool_name in (
+            "temperature_hold",
+            "start_temperature_routine",
+            "start_melting_curve_capture",
+        ):
+            signature = inspect.signature(tools[tool_name])
+            self.assertEqual(signature.parameters["tolerance_c"].default, 0.2)
 
 
 if __name__ == "__main__":

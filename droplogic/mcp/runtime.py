@@ -3633,6 +3633,7 @@ class DropLogicMCPRuntime:
         with self._lock:
             executor = getattr(advanced_drop, "executor", None)
             executor_status_before = None
+            executor_thread_alive_after_stop = False
             if executor is not None:
                 try:
                     executor_status_before = self.to_jsonable(executor.status())
@@ -3642,6 +3643,17 @@ class DropLogicMCPRuntime:
                     executor.stop()
                 except Exception:
                     pass
+                executor_thread = getattr(executor, "executor_thread", None)
+                if executor_thread is not None:
+                    try:
+                        executor_thread_alive_after_stop = bool(executor_thread.is_alive())
+                    except Exception:
+                        executor_thread_alive_after_stop = True
+                    if executor_thread_alive_after_stop:
+                        try:
+                            executor.stop_event.set()
+                        except Exception:
+                            pass
 
             advanced_drop.clear()
 
@@ -3662,7 +3674,10 @@ class DropLogicMCPRuntime:
                     except Exception:
                         pass
                     try:
-                        executor.stop_event.clear()
+                        if executor_thread_alive_after_stop:
+                            executor.stop_event.set()
+                        else:
+                            executor.stop_event.clear()
                     except Exception:
                         pass
                     executor.frame_history = []
