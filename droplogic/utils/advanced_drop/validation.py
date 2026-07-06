@@ -737,7 +737,10 @@ def merge_product_vital_space(
     target_droplet: Optional[Any] = None,
 ) -> int:
     if target_droplet is not None:
-        return int(getattr(target_droplet, "vital_space", 1) or 1)
+        vital_space = getattr(target_droplet, "vital_space", None)
+        if vital_space is None:
+            return 1
+        return int(vital_space)
     return 1
 
 

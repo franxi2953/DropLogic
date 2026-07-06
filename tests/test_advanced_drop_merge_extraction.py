@@ -176,6 +176,27 @@ class MergeRegressionTests(unittest.TestCase):
         self.assertTrue(validation["ok"])
         self.assertEqual(validation["merged_vital_space"], 1)
 
+    def test_core_merge_validation_preserves_existing_target_zero_vital_space(self):
+        unit_shape = {(0, 0)}
+        droplets = [
+            make_droplet(1, (0, 0), unit_shape, vital_space=1),
+            make_droplet(8, (10, 12), unit_shape, vital_space=0),
+            make_droplet(9, (10, 10), unit_shape, vital_space=0),
+        ]
+
+        validation = validate_merge_target_layout(
+            droplets,
+            [1],
+            9,
+            active_droplet_ids=[1, 8, 9],
+            matrix_shape=[128, 128],
+        )
+
+        self.assertTrue(validation["ok"])
+        self.assertEqual(validation["merged_vital_space"], 0)
+        issue_types = {issue["type"] for issue in validation["blocking_issues"]}
+        self.assertNotIn("merge_target_vital_space_conflict", issue_types)
+
     def test_core_merge_validation_uses_forced_row_major_footprint(self):
         droplets = [
             make_droplet(1, (0, 0), {(0, 0), (0, 1)}),
