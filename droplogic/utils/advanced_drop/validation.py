@@ -115,20 +115,16 @@ def validate_droplet_target_layout(
             else:
                 blocking.append(issue)
 
-    preexisting_pair_conflicts = set()
     for index, droplet_a in enumerate(active_droplets):
         id_a = int(getattr(droplet_a, "id"))
         for droplet_b in active_droplets[index + 1:]:
             id_b = int(getattr(droplet_b, "id"))
-            pair = tuple(sorted((id_a, id_b)))
             current_conflict = check_vital_space_conflict(
                 droplet_a,
                 current_corners[id_a],
                 droplet_b,
                 current_corners[id_b],
             )
-            if current_conflict:
-                preexisting_pair_conflicts.add(pair)
             final_conflict = check_vital_space_conflict(
                 droplet_a,
                 final_corners[id_a],
@@ -149,7 +145,12 @@ def validate_droplet_target_layout(
                     str(id_b): int(getattr(droplet_b, "vital_space", 0) or 0),
                 },
             }
-            if pair in preexisting_pair_conflicts:
+            current_same = (
+                current_conflict
+                and current_corners[id_a] == final_corners[id_a]
+                and current_corners[id_b] == final_corners[id_b]
+            )
+            if current_same:
                 warnings.append({**issue, "warning": "preexisting_vital_space_conflict"})
             else:
                 blocking.append(issue)

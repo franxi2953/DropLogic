@@ -206,6 +206,13 @@ def merge(
 
     if not droplet_ids:
         raise ValueError("droplet_ids cannot be empty")
+    droplet_ids = list(droplet_ids)
+    if isinstance(target, int):
+        droplet_ids = [
+            droplet_id for droplet_id in droplet_ids if droplet_id != target
+        ]
+    if not droplet_ids:
+        raise ValueError("droplet_ids cannot be empty")
     
     # Collect droplets to merge
     id_to_d = {d.id: d for d in droplets}

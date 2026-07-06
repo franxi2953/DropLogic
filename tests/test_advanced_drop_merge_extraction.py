@@ -115,6 +115,12 @@ class MergeRegressionTests(unittest.TestCase):
         for trajectory in new_plan.droplet_trajectories.values():
             self.assertEqual(len(trajectory), new_plan.frame_count)
 
+    def test_merge_rejects_only_existing_target_as_input(self):
+        droplets = [make_droplet(1, (10, 10), {(0, 0)}, vital_space=1)]
+
+        with self.assertRaisesRegex(ValueError, "droplet_ids cannot be empty"):
+            merge(droplets, MATRIX, [1], 1)
+
     def test_core_merge_validation_suggests_staging_blocker(self):
         droplets = [
             make_droplet(3, (46, 12)),
@@ -309,6 +315,32 @@ class MergeRegressionTests(unittest.TestCase):
         self.assertEqual(suggested["retry_arguments"]["target"], suggested["target"])
         self.assertIn("suggested_target.retry_arguments", recommendation)
         self.assertNotIn("suggested_target.target", recommendation)
+
+    def test_core_merge_validation_normalizes_existing_target_input(self):
+        unit_shape = {(0, 0)}
+        droplets = [
+            make_droplet(1, (3, 3), unit_shape, vital_space=1),
+            make_droplet(9, (10, 10), unit_shape, vital_space=1),
+        ]
+
+        with_duplicate = validate_merge_target_layout(
+            droplets,
+            [1, 9],
+            9,
+            active_droplet_ids=[1, 9],
+            matrix_shape=[128, 128],
+        )
+        normalized = validate_merge_target_layout(
+            droplets,
+            [1],
+            9,
+            active_droplet_ids=[1, 9],
+            matrix_shape=[128, 128],
+        )
+
+        self.assertEqual(with_duplicate["droplet_ids"], [1])
+        self.assertEqual(with_duplicate["merged_shape_size"], normalized["merged_shape_size"])
+        self.assertEqual(with_duplicate["blocking_issues"], normalized["blocking_issues"])
 
 
 class LinearExtractionRegressionTests(unittest.TestCase):
@@ -762,6 +794,41 @@ class RuntimeRollbackRegressionTests(unittest.TestCase):
         self.assertEqual(
             result["target_validation"]["blocking_issues"][0]["type"],
             "vital_space_conflict",
+        )
+
+    def test_core_target_validation_blocks_moved_preexisting_vital_pair(self):
+        unit_shape = {(0, 0)}
+        droplet_1 = make_droplet(1, (10, 10), unit_shape, vital_space=2)
+        droplet_2 = make_droplet(2, (10, 12), unit_shape, vital_space=2)
+
+        validation = validate_droplet_target_layout(
+            [droplet_1, droplet_2],
+            {1: (10, 14)},
+            matrix_shape=[128, 128],
+        )
+
+        self.assertFalse(validation["ok"])
+        self.assertEqual(
+            validation["blocking_issues"][0]["type"],
+            "vital_space_conflict",
+        )
+        self.assertEqual(validation["warning_count"], 0)
+
+    def test_core_target_validation_warns_for_unchanged_preexisting_vital_pair(self):
+        unit_shape = {(0, 0)}
+        droplet_1 = make_droplet(1, (10, 10), unit_shape, vital_space=2)
+        droplet_2 = make_droplet(2, (10, 12), unit_shape, vital_space=2)
+
+        validation = validate_droplet_target_layout(
+            [droplet_1, droplet_2],
+            {1: (10, 10)},
+            matrix_shape=[128, 128],
+        )
+
+        self.assertTrue(validation["ok"])
+        self.assertEqual(
+            validation["warnings"][0]["warning"],
+            "preexisting_vital_space_conflict",
         )
 
     def test_update_droplet_targets_accepts_valid_final_layout(self):
