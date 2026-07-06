@@ -4689,13 +4689,15 @@ class DropLogicMCPRuntime:
             active_ids = None
             if plan is not None and getattr(plan, "frames", None):
                 active_by_frame = getattr(plan, "active_droplets_per_frame", None)
-                active_ids = set()
                 if active_by_frame and active_by_frame[-1] is not None:
+                    parsed_active_ids = set()
                     for droplet_id in active_by_frame[-1]:
                         try:
-                            active_ids.add(int(droplet_id))
+                            parsed_active_ids.add(int(droplet_id))
                         except Exception:
                             continue
+                    if parsed_active_ids:
+                        active_ids = parsed_active_ids
             return sum(
                 1
                 for droplet in droplets

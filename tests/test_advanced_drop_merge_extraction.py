@@ -993,6 +993,19 @@ class RuntimeRollbackRegressionTests(unittest.TestCase):
         self.assertEqual(runtime._advanced_drop_active_move_count(), 5)
         runtime._guard_hardware_plan_move_batch(background=True)
 
+    def test_hardware_batch_guard_falls_back_when_active_frame_empty(self):
+        droplets = [make_droplet(i, (10 + i, 10)) for i in range(1, 12)]
+        for droplet in droplets:
+            droplet.target_corner = (droplet.origin_corner[0], 80)
+        runtime, advanced_drop = self.make_runtime_with_droplets(droplets)
+        runtime.system_name = "boxmini"
+        advanced_drop.plan = make_plan(droplets, active_ids=[])
+        advanced_drop.plan.active_droplets_per_frame = [[]]
+
+        self.assertEqual(runtime._advanced_drop_active_move_count(), 11)
+        with self.assertRaisesRegex(RuntimeError, "too many moving droplets"):
+            runtime._guard_hardware_plan_move_batch(background=True)
+
     def test_update_droplet_targets_rejects_target_in_current_reserved_space(self):
         droplet_1 = make_droplet(1, (10, 10))
         droplet_2 = make_droplet(2, (20, 20))
