@@ -472,13 +472,28 @@ def validate_merge_target_layout(
         vital_space=merged_vital_space,
     )
 
-    merging_ids = set(requested_ids)
+    routing_active_droplets = list(active_droplets)
+    if target_is_existing and target_droplet is not None:
+        target_id = int(getattr(target_droplet, "id"))
+        if not any(
+            int(getattr(droplet, "id")) == target_id
+            for droplet in routing_active_droplets
+        ):
+            routing_active_droplets.append(target_droplet)
+
+    merging_input_ids = set(requested_ids)
+    merging_ids = set(merging_input_ids)
     if target_is_existing and target_droplet is not None:
         merging_ids.add(int(getattr(target_droplet, "id")))
     blockers = [
         droplet
-        for droplet in active_droplets
+        for droplet in routing_active_droplets
         if int(getattr(droplet, "id")) not in merging_ids
+    ]
+    start_reservation_blockers = [
+        droplet
+        for droplet in routing_active_droplets
+        if int(getattr(droplet, "id")) not in merging_input_ids
     ]
 
     out_of_bounds = [
@@ -537,7 +552,7 @@ def validate_merge_target_layout(
     for joiner in merging:
         joiner_id = int(getattr(joiner, "id"))
         joiner_corner = tuple(getattr(joiner, "origin_corner"))
-        for blocker in blockers:
+        for blocker in start_reservation_blockers:
             blocker_id = int(getattr(blocker, "id"))
             blocker_corner = tuple(getattr(blocker, "origin_corner"))
             if not check_vital_space_conflict(
@@ -595,7 +610,7 @@ def validate_merge_target_layout(
         }
 
     parking_suggestions = suggest_merge_blocker_parking_targets(
-        active_droplets=active_droplets,
+        active_droplets=routing_active_droplets,
         blocker_ids=start_blockers,
         matrix_shape=normalized_shape,
         reserved_droplets=[(virtual_product, target_corner)],
@@ -604,9 +619,17 @@ def validate_merge_target_layout(
     reason = "merge_target_valid"
     if blocking:
         issue_types = {issue.get("type") for issue in blocking}
-        if "merge_joiner_starts_in_blocker_vital_space" in issue_types:
+        target_blocked_for_reason = any(
+            str(issue_type).startswith("merge_target_") for issue_type in issue_types
+        )
+        if (
+            "merge_joiner_starts_in_blocker_vital_space" in issue_types
+            and target_blocked_for_reason
+        ):
+            reason = "stage_blockers_and_choose_different_merge_target"
+        elif "merge_joiner_starts_in_blocker_vital_space" in issue_types:
             reason = "stage_blockers_before_merge"
-        elif any(str(issue_type).startswith("merge_target_") for issue_type in issue_types):
+        elif target_blocked_for_reason:
             reason = "choose_different_merge_target"
         else:
             reason = "invalid_merge_request"
@@ -641,15 +664,28 @@ def merge_failure_recommendation(
     """Return a short next-action hint for a failed merge diagnostic."""
     if not isinstance(merge_target_validation, dict):
         return None
-    if merge_target_validation.get("blocker_parking_suggestions"):
+    parking_suggestions = merge_target_validation.get("blocker_parking_suggestions")
+    suggested_target = merge_target_validation.get("suggested_target")
+    target_blocked = any(
+        str(issue.get("type", "")).startswith("merge_target_")
+        for issue in merge_target_validation.get("blocking_issues", []) or []
+        if isinstance(issue, dict)
+    )
+    if suggested_target and target_blocked and parking_suggestions:
         return (
             "Stage the listed blocking droplets to blocker_parking_suggestions, "
-            "execute that move, then retry plan_merge."
+            "execute that move, then retry plan_merge with primitive_validation."
+            "merge_target_validation.suggested_target.target."
         )
-    if merge_target_validation.get("suggested_target"):
+    if suggested_target:
         return (
             "Retry plan_merge with primitive_validation.merge_target_validation."
             "suggested_target.target."
+        )
+    if parking_suggestions:
+        return (
+            "Stage the listed blocking droplets to blocker_parking_suggestions, "
+            "execute that move, then retry plan_merge."
         )
     if merge_target_validation.get("ok") is True:
         return (

@@ -18,6 +18,7 @@ from droplogic.utils.advanced_drop.merge import merge
 from droplogic.utils.advanced_drop.splitting import reservoir_extraction
 from droplogic.utils.advanced_drop.validation import (
     build_merge_product_shape,
+    merge_failure_recommendation,
     validate_droplet_target_layout,
     validate_merge_target_layout,
 )
@@ -232,6 +233,55 @@ class MergeRegressionTests(unittest.TestCase):
         )
 
         self.assertTrue(retry_validation["ok"])
+
+    def test_core_merge_validation_checks_existing_target_start_reservation(self):
+        unit_shape = {(0, 0)}
+        droplets = [
+            make_droplet(1, (10, 9), unit_shape, vital_space=1),
+            make_droplet(2, (10, 10), unit_shape, vital_space=1),
+        ]
+
+        validation = validate_merge_target_layout(
+            droplets,
+            [1],
+            2,
+            active_droplet_ids=[1, 2],
+            matrix_shape=[30, 30],
+        )
+
+        issue_types = {issue["type"] for issue in validation["blocking_issues"]}
+        start_blockers = {
+            issue["blocking_droplet_id"]
+            for issue in validation["blocking_issues"]
+            if issue["type"] == "merge_joiner_starts_in_blocker_vital_space"
+        }
+        self.assertFalse(validation["ok"])
+        self.assertIn("merge_joiner_starts_in_blocker_vital_space", issue_types)
+        self.assertIn(2, start_blockers)
+        self.assertNotIn("merge_target_footprint_overlap", issue_types)
+
+    def test_merge_failure_recommendation_mentions_alternate_when_hub_blocked(self):
+        unit_shape = {(0, 0)}
+        droplets = [
+            make_droplet(1, (10, 9), unit_shape, vital_space=1),
+            make_droplet(2, (20, 20), unit_shape, vital_space=1),
+            make_droplet(9, (10, 10), unit_shape, vital_space=1),
+        ]
+
+        validation = validate_merge_target_layout(
+            droplets,
+            [1, 2],
+            (10, 10),
+            active_droplet_ids=[1, 2, 9],
+            matrix_shape=[30, 30],
+        )
+        recommendation = merge_failure_recommendation(validation)
+
+        self.assertFalse(validation["ok"])
+        self.assertIn("blocker_parking_suggestions", validation)
+        self.assertIn("suggested_target", validation)
+        self.assertIn("blocker_parking_suggestions", recommendation)
+        self.assertIn("suggested_target.target", recommendation)
 
 
 class LinearExtractionRegressionTests(unittest.TestCase):
