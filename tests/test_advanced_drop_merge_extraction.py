@@ -982,6 +982,24 @@ class RuntimeRollbackRegressionTests(unittest.TestCase):
 
         self.assertFalse(advanced_drop.move_called)
 
+    def test_sync_plan_move_rejects_oversized_real_hardware_batch(self):
+        droplets = [make_droplet(i, (10 + i, 10)) for i in range(1, 12)]
+        for droplet in droplets:
+            droplet.target_corner = (droplet.origin_corner[0], 80)
+        runtime, advanced_drop = self.make_runtime_with_droplets(droplets)
+        runtime.system_name = "boxmini"
+        advanced_drop.move_called = False
+
+        def move(**_kwargs):
+            advanced_drop.move_called = True
+
+        advanced_drop.move = move
+
+        with self.assertRaisesRegex(RuntimeError, "too many moving droplets"):
+            runtime.plan_move(background=False, allow_long_sync=True)
+
+        self.assertFalse(advanced_drop.move_called)
+
     def test_hardware_batch_guard_counts_only_active_moving_droplets(self):
         droplets = [make_droplet(i, (10 + i, 10)) for i in range(1, 12)]
         for droplet in droplets:
@@ -1129,6 +1147,37 @@ class RuntimeRollbackRegressionTests(unittest.TestCase):
         self.assertIn("merge_joiner_starts_in_blocker_vital_space", issue_types)
         self.assertIn("7", validation["blocker_parking_suggestions"])
         self.assertIn("recommended_action", result["primitive_validation"])
+
+    def test_plan_merge_preflights_unsafe_successful_target_layout(self):
+        unit_shape = {(0, 0)}
+        droplets = [
+            make_droplet(1, (1, 1), unit_shape, vital_space=0),
+            make_droplet(2, (4, 4), unit_shape, vital_space=0),
+            make_droplet(9, (10, 10), unit_shape, vital_space=0),
+        ]
+        runtime, advanced_drop = self.make_runtime_with_droplets(droplets)
+        advanced_drop.merge_called = False
+
+        def merge(**_kwargs):
+            advanced_drop.merge_called = True
+            return 99
+
+        advanced_drop.merge = merge
+
+        result = runtime.plan_merge(
+            droplet_ids=[1, 2],
+            target=[10, 10],
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(advanced_drop.merge_called)
+        validation = result["primitive_validation"]["merge_target_validation"]
+        self.assertFalse(validation["ok"])
+        issue_types = {
+            issue["type"]
+            for issue in validation["blocking_issues"]
+        }
+        self.assertIn("merge_target_footprint_overlap", issue_types)
 
 
 class DeleteDropletRegressionTests(unittest.TestCase):

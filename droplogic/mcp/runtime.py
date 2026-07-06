@@ -4533,6 +4533,44 @@ class DropLogicMCPRuntime:
             return_full_result = bool(call_arguments.pop("return_full_result", False))
             if return_full_result and allow_full_result_override:
                 compact_result = False
+            if method == "merge":
+                merge_target_validation = self._validate_merge_target_layout(
+                    advanced_drop,
+                    call_arguments,
+                )
+                if not merge_target_validation.get("ok", True):
+                    primitive_validation = {
+                        "ok": False,
+                        "reason": "merge_target_layout_invalid",
+                        "message": (
+                            "AdvancedDrop merge target layout is unsafe; stage "
+                            "blockers away or choose another merge target before "
+                            "planning this merge."
+                        ),
+                        "merge_target_validation": merge_target_validation,
+                    }
+                    recommendation = merge_failure_recommendation(
+                        merge_target_validation
+                    )
+                    if recommendation:
+                        primitive_validation["recommended_action"] = recommendation
+                    return {
+                        "method": method,
+                        "result": None,
+                        "result_compact": bool(compact_result),
+                        "visualizer_recovery": self._recover_visualizer_if_needed(
+                            "matrix",
+                            was_running=matrix_was_running,
+                        ),
+                        "droplets": self.to_jsonable(
+                            advanced_drop.droplets.get_droplets_summary()
+                        ),
+                        "plan": self.plan_summary(
+                            getattr(advanced_drop, "plan", None)
+                        ),
+                        "ok": False,
+                        "primitive_validation": primitive_validation,
+                    }
             try:
                 result = func(**call_arguments)
             except Exception:
@@ -4665,8 +4703,6 @@ class DropLogicMCPRuntime:
             )
 
     def _guard_hardware_plan_move_batch(self, background: bool) -> None:
-        if not background:
-            return
         if str(self.system_name or "").lower() not in self.REAL_SYSTEMS:
             return
         active_count = self._advanced_drop_active_move_count()
