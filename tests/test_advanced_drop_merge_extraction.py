@@ -16,6 +16,10 @@ from droplogic.utils.advanced_drop.common import (
 )
 from droplogic.utils.advanced_drop.merge import merge
 from droplogic.utils.advanced_drop.splitting import reservoir_extraction
+from droplogic.utils.advanced_drop.validation import (
+    validate_droplet_target_layout,
+    validate_merge_target_layout,
+)
 
 
 MATRIX = np.zeros((128, 128), dtype=np.int32)
@@ -107,6 +111,27 @@ class MergeRegressionTests(unittest.TestCase):
         self.assertIn(203, {droplet.id for droplet in updated})
         for trajectory in new_plan.droplet_trajectories.values():
             self.assertEqual(len(trajectory), new_plan.frame_count)
+
+    def test_core_merge_validation_suggests_staging_blocker(self):
+        droplets = [
+            make_droplet(3, (46, 12)),
+            make_droplet(4, (42, 18)),
+            make_droplet(5, (40, 24)),
+            make_droplet(6, (40, 9), {(0, 0), (0, 1)}),
+            make_droplet(7, (40, 16), {(0, 0), (0, 1)}),
+        ]
+
+        validation = validate_merge_target_layout(
+            droplets,
+            [3, 4],
+            (48, 18),
+            active_droplet_ids=[3, 4, 5, 6, 7],
+            matrix_shape=[128, 128],
+        )
+
+        self.assertFalse(validation["ok"])
+        self.assertEqual(validation["reason"], "stage_blockers_before_merge")
+        self.assertIn("7", validation["blocker_parking_suggestions"])
 
 
 class LinearExtractionRegressionTests(unittest.TestCase):
@@ -346,6 +371,120 @@ class RuntimeRollbackRegressionTests(unittest.TestCase):
         self.assertFalse(result["trimmed"])
         self.assertEqual(result["plan"]["frame_count"], 1)
 
+    def test_clear_droplet_state_resets_plan_droplets_and_executor_cursor(self):
+        class FakeExecutionState:
+            def __init__(self, current_frame=0, total_frames=0):
+                self.is_executing = False
+                self.current_frame = current_frame
+                self.total_frames = total_frames
+                self.frames_executed = current_frame
+                self.execution_time = 0.0
+                self.last_update = 123.0
+
+        class FakeExecutor:
+            def __init__(self, plan):
+                self.execution_lock = threading.RLock()
+                self.state = FakeExecutionState(current_frame=9, total_frames=9)
+                self.current_plan = plan
+                self.breakpoints = {8}
+                self.breakpoint_reached = threading.Event()
+                self.breakpoint_reached.set()
+                self.stop_event = threading.Event()
+                self.stop_event.set()
+                self.frame_history = [{"index": 8}]
+                self.last_frame_index = 8
+                self.last_frame_started_at = 1.0
+                self.last_frame_finished_at = 2.0
+                self.last_frame_duration_seconds = 1.0
+                self.last_frame_error = {"message": "old"}
+                self.last_matrix_queue_wait = {"ok": False}
+                self.last_applied_frame_index = 8
+                self.last_applied_frame_matrix = np.ones((2, 2), dtype=int)
+                self.last_applied_frame_plan = plan
+                self.last_applied_frame_plan_id = id(plan)
+                self.last_applied_frame_plan_frame_count = len(plan.frames)
+                self.last_applied_frame_active_droplet_ids = [1]
+                self.last_applied_frame_droplets = [make_droplet(1, (10, 10))]
+                self.last_applied_frame_at = 3.0
+
+            def stop(self):
+                self.state.is_executing = False
+
+            def clear_breakpoints(self):
+                self.breakpoints.clear()
+
+            def _clear_last_applied_frame(self):
+                self.last_applied_frame_index = None
+                self.last_applied_frame_matrix = None
+                self.last_applied_frame_plan = None
+                self.last_applied_frame_plan_id = None
+                self.last_applied_frame_plan_frame_count = None
+                self.last_applied_frame_active_droplet_ids = []
+                self.last_applied_frame_droplets = []
+                self.last_applied_frame_at = None
+
+            def status(self):
+                return {
+                    "is_executing": self.state.is_executing,
+                    "current_frame": self.state.current_frame,
+                    "total_frames": self.state.total_frames,
+                    "frames_executed": self.state.frames_executed,
+                    "breakpoints": sorted(self.breakpoints),
+                    "breakpoint_reached": self.breakpoint_reached.is_set(),
+                    "last_applied_frame": {
+                        "index": self.last_applied_frame_index,
+                        "plan_frame_count": self.last_applied_frame_plan_frame_count,
+                        "active_droplet_ids": list(self.last_applied_frame_active_droplet_ids),
+                    },
+                }
+
+        class FakeDroplets(list):
+            def get_droplets_summary(self):
+                return {
+                    "total_droplets": len(self),
+                    "active_droplet_ids": [],
+                    "droplets": [{"id": droplet.id} for droplet in self],
+                    "has_plan": True,
+                }
+
+        class FakeAdvancedDrop:
+            def __init__(self):
+                self.plan = make_plan([make_droplet(1, (10, 10))], active_ids=[1])
+                self.droplets = FakeDroplets([make_droplet(1, (10, 10))])
+                self.executor = FakeExecutor(self.plan)
+
+            def clear(self):
+                self.droplets = FakeDroplets()
+                self.plan = DropletPlan(
+                    frames=[],
+                    frame_count=0,
+                    droplet_trajectories={},
+                    active_droplets_per_frame=[],
+                    events=[],
+                    planning_success=True,
+                    conflicts_resolved=[],
+                    targets_reached={},
+                    event_id_per_frame=[],
+                )
+
+        runtime = DropLogicMCPRuntime()
+        advanced_drop = FakeAdvancedDrop()
+        runtime.system = SimpleNamespace(advanced_drop=advanced_drop)
+
+        result = runtime.clear_droplet_state()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["droplets"]["total_droplets"], 0)
+        self.assertEqual(result["plan"]["frame_count"], 0)
+        self.assertEqual(result["executor_status_after"]["current_frame"], 0)
+        self.assertEqual(result["executor_status_after"]["total_frames"], 0)
+        self.assertEqual(result["executor_status_after"]["breakpoints"], [])
+        self.assertFalse(result["executor_status_after"]["breakpoint_reached"])
+        self.assertIs(advanced_drop.executor.current_plan, advanced_drop.plan)
+        self.assertEqual(advanced_drop.executor.frame_history, [])
+        self.assertIsNone(advanced_drop.executor.last_frame_error)
+        self.assertIsNone(advanced_drop.executor.last_applied_frame_index)
+
     def test_update_droplet_targets_rejects_new_final_vital_conflict(self):
         droplet_1 = make_droplet(1, (10, 10))
         droplet_2 = make_droplet(2, (20, 20))
@@ -377,6 +516,80 @@ class RuntimeRollbackRegressionTests(unittest.TestCase):
         self.assertEqual(result["updated_count"], 1)
         self.assertTrue(result["target_validation"]["ok"])
         self.assertEqual(droplet_1.target_corner, (10, 30))
+
+    def test_core_target_validation_suggests_nearest_available_target(self):
+        droplet_1 = make_droplet(1, (10, 10))
+        droplet_2 = make_droplet(2, (20, 20))
+
+        validation = validate_droplet_target_layout(
+            [droplet_1, droplet_2],
+            {1: (20, 20)},
+            matrix_shape=[128, 128],
+        )
+
+        self.assertFalse(validation["ok"])
+        suggestion = validation["suggested_targets"].get("1")
+        self.assertIsNotNone(suggestion)
+        self.assertIsNotNone(suggestion["target"])
+        self.assertNotEqual(suggestion["target"], (20, 20))
+
+    def test_advanced_drop_exposes_target_validation_api(self):
+        class Logger:
+            def warning(self, *_args, **_kwargs):
+                pass
+
+            def info(self, *_args, **_kwargs):
+                pass
+
+            def debug(self, *_args, **_kwargs):
+                pass
+
+            def error(self, *_args, **_kwargs):
+                pass
+
+        system = SimpleNamespace(
+            state={"electrode_matrix": {"matrix": MATRIX.copy()}},
+            logger=Logger(),
+        )
+        advanced_drop = AdvancedDrop(system)
+        droplet_1 = advanced_drop.droplets.create_droplet(
+            1,
+            (10, 10),
+            (10, 10),
+            shape=SHAPE_2X2,
+            vital_space=2,
+        )
+        advanced_drop.droplets.create_droplet(
+            2,
+            (20, 20),
+            (20, 20),
+            shape=SHAPE_2X2,
+            vital_space=2,
+        )
+
+        validation = advanced_drop.validate_droplet_target_layout({1: (20, 20)})
+
+        self.assertFalse(validation["ok"])
+        self.assertIn("1", validation["suggested_targets"])
+        self.assertEqual(droplet_1.target_corner, (10, 10))
+
+    def test_background_plan_move_rejects_oversized_real_hardware_batch(self):
+        droplets = [make_droplet(i, (10 + i, 10)) for i in range(1, 12)]
+        for droplet in droplets:
+            droplet.target_corner = (droplet.origin_corner[0], 80)
+        runtime, advanced_drop = self.make_runtime_with_droplets(droplets)
+        runtime.system_name = "boxmini"
+        advanced_drop.move_called = False
+
+        def move(**_kwargs):
+            advanced_drop.move_called = True
+
+        advanced_drop.move = move
+
+        with self.assertRaisesRegex(RuntimeError, "too many moving droplets"):
+            runtime.plan_move(background=True)
+
+        self.assertFalse(advanced_drop.move_called)
 
     def test_update_droplet_targets_rejects_target_in_current_reserved_space(self):
         droplet_1 = make_droplet(1, (10, 10))
@@ -469,6 +682,38 @@ class RuntimeRollbackRegressionTests(unittest.TestCase):
             for warning in result["target_validation"]["warnings"]
         }
         self.assertIn("pending_targets_not_in_request", warning_types)
+
+    def test_failed_plan_merge_returns_blocker_parking_diagnostics(self):
+        droplets = [
+            make_droplet(3, (46, 12)),
+            make_droplet(4, (42, 18)),
+            make_droplet(5, (40, 24)),
+            make_droplet(6, (40, 9), shape={(0, 0), (0, 1)}),
+            make_droplet(7, (40, 16), shape={(0, 0), (0, 1)}),
+        ]
+        runtime, advanced_drop = self.make_runtime_with_droplets(droplets)
+
+        def failed_merge(**_kwargs):
+            return None
+
+        advanced_drop.merge = failed_merge
+
+        result = runtime.plan_merge(
+            droplet_ids=[3, 4],
+            target=[48, 18],
+            event_id="merge_blocks_3_4_to_product",
+        )
+
+        self.assertFalse(result["ok"])
+        validation = result["primitive_validation"]["merge_target_validation"]
+        self.assertFalse(validation["ok"])
+        issue_types = {
+            issue["type"]
+            for issue in validation["blocking_issues"]
+        }
+        self.assertIn("merge_joiner_starts_in_blocker_vital_space", issue_types)
+        self.assertIn("7", validation["blocker_parking_suggestions"])
+        self.assertIn("recommended_action", result["primitive_validation"])
 
 
 class DeleteDropletRegressionTests(unittest.TestCase):
@@ -677,6 +922,113 @@ class ExecutionSceneFrameSnapshotRegressionTests(unittest.TestCase):
 
 
 class MeltingCurveCaptureRuntimeTests(unittest.TestCase):
+    def test_temperature_hold_fails_if_target_rolls_back_before_waiting(self):
+        runtime = DropLogicMCPRuntime()
+
+        class FakeTemperatureSystem:
+            def __init__(self):
+                self.state = {"temperature": {"target": 32.0}}
+
+            def update_state(self, path, value):
+                self.state["temperature"]["target"] = value
+                return {"success": True, "key": path, "actual_value": value}
+
+        system = FakeTemperatureSystem()
+        runtime.system = system
+
+        def fake_queue_wait(**_kwargs):
+            system.state["temperature"]["target"] = 32.0
+            return {"ok": True, "pending_commands": 0}
+
+        runtime._wait_for_hardware_queue_empty = fake_queue_wait
+
+        result = runtime._temperature_hold_impl(
+            target_c=33.0,
+            hold_seconds=0,
+            tolerance_c=0.5,
+            settle_timeout_seconds=0,
+            sample_interval_seconds=0.1,
+            require_settle=False,
+            max_samples=5,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "temperature target reverted before hold")
+        self.assertEqual(result["confirmed_target_c"], 32.0)
+        self.assertEqual(result["samples"], [])
+
+    def test_temperature_hold_fails_if_target_changes_during_wait(self):
+        runtime = DropLogicMCPRuntime()
+
+        class FakeTemperatureSystem:
+            def __init__(self):
+                self.state = {"temperature": {"target": 32.0}}
+
+            def update_state(self, path, value):
+                self.state["temperature"]["target"] = value
+                return {"success": True, "key": path, "actual_value": value}
+
+        system = FakeTemperatureSystem()
+        runtime.system = system
+        runtime._wait_for_hardware_queue_empty = lambda **_kwargs: {
+            "ok": True,
+            "pending_commands": 0,
+        }
+
+        def fake_temperature_read():
+            system.state["temperature"]["target"] = 32.0
+            return 32.1
+
+        runtime._read_temperature_value = fake_temperature_read
+
+        result = runtime._temperature_hold_impl(
+            target_c=33.0,
+            hold_seconds=1,
+            tolerance_c=0.5,
+            settle_timeout_seconds=60,
+            sample_interval_seconds=0.1,
+            require_settle=True,
+            max_samples=5,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "temperature target changed during hold")
+        self.assertEqual(result["confirmed_target_c"], 32.0)
+        self.assertEqual(result["samples"][-1]["temperature_c"], 32.1)
+
+    def test_temperature_reads_use_system_temperature_lock(self):
+        runtime = DropLogicMCPRuntime()
+
+        class RecordingLock:
+            def __init__(self):
+                self.entered = False
+                self.used = False
+
+            def __enter__(self):
+                self.entered = True
+                self.used = True
+
+            def __exit__(self, exc_type, exc, tb):
+                self.entered = False
+
+        class LockedTemperature:
+            def __init__(self, lock):
+                self.lock = lock
+
+            def get_temperature(self):
+                if not self.lock.entered:
+                    raise AssertionError("temperature lock was not held")
+                return 31.5
+
+        lock = RecordingLock()
+        runtime.system = SimpleNamespace(
+            temperature=LockedTemperature(lock),
+            _temperature_lock=lock,
+        )
+
+        self.assertEqual(runtime._read_temperature_value(), 31.5)
+        self.assertTrue(lock.used)
+
     def test_melting_curve_capture_takes_image_after_every_temperature_step(self):
         runtime = DropLogicMCPRuntime()
         runtime.system = SimpleNamespace(
@@ -690,11 +1042,13 @@ class MeltingCurveCaptureRuntimeTests(unittest.TestCase):
         ]
 
         hold_targets = []
+        hold_tolerances = []
         capture_calls = []
 
         def fake_hold(**kwargs):
             target = float(kwargs["target_c"])
             hold_targets.append(target)
+            hold_tolerances.append(float(kwargs["tolerance_c"]))
             status_callback = kwargs.get("status_callback")
             if status_callback:
                 status_callback(
@@ -766,6 +1120,7 @@ class MeltingCurveCaptureRuntimeTests(unittest.TestCase):
         self.assertTrue(status["completed"])
         self.assertTrue(status["ok"])
         self.assertEqual(hold_targets, [30.0, 30.5, 31.0])
+        self.assertEqual(hold_tolerances, [0.2, 0.2, 0.2])
         self.assertEqual(
             [call["temperature_label"] for call in capture_calls],
             ["30C", "30.5C", "31C"],

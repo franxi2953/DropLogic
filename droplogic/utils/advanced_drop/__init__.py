@@ -19,6 +19,7 @@ from .common import DropletPlan, DropletList, next_event_id, tag_frame_span, bac
 from .splitting import reservoir_extraction, isometric_split
 from .mixing import mix
 from .merge import merge
+from .validation import validate_droplet_target_layout, validate_merge_target_layout
 from ..drop_vision.condensate_detector import CondensateDetector
 from ..drop_vision.imaging_capture import capture_channel_frame
 from typing import Tuple, List, Optional, Set, Union, Dict, Any
@@ -625,6 +626,74 @@ class AdvancedDrop:
             "plan": plan,
             "executor_status": executor_status,
         }
+
+    def validate_droplet_target_layout(
+        self,
+        target_updates: Dict[int, Tuple[int, int]],
+    ) -> Dict[str, Any]:
+        """Validate a proposed active-droplet target layout without mutating state."""
+        return validate_droplet_target_layout(
+            active_droplets=self._active_droplets_for_validation(),
+            target_updates=target_updates,
+            matrix_shape=self._validation_matrix_shape(),
+        )
+
+    def validate_merge_target_layout(
+        self,
+        droplet_ids: Union[int, List[int]],
+        target: Union[int, Tuple[int, int]],
+        forced_width: Optional[int] = None,
+        forced_height: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Validate/diagnose a merge hub without mutating droplets or plan frames."""
+        if isinstance(droplet_ids, int):
+            droplet_ids = [droplet_ids]
+        active_droplets = self._active_droplets_for_validation()
+        active_ids = [int(getattr(droplet, "id")) for droplet in active_droplets]
+        return validate_merge_target_layout(
+            droplets=list(self.droplets or []),
+            droplet_ids=droplet_ids,
+            target=target,
+            active_droplet_ids=active_ids,
+            matrix_shape=self._validation_matrix_shape(),
+            forced_width=forced_width,
+            forced_height=forced_height,
+        )
+
+    def _active_droplets_for_validation(self) -> List[Any]:
+        droplets = list(self.droplets or [])
+        active_ids = None
+        active_by_frame = getattr(self.plan, "active_droplets_per_frame", None)
+        if active_by_frame:
+            try:
+                active_ids = {int(droplet_id) for droplet_id in (active_by_frame[-1] or [])}
+            except Exception:
+                active_ids = None
+        if not active_ids:
+            return [droplet for droplet in droplets if getattr(droplet, "id", None) is not None]
+        return [
+            droplet
+            for droplet in droplets
+            if getattr(droplet, "id", None) is not None
+            and int(getattr(droplet, "id")) in active_ids
+        ]
+
+    def _validation_matrix_shape(self) -> Optional[List[int]]:
+        frames = getattr(self.plan, "frames", None)
+        if frames:
+            try:
+                shape = frames[-1].shape
+                if len(shape) >= 2:
+                    return [int(shape[0]), int(shape[1])]
+            except Exception:
+                pass
+        try:
+            shape = self.matrix.shape
+            if len(shape) >= 2:
+                return [int(shape[0]), int(shape[1])]
+        except Exception:
+            return None
+        return None
 
     def _remove_duplicate_frames(self, plan: DropletPlan) -> None:
         """Remove adjacent duplicate frames from a plan while preserving metadata."""

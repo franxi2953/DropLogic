@@ -764,6 +764,14 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         return _runtime_call(runtime.add_droplets, droplets)
 
     @mcp.tool()
+    def clear_droplet_state(reset_executor: bool = True) -> Dict[str, Any]:
+        """Clear all logical droplets and plan frames; reset executor cursor by default."""
+        return _runtime_call(
+            runtime.clear_droplet_state,
+            reset_executor=reset_executor,
+        )
+
+    @mcp.tool()
     def delete_droplet(
         droplet_id: int,
         persist_electrodes: bool = False,
