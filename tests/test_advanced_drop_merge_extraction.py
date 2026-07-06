@@ -134,6 +134,40 @@ class MergeRegressionTests(unittest.TestCase):
         self.assertEqual(validation["reason"], "stage_blockers_before_merge")
         self.assertIn("7", validation["blocker_parking_suggestions"])
 
+    def test_core_merge_validation_does_not_suggest_alternate_for_open_hub(self):
+        droplets = [
+            make_droplet(1, (10, 10)),
+            make_droplet(2, (20, 20)),
+        ]
+
+        validation = validate_merge_target_layout(
+            droplets,
+            [1, 2],
+            (50, 50),
+            active_droplet_ids=[1, 2],
+            matrix_shape=[128, 128],
+        )
+
+        self.assertTrue(validation["ok"])
+        self.assertNotIn("suggested_target", validation)
+
+    def test_core_merge_validation_uses_new_product_default_vital_space(self):
+        droplets = [
+            make_droplet(1, (0, 0), {(0, 0)}, vital_space=2),
+            make_droplet(9, (12, 10), {(0, 0)}, vital_space=1),
+        ]
+
+        validation = validate_merge_target_layout(
+            droplets,
+            [1],
+            (10, 10),
+            active_droplet_ids=[1, 9],
+            matrix_shape=[128, 128],
+        )
+
+        self.assertTrue(validation["ok"])
+        self.assertEqual(validation["merged_vital_space"], 1)
+
     def test_core_merge_validation_uses_forced_row_major_footprint(self):
         droplets = [
             make_droplet(1, (0, 0), {(0, 0), (0, 1)}),
@@ -621,6 +655,17 @@ class RuntimeRollbackRegressionTests(unittest.TestCase):
             runtime.plan_move(background=True)
 
         self.assertFalse(advanced_drop.move_called)
+
+    def test_hardware_batch_guard_counts_only_active_moving_droplets(self):
+        droplets = [make_droplet(i, (10 + i, 10)) for i in range(1, 12)]
+        for droplet in droplets:
+            droplet.target_corner = (droplet.origin_corner[0], 80)
+        runtime, advanced_drop = self.make_runtime_with_droplets(droplets)
+        runtime.system_name = "boxmini"
+        advanced_drop.plan = make_plan(droplets, active_ids=[1, 2, 3, 4, 5])
+
+        self.assertEqual(runtime._advanced_drop_active_move_count(), 5)
+        runtime._guard_hardware_plan_move_batch(background=True)
 
     def test_update_droplet_targets_rejects_target_in_current_reserved_space(self):
         droplet_1 = make_droplet(1, (10, 10))

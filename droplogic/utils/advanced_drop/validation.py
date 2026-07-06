@@ -563,14 +563,21 @@ def validate_merge_target_layout(
                 }
             )
 
-    target_candidate, target_reason = nearest_available_merge_target(
-        requested_corner=target_corner,
-        product_shape=merged_shape,
-        product_vital_space=merged_vital_space,
-        blockers=blockers,
-        matrix_shape=normalized_shape,
-        exclude={target_corner} if not blocking else set(),
+    target_blocked = any(
+        str(issue.get("type", "")).startswith("merge_target_")
+        for issue in blocking
     )
+    target_candidate = None
+    target_reason = None
+    if target_blocked:
+        target_candidate, target_reason = nearest_available_merge_target(
+            requested_corner=target_corner,
+            product_shape=merged_shape,
+            product_vital_space=merged_vital_space,
+            blockers=blockers,
+            matrix_shape=normalized_shape,
+            exclude={target_corner},
+        )
     suggested_target = None
     if target_candidate is not None and target_candidate != target_corner:
         suggested_target = {
@@ -675,11 +682,7 @@ def merge_product_vital_space(
 ) -> int:
     if target_droplet is not None:
         return int(getattr(target_droplet, "vital_space", 1) or 1)
-    vital_spaces = [
-        int(getattr(droplet, "vital_space", 1) or 1)
-        for droplet in merging
-    ]
-    return max(vital_spaces or [1])
+    return 1
 
 
 def nearest_available_merge_target(

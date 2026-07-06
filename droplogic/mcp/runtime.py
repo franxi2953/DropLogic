@@ -4668,11 +4668,27 @@ class DropLogicMCPRuntime:
 
     def _advanced_drop_active_move_count(self) -> int:
         try:
-            droplets = self.require_advanced_drop().droplets
+            advanced_drop = self.require_advanced_drop()
+            droplets = advanced_drop.droplets
+            plan = getattr(advanced_drop, "plan", None)
+            active_ids = None
+            if plan is not None and getattr(plan, "frames", None):
+                active_by_frame = getattr(plan, "active_droplets_per_frame", None)
+                active_ids = set()
+                if active_by_frame and active_by_frame[-1] is not None:
+                    for droplet_id in active_by_frame[-1]:
+                        try:
+                            active_ids.add(int(droplet_id))
+                        except Exception:
+                            continue
             return sum(
                 1
                 for droplet in droplets
-                if getattr(droplet, "origin_corner", None)
+                if (
+                    active_ids is None
+                    or int(getattr(droplet, "id", -1)) in active_ids
+                )
+                and getattr(droplet, "origin_corner", None)
                 != getattr(droplet, "target_corner", None)
             )
         except Exception:
