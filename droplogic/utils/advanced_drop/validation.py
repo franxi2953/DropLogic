@@ -625,11 +625,15 @@ def validate_merge_target_layout(
             suggested_target["target_droplet_id"] = target_id
             suggested_target["retry_arguments"] = retry_arguments
 
+    reserved_merge_products = [(virtual_product, target_corner)]
+    if suggested_target:
+        reserved_merge_products.append((virtual_product, target_candidate))
+
     parking_suggestions = suggest_merge_blocker_parking_targets(
         active_droplets=routing_active_droplets,
         blocker_ids=start_blockers,
         matrix_shape=normalized_shape,
-        reserved_droplets=[(virtual_product, target_corner)],
+        reserved_droplets=reserved_merge_products,
     )
 
     reason = "merge_target_valid"

@@ -12,6 +12,7 @@ from droplogic.mcp.runtime import DropLogicMCPRuntime
 from droplogic.utils.advanced_drop import AdvancedDrop
 from droplogic.utils.advanced_drop.common import (
     DropletPlan,
+    check_vital_space_conflict,
     create_droplet,
     get_droplet_positions,
 )
@@ -310,6 +311,47 @@ class MergeRegressionTests(unittest.TestCase):
         self.assertIn("suggested_target", validation)
         self.assertIn("blocker_parking_suggestions", recommendation)
         self.assertIn("suggested_target.target", recommendation)
+
+    def test_core_merge_validation_parks_blocker_outside_suggested_hub_space(self):
+        unit_shape = {(0, 0)}
+        droplets = [
+            make_droplet(1, (9, 11), unit_shape, vital_space=1),
+            make_droplet(2, (20, 20), unit_shape, vital_space=1),
+            make_droplet(9, (10, 10), unit_shape, vital_space=1),
+        ]
+
+        validation = validate_merge_target_layout(
+            droplets,
+            [1, 2],
+            (10, 10),
+            active_droplet_ids=[1, 2, 9],
+            matrix_shape=[30, 30],
+        )
+
+        self.assertFalse(validation["ok"])
+        parking_target = validation["blocker_parking_suggestions"]["9"]["target"]
+        suggested_target = validation["suggested_target"]["target"]
+        virtual_product = create_droplet(
+            -1,
+            suggested_target,
+            suggested_target,
+            shape=build_merge_product_shape(2),
+            vital_space=validation["merged_vital_space"],
+        )
+        parked_blocker = make_droplet(9, parking_target, unit_shape, vital_space=1)
+
+        self.assertFalse(
+            get_droplet_positions(parked_blocker, parking_target)
+            & get_droplet_positions(virtual_product, suggested_target)
+        )
+        self.assertFalse(
+            check_vital_space_conflict(
+                parked_blocker,
+                parking_target,
+                virtual_product,
+                suggested_target,
+            )
+        )
 
     def test_existing_target_alternate_hub_includes_target_in_retry_arguments(self):
         unit_shape = {(0, 0)}
