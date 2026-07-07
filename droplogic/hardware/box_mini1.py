@@ -9,6 +9,7 @@ from .modules.xy_stage import XYStageModule
 from .modules.microscope import MicroscopeModule
 from .modules.camera import CameraModule
 from .modules.light import LightModule
+from .modules.front_panel import FrontPanelModule
 from .modules.electrode_matrix.voltage_profiles import resolve_initial_voltage_profile
 from ..utils.visualizer import StreamerVisualizer, MatrixVisualizer
 import numpy as np
@@ -74,6 +75,7 @@ class BOXMini(DropSystem):
         self._electrode_matrix_lock = threading.Lock()
         self._light_lock = threading.Lock()
         self._microscope_lock = threading.Lock()
+        self._front_panel_lock = threading.Lock()
 
         # Initialize serial/USB connections.
         self.initialize_serial()
@@ -98,6 +100,11 @@ class BOXMini(DropSystem):
         self.microscope = MicroscopeModule(self, self.microscope_serial, self.state.get("microscope_settings", {}).get("version", "MicroscopeV1"))
         self.camera = CameraModule(self, self.state.get("camera_settings", {}).get("version", "CameraV1"))
         self.temperature = TemperatureModule(self, self.temperature_serial, self.TEMPERATURE_VERSION)
+        front_panel_settings = self.state.get("front_panel", {})
+        if front_panel_settings.get("enabled", False):
+            self.front_panel = FrontPanelModule.from_config(front_panel_settings, parent=self)
+        else:
+            self.front_panel = None
 
         self.update_state("electrode_matrix.matrix", initial_matrix, priority=Priority.HIGH)
         active_electrodes = int(np.count_nonzero(np.asarray(initial_matrix)))
@@ -130,6 +137,9 @@ class BOXMini(DropSystem):
     def _process_hardware_command(self, path: str, value: Any, priority: Priority):
         """Process hardware commands for BOXMini - routes to specific module processors."""
         try:
+            if not path.startswith("front_panel.") and getattr(self, "front_panel", None):
+                self.front_panel.notify_action(path, value)
+
             if path.startswith("xy_stage."):
                 return self._process_xy_stage_command(path, value)
             elif path.startswith("camera_settings."):
@@ -142,6 +152,8 @@ class BOXMini(DropSystem):
                 return self._process_temperature_command(path, value)
             elif path.startswith("light_settings."):
                 return self._process_light_command(path, value)
+            elif path.startswith("front_panel."):
+                return self._process_front_panel_command(path, value)
             else:
                 self.logger.warning(f"Unknown command path: {path}")
                 return False
@@ -159,6 +171,8 @@ class BOXMini(DropSystem):
             return Priority.HIGH
         if path.startswith("xy_stage.position") or path.startswith("electrode_matrix."):
             return Priority.HIGH
+        if path.startswith("front_panel."):
+            return Priority.LOW
         return super()._determine_command_priority(path)
         
     # Individual Command Processors
@@ -405,6 +419,44 @@ class BOXMini(DropSystem):
             
         return False
 
+    def _process_front_panel_command(self, path: str, value: Any) -> bool:
+        """Process front panel display commands."""
+        if not self.front_panel:
+            return False
+
+        try:
+            path_parts = path.split(".")
+            param_name = path_parts[1]
+
+            with self._front_panel_lock:
+                if param_name == "text":
+                    result = self.front_panel.set_text(value)
+                    self.set_cached_state("front_panel.last_response", result.response)
+                    return result.ok
+                if param_name == "clear":
+                    if value:
+                        result = self.front_panel.clear()
+                        self.set_cached_state("front_panel.text", "")
+                        self.set_cached_state("front_panel.last_response", result.response)
+                        return result.ok
+                    return True
+                if param_name == "program":
+                    result = self.front_panel.select_program(int(value))
+                    self.set_cached_state("front_panel.last_response", result.response)
+                    return result.ok
+                if param_name == "expression":
+                    result = self.front_panel.set_expression(str(value), immediate=True)
+                    self.set_cached_state("front_panel.expression", value)
+                    return bool(result)
+                if param_name == "enabled":
+                    return True
+
+        except Exception as e:
+            self.logger.error(f"Front panel command failed: {e}")
+            return False
+
+        return False
+
     # Initialize serial connections
     def initialize_serial(self):
         self.logger.info("Initializing serial connections")
@@ -614,6 +666,13 @@ class BOXMini(DropSystem):
                 self.light.set_coaxial_light(coaxial)
                 self.light.set_ring_light(ring)
                 self.logger.info(f"Light initialized: coaxial={coaxial}, ring={ring}")
+
+            if self.front_panel:
+                front_panel_settings = self.state.get("front_panel", {})
+                startup_text = front_panel_settings.get("text", "")
+                if front_panel_settings.get("show_on_startup", False) and startup_text:
+                    self.front_panel.set_text(startup_text)
+                self.logger.info("Front panel initialized")
                 
         except Exception as e:
             self.logger.error(f"Hardware initialization failed: {e}")
@@ -755,6 +814,7 @@ class BOXMini(DropSystem):
             getattr(self, "microscope", None),
             getattr(self, "camera", None),
             getattr(self, "light", None),
+            getattr(self, "front_panel", None),
         ]:
             if module:
                 try:

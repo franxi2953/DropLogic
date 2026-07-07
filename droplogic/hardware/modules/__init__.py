@@ -12,6 +12,7 @@ _MODULE_EXPORTS = {
     "XYStageModule": (".xy_stage", "XYStageModule"),
     "CameraModule": (".camera", "CameraModule"),
     "LightModule": (".light", "LightModule"),
+    "FrontPanelModule": (".front_panel", "FrontPanelModule"),
 }
 
 __all__ = [
@@ -21,7 +22,8 @@ __all__ = [
     "MicroscopeModule",
     "XYStageModule",
     "CameraModule",
-    "LightModule",  
+    "LightModule",
+    "FrontPanelModule",
 ]
 
 
