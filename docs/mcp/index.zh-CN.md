@@ -127,12 +127,12 @@ agent 通常应通过 `AdvancedDrop` 和 `PlanExecutor` 控制实验，而不是
 | `plan_isometric_split` | 规划 isometric split |
 | `plan_mix` | 规划 mixing sequence |
 | `plan_merge` | 规划 droplet merge |
-| `planning_job_status` | 轮询 background planning job |
+| `planning_job_status` | 检查 background planning job 及推荐等待时间 |
 | `cancel_planning_job` | 请求取消 background planning job |
 | `plan_summary` | 检查 frame count、events、trajectories 和结果 |
 | `save_protocol` | 将当前 plan 和 droplets 保存到 pickle |
 
-大规模或困难规划应使用 `background=true`，然后轮询 `planning_job_status()`，不要让一个 MCP request 长时间阻塞。通用 `advanced_drop_call` / `list_advanced_drop_methods` 只在 `--allow-unsafe-tools` 下作为 debug surface 注册。
+大规模或困难规划应使用 `background=true`，然后调用 `planning_job_status()`，不要让一个 MCP request 长时间阻塞。job 仍在运行时，status response 会包含 `recommended_wait_seconds`、`next_check_after_seconds` 和 `recommended_status_call`；按该间隔等待后再检查，不要反复立即轮询。通用 `advanced_drop_call` / `list_advanced_drop_methods` 只在 `--allow-unsafe-tools` 下作为 debug surface 注册。
 
 在 DMLite 和 BOXMini 等真实硬件上，`plan_move` 会拒绝单次调用中超过 10 个 active moving droplets。把移动拆成已执行的 5-10 个液滴批次；密集布局、交叉、长路径或 2 x 2 液滴优先使用 5 个一批。
 

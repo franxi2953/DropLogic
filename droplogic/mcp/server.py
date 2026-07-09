@@ -979,7 +979,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
 
     @mcp.tool()
     def planning_job_status() -> Dict[str, Any]:
-        """Return compact status for the active or last background planning job."""
+        """Return compact status and recommended wait timing for a planning job."""
         return _runtime_call(runtime.advanced_drop_job_status)
 
     @mcp.tool()
@@ -1011,7 +1011,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
 
         @mcp.tool()
         def advanced_drop_job_status() -> Dict[str, Any]:
-            """Debug only: status alias for generic AdvancedDrop background jobs."""
+            """Debug only: status alias with recommended wait timing for generic jobs."""
             return _runtime_call(runtime.advanced_drop_job_status)
 
         @mcp.tool()

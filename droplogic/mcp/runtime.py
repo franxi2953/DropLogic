@@ -4743,7 +4743,7 @@ class DropLogicMCPRuntime:
             return self.advanced_drop_job_status()
 
     def advanced_drop_job_status(self) -> Dict[str, Any]:
-        """Return compact status for the active or last AdvancedDrop background job."""
+        """Return compact status and recommended wait timing for a background job."""
         with self._advanced_drop_job_lock:
             status = dict(self._advanced_drop_job_status or {})
             if not status:

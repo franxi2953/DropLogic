@@ -129,12 +129,12 @@ Usa estas tools para anadir una primitiva logica al plan actual. No ejecutan har
 | `plan_isometric_split` | Planifica un split isometrico |
 | `plan_mix` | Planifica una secuencia de mezcla |
 | `plan_merge` | Planifica merge de gotas |
-| `planning_job_status` | Consulta un job de planificacion en background |
+| `planning_job_status` | Consulta un job de planificacion y la espera recomendada |
 | `cancel_planning_job` | Solicita cancelar un job de planificacion |
 | `plan_summary` | Inspecciona frames, eventos, trayectorias y resultado |
 | `save_protocol` | Guarda plan y gotas en un pickle |
 
-Para movimientos grandes o planes dificiles, usa `background=true` y consulta `planning_job_status()` en vez de mantener una llamada MCP abierta.
+Para movimientos grandes o planes dificiles, usa `background=true` y consulta `planning_job_status()` en vez de mantener una llamada MCP abierta. Mientras el job sigue ejecutandose, la respuesta incluye `recommended_wait_seconds`, `next_check_after_seconds` y `recommended_status_call`; espera ese intervalo antes de consultar de nuevo en vez de hacer polling repetido.
 
 En hardware real como DMLite y BOXMini, `plan_move` rechaza mas de 10 gotas activas moviendose en una sola llamada. Divide el movimiento en lotes ejecutados de 5-10 gotas, prefiriendo 5 para layouts densos, cruces, rutas largas o gotas 2 x 2.
 
