@@ -475,9 +475,13 @@ class DropSystem(ABC):
             timestamp=time.time(),
             previous_value=previous_value,
         )
-        self._hardware_queues[priority].put(cmd)
+        self._enqueue_hardware_command(cmd)
 
         return {'success': True, 'key': path, 'actual_value': copy.deepcopy(state_value), 'changed': True}
+
+    def _enqueue_hardware_command(self, cmd: HardwareCommand) -> None:
+        """Enqueue a hardware command. Child classes may override to coalesce UI work."""
+        self._hardware_queues[cmd.priority].put(cmd)
 
     def set_cached_state(self, path: str, value: Any):
         """Update in-memory state without sending a hardware command.

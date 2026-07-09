@@ -27,15 +27,16 @@ class BOXMini(DropSystem):
     """Represents the BOXMini hardware system as a singleton."""
 
     TEMPERATURE_VERSION = "TemperatureV1"
+    FRONT_PANEL_LOW_QUEUE_LIMIT = 5
 
     _instance = None
     
-    def __new__(cls, config_file="config.json", log_level=logging.INFO, reset_matrix=False):
+    def __new__(cls, config_file="config.json", log_level=logging.INFO, reset_matrix=False, front_panel_service=None):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, config_file="config.json", log_level=logging.INFO, reset_matrix=False):
+    def __init__(self, config_file="config.json", log_level=logging.INFO, reset_matrix=False, front_panel_service=None):
         if isinstance(log_level, str):
             log_level = getattr(logging, log_level.upper(), logging.INFO)
         
@@ -96,15 +97,32 @@ class BOXMini(DropSystem):
             debug=False
         )
         self.capacitive_feedback = CapacitiveFeedbackModule(self, self.state.get("capacitive_feedback", {}).get("version", "CapacitiveFeedbackV1"))
-        self.xy_stage = XYStageModule(self, self.state.get("xy_stage", {}).get("version", "XYStageV1"))
+        try:
+            self.xy_stage = XYStageModule(self, self.state.get("xy_stage", {}).get("version", "XYStageV1"))
+        except Exception as exc:
+            self.xy_stage = None
+            self.logger.error("XY stage initialization failed; continuing without motion control: %s", exc)
         self.microscope = MicroscopeModule(self, self.microscope_serial, self.state.get("microscope_settings", {}).get("version", "MicroscopeV1"))
         self.camera = CameraModule(self, self.state.get("camera_settings", {}).get("version", "CameraV1"))
         self.temperature = TemperatureModule(self, self.temperature_serial, self.TEMPERATURE_VERSION)
         front_panel_settings = self.state.get("front_panel", {})
         if front_panel_settings.get("enabled", False):
-            self.front_panel = FrontPanelModule.from_config(front_panel_settings, parent=self)
+            if front_panel_service is not None:
+                self.front_panel = front_panel_service
+                self._owns_front_panel = False
+                self.front_panel.parent = self
+                self.front_panel.claim_control(
+                    "boxmini",
+                    expression="thinking",
+                    immediate=True,
+                    start_animation=bool(front_panel_settings.get("animations_enabled", False)),
+                )
+            else:
+                self.front_panel = FrontPanelModule.from_config(front_panel_settings, parent=self)
+                self._owns_front_panel = True
         else:
             self.front_panel = None
+            self._owns_front_panel = False
 
         self.update_state("electrode_matrix.matrix", initial_matrix, priority=Priority.HIGH)
         active_electrodes = int(np.count_nonzero(np.asarray(initial_matrix)))
@@ -174,6 +192,59 @@ class BOXMini(DropSystem):
         if path.startswith("front_panel."):
             return Priority.LOW
         return super()._determine_command_priority(path)
+
+    @staticmethod
+    def _front_panel_queue_group(path: str) -> str:
+        if path in {"front_panel.expression", "front_panel.state"}:
+            return "front_panel.expression_state"
+        return path
+
+    def _enqueue_hardware_command(self, cmd):
+        if cmd.priority != Priority.LOW or not str(cmd.path).startswith("front_panel."):
+            return super()._enqueue_hardware_command(cmd)
+
+        queue_obj = self._hardware_queues[cmd.priority]
+        group = self._front_panel_queue_group(str(cmd.path))
+        removed = 0
+
+        with queue_obj.mutex:
+            kept_commands = []
+            front_panel_count = 0
+            for queued_cmd in queue_obj.queue:
+                queued_path = str(queued_cmd.path)
+                if queued_path.startswith("front_panel."):
+                    queued_group = self._front_panel_queue_group(queued_path)
+                    if queued_group == group:
+                        removed += 1
+                        continue
+                    front_panel_count += 1
+                kept_commands.append(queued_cmd)
+
+            while front_panel_count >= self.FRONT_PANEL_LOW_QUEUE_LIMIT:
+                drop_index = next(
+                    (
+                        index
+                        for index, queued_cmd in enumerate(kept_commands)
+                        if str(queued_cmd.path).startswith("front_panel.")
+                    ),
+                    None,
+                )
+                if drop_index is None:
+                    break
+                kept_commands.pop(drop_index)
+                front_panel_count -= 1
+                removed += 1
+
+            queue_obj.queue.clear()
+            queue_obj.queue.extend(kept_commands)
+            if removed:
+                queue_obj.unfinished_tasks = max(0, queue_obj.unfinished_tasks - removed)
+                if queue_obj.unfinished_tasks == 0:
+                    queue_obj.all_tasks_done.notify_all()
+
+            queue_obj.queue.append(cmd)
+            queue_obj.unfinished_tasks += 1
+            queue_obj.not_empty.notify()
         
     # Individual Command Processors
     def _process_xy_stage_command(self, path: str, value: Any) -> bool:
@@ -448,6 +519,11 @@ class BOXMini(DropSystem):
                     result = self.front_panel.set_expression(str(value), immediate=True)
                     self.set_cached_state("front_panel.expression", value)
                     return bool(result)
+                if param_name == "state":
+                    result = self.front_panel.set_expression(str(value), immediate=True)
+                    self.set_cached_state("front_panel.expression", value)
+                    self.set_cached_state("front_panel.state", value)
+                    return bool(result)
                 if param_name == "enabled":
                     return True
 
@@ -672,6 +748,11 @@ class BOXMini(DropSystem):
                 startup_text = front_panel_settings.get("text", "")
                 if front_panel_settings.get("show_on_startup", False) and startup_text:
                     self.front_panel.set_text(startup_text)
+                elif front_panel_settings.get("animations_enabled", False):
+                    startup_expression = front_panel_settings.get("expression") or front_panel_settings.get(
+                        "default_expression", "idle"
+                    )
+                    self.front_panel.set_expression(str(startup_expression), immediate=True)
                 self.logger.info("Front panel initialized")
                 
         except Exception as e:
@@ -814,13 +895,28 @@ class BOXMini(DropSystem):
             getattr(self, "microscope", None),
             getattr(self, "camera", None),
             getattr(self, "light", None),
-            getattr(self, "front_panel", None),
         ]:
             if module:
                 try:
                     module.close()
                 except Exception as e:
                     self.logger.debug(f"Error closing module {module.__class__.__name__}: {e}")
+
+        front_panel = getattr(self, "front_panel", None)
+        if front_panel:
+            try:
+                if getattr(self, "_owns_front_panel", False):
+                    front_panel.close()
+                else:
+                    front_panel.release_control(
+                        "boxmini",
+                        fallback_owner="mcp",
+                        expression="sleep",
+                        immediate=True,
+                        start_animation=True,
+                    )
+            except Exception as e:
+                self.logger.debug(f"Error closing module {front_panel.__class__.__name__}: {e}")
 
         # Close UPLED
         if hasattr(self, 'upled') and self.upled:
