@@ -1,0 +1,15 @@
+## Execution View Modes And Diagnostics
+- Default execution view for a fresh run is `follow_droplets`. If a fixed view such as `whole_chip_camera` is already configured, omitting `execution_view_mode` preserves that current view; do not rely on omission to switch views.
+- Use `execute_segment_to_breakpoint(execution_view_mode="whole_chip_camera", verify_positions=false)` for fixed whole-chip execution. This applies `config.json.presets.imaging.whole_chip_camera`, switches streamer to camera, moves to fixed overview stage position, and disables droplet-follow tracking.
+- Use `execute_segment_to_breakpoint(execution_view_mode="follow_droplets")` for normal microscope-follow execution.
+- Use `set_execution_view_mode(mode="follow_droplets")` before microscope droplet checks, visual correction, or model verification.
+- `whole_chip_camera` and `follow_droplets` are mutually exclusive. Do not switch streamer/stage while a segment is running.
+- In `whole_chip_camera` or fixed-stage execution, keep `verify_positions=false`. Executor verification is not passive: it moves stage, changes light, and calls microscope droplet verification.
+- If the user asks for whole cartridge/chip visualization, call `set_execution_view_mode(mode="whole_chip_camera")` or execute with `execution_view_mode="whole_chip_camera", verify_positions=false`; do not compute a stage position from electrode calibration or camera/microscope geometry.
+- If execution returns `started_wait=false` or `reason="execution_view_not_ready"`, do not restart hardware. Inspect diagnostics, wait/correct the view, then retry execution.
+- In `whole_chip_camera`, execution should not move XY stage frame-by-frame or change camera/light preset. If frames are far slower than `frame_delay`, view goes black, stage moves, or light changes, pause/stop and inspect diagnostics.
+- If stage moves but matrix visualizer/physical matrix does not update, pause/stop. Inspect `executor_status`, `runtime_status(detail="full")`, `matrix_summary(source="state")`, and `visualizer_status`.
+- Empty queues mean no pending commands, not command success. Check `executor_status.last_frame` and `runtime_status(detail="full").system.queues.*.last_command_error` before calling slow pace normal.
+- Executor retries a failed `electrode_matrix.matrix` frame write once. If `executor_status.last_frame.matrix_queue_wait.successful_attempt` is set, report transient retry. If all attempts fail, stop and diagnose before manual retry.
+- Do not verify every frame. Verify after injection/reservoir setup, extraction batches, split/merge, recovery moves, and before long unattended imaging.
+- Droplet vision checks are reliable up to about `3 x 3` electrodes, and have been hardest-tested up to `2 x 2`. For larger droplets, reservoirs, merged droplets, or irregular shapes, use human inspection, saved frames, or protocol-specific checks.
