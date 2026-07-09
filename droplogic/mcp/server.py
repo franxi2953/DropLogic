@@ -155,13 +155,29 @@ def _redirect_native_stdout_to_stderr():
 
 def _runtime_call(fn: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
     """Run DropLogic code without letting hardware/library stdout corrupt stdio MCP."""
+    runtime = getattr(fn, "__self__", None)
+    tool_name = getattr(fn, "__name__", "tool")
+    starter = getattr(runtime, "on_tool_start", None)
+    if callable(starter):
+        try:
+            starter(tool_name)
+        except Exception:
+            pass
     with contextlib.redirect_stdout(sys.stderr), _redirect_native_stdout_to_stderr():
-        result = fn(*args, **kwargs)
-        runtime = getattr(fn, "__self__", None)
-        writer = getattr(runtime, "write_dashboard_scene_snapshot", None)
-        if writer is not None:
+        try:
+            result = fn(*args, **kwargs)
+        except Exception:
+            error_hook = getattr(runtime, "on_tool_error", None)
+            if callable(error_hook):
+                try:
+                    error_hook(tool_name)
+                except Exception:
+                    pass
+            raise
+        success_hook = getattr(runtime, "on_tool_success", None)
+        if callable(success_hook):
             try:
-                writer()
+                success_hook(tool_name)
             except Exception:
                 pass
         return result
@@ -1504,7 +1520,7 @@ def main(argv=None):
         else:
             server.run(transport=args.transport)
     finally:
-        _runtime_call(runtime.close_system)
+        _runtime_call(runtime.shutdown)
 
 
 if __name__ == "__main__":

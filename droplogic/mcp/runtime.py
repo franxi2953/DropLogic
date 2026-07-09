@@ -28,6 +28,7 @@ import cv2
 import numpy as np
 
 from .context_store import DropLogicMCPContextStore
+from droplogic.hardware.modules.front_panel import FrontPanelModule
 from droplogic.utils.advanced_drop.validation import (
     merge_failure_recommendation,
     validate_droplet_target_layout,
@@ -311,9 +312,12 @@ class DropLogicMCPRuntime:
         self.dashboard_scene_path = os.environ.get("DROPLOGIC_DASHBOARD_SCENE_PATH")
         self._dashboard_scene_write_lock = threading.RLock()
         self._dashboard_scene_writer_thread: Optional[threading.Thread] = None
-        self._dashboard_scene_writer_event = threading.Event()
         self._dashboard_scene_writer_stop_event = threading.Event()
-        self._dashboard_scene_writer_min_interval_seconds = 0.08
+        self._dashboard_scene_interval_seconds = self._dashboard_scene_interval()
+        self._dashboard_state_interval_seconds = self._dashboard_state_interval()
+        self._dashboard_live_state_lock = threading.RLock()
+        self._dashboard_live_state_cache: Optional[Dict[str, Any]] = None
+        self._dashboard_live_state_cached_at = 0.0
         self._dashboard_timeline_cache_key: Optional[Tuple[Any, ...]] = None
         self._dashboard_timeline_cache: Optional[Dict[str, Any]] = None
         self._mjpeg_server = None
@@ -321,6 +325,20 @@ class DropLogicMCPRuntime:
         self._mjpeg_host: Optional[str] = None
         self._mjpeg_port: Optional[int] = None
         self._mjpeg_lock = threading.RLock()
+        self.front_panel = self._build_front_panel_service(config_file)
+        self._front_panel_owner = "mcp" if self.front_panel is not None else None
+        self._front_panel_error_hold_until = 0.0
+        self._front_panel_error_restore_expression = "sleep"
+        self._front_panel_last_requested_expression: Optional[str] = None
+        self._front_panel_last_requested_at = 0.0
+        self._front_panel_passive_throttle_seconds = 1.5
+        if self.front_panel is not None and os.name == "nt":
+            self._front_panel_claim(
+                "mcp",
+                expression="sleep",
+                immediate=True,
+                start_animation=True,
+            )
 
     @staticmethod
     def _default_capture_root() -> str:
@@ -333,6 +351,24 @@ class DropLogicMCPRuntime:
                 "captures",
             )
         return os.path.abspath(os.path.expandvars(os.path.expanduser(root)))
+
+    @staticmethod
+    def _dashboard_scene_interval() -> float:
+        raw = os.environ.get("DROPLOGIC_DASHBOARD_SCENE_INTERVAL_SECONDS", "0.1")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 0.1
+        return max(0.05, min(5.0, value))
+
+    @staticmethod
+    def _dashboard_state_interval() -> float:
+        raw = os.environ.get("DROPLOGIC_DASHBOARD_STATE_INTERVAL_SECONDS", "1.0")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 1.0
+        return max(0.1, min(10.0, value))
 
     @staticmethod
     def _safe_capture_segment(value: Any, default: str = "capture") -> str:
@@ -437,6 +473,349 @@ class DropLogicMCPRuntime:
             ),
         }
 
+    def _build_front_panel_service(self, config_file: Optional[str]) -> Optional[FrontPanelModule]:
+        config_path = os.path.abspath(os.path.expandvars(os.path.expanduser(config_file or self.config_file)))
+        try:
+            with open(config_path, "r", encoding="utf-8") as handle:
+                config = json.load(handle)
+        except Exception:
+            return None
+
+        front_panel_config = dict((config or {}).get("front_panel", {}) or {})
+        if not front_panel_config.get("enabled", False):
+            return None
+
+        try:
+            return FrontPanelModule.from_config(front_panel_config, parent=None)
+        except Exception:
+            return None
+
+    def _front_panel_claim(
+        self,
+        owner: str,
+        *,
+        expression: Optional[str] = None,
+        immediate: bool = False,
+        start_animation: Optional[bool] = None,
+    ) -> None:
+        if self.front_panel is None:
+            return
+        try:
+            self.front_panel.claim_control(
+                owner,
+                expression=expression,
+                immediate=immediate,
+                start_animation=start_animation,
+            )
+            self._front_panel_owner = owner
+        except Exception:
+            pass
+
+    def _front_panel_release_to_mcp(self, expression: str = "sleep") -> None:
+        if self.front_panel is None:
+            return
+        try:
+            current_owner = self._front_panel_owner or "boxmini"
+            self.front_panel.release_control(
+                current_owner,
+                fallback_owner="mcp",
+                expression=expression,
+                immediate=True,
+                start_animation=True,
+            )
+            self._front_panel_owner = "mcp"
+        except Exception:
+            pass
+
+    def _front_panel_blackout(self) -> None:
+        if self.front_panel is None:
+            return
+        try:
+            self.front_panel.blackout()
+        except Exception:
+            pass
+
+    def _front_panel_current_expression(self) -> Optional[str]:
+        if self.front_panel is None:
+            return None
+        try:
+            controller = getattr(self.front_panel, "front_panel", None)
+            expression = getattr(controller, "_expression", None)
+            if expression:
+                return str(expression)
+            default_expression = getattr(controller, "default_expression", None)
+            if default_expression:
+                return str(default_expression)
+        except Exception:
+            return None
+        return None
+
+    def _front_panel_should_skip_expression_update(
+        self,
+        expression: Optional[str],
+        *,
+        tool_name: Optional[str] = None,
+        passive: bool = False,
+    ) -> bool:
+        normalized = str(expression or "").strip().lower()
+        if not normalized:
+            return True
+        now = time.monotonic()
+        current_expression = (self._front_panel_current_expression() or "").strip().lower()
+        last_expression = (self._front_panel_last_requested_expression or "").strip().lower()
+
+        if normalized == current_expression and normalized == last_expression:
+            if not passive:
+                return True
+            if now - self._front_panel_last_requested_at < self._front_panel_passive_throttle_seconds:
+                controller = getattr(self.front_panel, "front_panel", None)
+                if controller is not None and hasattr(controller, "_trace_event"):
+                    controller._trace_event(
+                        "mcp_expression_skip",
+                        cause=tool_name,
+                        expression=normalized,
+                        reason="same_expression_throttled",
+                    )
+                return True
+
+        if passive and normalized == current_expression:
+            if now - self._front_panel_last_requested_at < self._front_panel_passive_throttle_seconds:
+                controller = getattr(self.front_panel, "front_panel", None)
+                if controller is not None and hasattr(controller, "_trace_event"):
+                    controller._trace_event(
+                        "mcp_expression_skip",
+                        cause=tool_name,
+                        expression=normalized,
+                        reason="passive_throttled",
+                    )
+                return True
+
+        self._front_panel_last_requested_expression = normalized
+        self._front_panel_last_requested_at = now
+        return False
+
+    def _front_panel_flush_error_hold_if_needed(self) -> bool:
+        if self.front_panel is None:
+            return False
+        hold_until = float(getattr(self, "_front_panel_error_hold_until", 0.0) or 0.0)
+        if hold_until <= 0:
+            return False
+        now = time.monotonic()
+        if now < hold_until:
+            return True
+
+        restore_expression = str(
+            getattr(self, "_front_panel_error_restore_expression", None)
+            or ("idle" if self.system is not None else "sleep")
+        )
+        self._front_panel_error_hold_until = 0.0
+        self._front_panel_error_restore_expression = restore_expression
+        try:
+            controller = getattr(self.front_panel, "front_panel", None)
+            if controller is not None:
+                controller.default_expression = restore_expression
+            self.front_panel.claim_control(
+                "mcp",
+                expression=restore_expression,
+                immediate=False,
+                start_animation=True,
+            )
+            self._front_panel_owner = "mcp"
+        except Exception:
+            pass
+        return False
+
+    def _front_panel_error_recovery(
+        self,
+        *,
+        owner: str = "mcp",
+        error_expression: str = "sad",
+        error_duration: float = 60.0,
+        fallback_expression: Optional[str] = None,
+        cause: Optional[str] = None,
+    ) -> None:
+        if self.front_panel is None:
+            return
+        try:
+            now = time.monotonic()
+            active_hold_until = float(getattr(self, "_front_panel_error_hold_until", 0.0) or 0.0)
+            fallback = str(
+                fallback_expression
+                or self._front_panel_current_expression()
+                or ("idle" if self.system is not None else "sleep")
+            )
+            duration = max(0.1, float(error_duration))
+            if active_hold_until > now and self._front_panel_current_expression() == error_expression:
+                self._front_panel_error_hold_until = max(active_hold_until, now + duration)
+                self._front_panel_error_restore_expression = fallback
+                controller = getattr(self.front_panel, "front_panel", None)
+                if controller is not None and hasattr(controller, "_trace_event"):
+                    controller._trace_event(
+                        "mcp_error_recovery_extend",
+                        cause=cause,
+                        fallback=fallback,
+                        hold_until=self._front_panel_error_hold_until,
+                    )
+                return
+            self._front_panel_error_hold_until = now + duration
+            self._front_panel_error_restore_expression = fallback
+            self.front_panel.claim_control(owner, start_animation=True)
+            self._front_panel_owner = owner
+            controller = getattr(self.front_panel, "front_panel", None)
+            if controller is not None and hasattr(controller, "_trace_event"):
+                controller._trace_event(
+                    "mcp_error_recovery_begin",
+                    cause=cause,
+                    fallback=fallback,
+                    hold_until=self._front_panel_error_hold_until,
+                )
+            self.front_panel.set_expression(
+                error_expression,
+                duration=duration,
+                immediate=True,
+                source="mcp_error_recovery",
+                reason=f"fallback={fallback};cause={cause}",
+            )
+            self.front_panel.front_panel.default_expression = fallback
+        except Exception:
+            pass
+
+    def _front_panel_expression_for_tool(self, tool_name: str) -> Optional[str]:
+        name = str(tool_name or "").lower()
+        if not name:
+            return None
+        if self._front_panel_is_passive_tool(name):
+            return None
+        if "error" in name or name == "emergency_stop":
+            return "sad"
+        if "visualizer" in name or "capture" in name or "camera" in name or "microscope" in name:
+            return "looking"
+        if "temperature" in name or "melting" in name:
+            return "heating"
+        if "light" in name:
+            return "light"
+        if name.startswith("plan_") or name.startswith("execute_") or "droplet" in name or "matrix" in name:
+            return "working"
+        if name in {"load_system", "restart_system"}:
+            return "thinking"
+        if name == "close_system":
+            return "sleep"
+        return "thinking"
+
+    @staticmethod
+    def _front_panel_is_passive_tool(tool_name: str) -> bool:
+        name = str(tool_name or "").lower()
+        return name in {
+            "status",
+            "runtime_status",
+            "state_summary",
+            "matrix_summary",
+            "matrix_voltage_status",
+            "execution_status_summary",
+            "context_status",
+            "list_context_files",
+            "read_context_file",
+            "health_check",
+            "capabilities",
+            "read_state",
+            "visualizer_frame",
+            "visualizer_status",
+            "start_visualizer",
+            "stop_visualizer",
+            "bring_visualizer_to_front",
+            "prepare_visualizers",
+            "set_streamer_source",
+            "set_execution_view_mode",
+            "execution_scene",
+        }
+
+    def on_tool_start(self, tool_name: str) -> None:
+        expression = self._front_panel_expression_for_tool(tool_name)
+        if expression is None or self.front_panel is None:
+            return
+        if self._front_panel_flush_error_hold_if_needed():
+            return
+        passive = self._front_panel_is_passive_tool(tool_name)
+        if self._front_panel_should_skip_expression_update(
+            expression,
+            tool_name=tool_name,
+            passive=passive,
+        ):
+            return
+        owner = self._front_panel_owner or "mcp"
+        try:
+            self.front_panel.set_expression(
+                expression,
+                immediate=False,
+                source="mcp_tool_start",
+                reason=tool_name,
+            )
+            self._front_panel_owner = owner
+        except Exception:
+            pass
+
+    def on_tool_success(self, tool_name: str) -> None:
+        if self.front_panel is None:
+            return
+        if self._front_panel_flush_error_hold_if_needed():
+            return
+        passive = self._front_panel_is_passive_tool(tool_name)
+        if self.system is None and passive:
+            return
+        expression = "idle" if self.system is not None else "sleep"
+        if self._front_panel_should_skip_expression_update(
+            expression,
+            tool_name=tool_name,
+            passive=passive,
+        ):
+            return
+        start_animation = bool(self.system is None or self.system_name != "boxmini" or self.front_panel.owner == "mcp")
+        try:
+            self.front_panel.set_expression(
+                expression,
+                immediate=False,
+                source="mcp_tool_success",
+                reason=tool_name,
+            )
+            if start_animation:
+                self.front_panel.start_animation(
+                    expression,
+                    source="mcp_tool_success",
+                    reason=tool_name,
+                )
+        except Exception:
+            pass
+
+    def on_tool_error(self, tool_name: str) -> None:
+        if self.front_panel is None:
+            return
+        try:
+            benign_without_system = {
+                "close_system",
+            }
+            if self.system is None:
+                if tool_name in benign_without_system or self._front_panel_is_passive_tool(tool_name):
+                    controller = getattr(self.front_panel, "front_panel", None)
+                    if controller is not None and hasattr(controller, "_trace_event"):
+                        controller._trace_event(
+                            "mcp_error_ignored",
+                            cause=tool_name,
+                            reason="benign_without_system",
+                        )
+                    return
+                self._front_panel_error_recovery(cause=tool_name)
+            else:
+                if self._front_panel_flush_error_hold_if_needed():
+                    return
+                self.front_panel.set_expression(
+                    "sad",
+                    immediate=False,
+                    source="mcp_tool_error",
+                    reason=tool_name,
+                )
+        except Exception:
+            pass
+
     # ---------------------------------------------------------------------
     # System lifecycle
 
@@ -485,10 +864,17 @@ class DropLogicMCPRuntime:
                 elif system_key in {"boxmini", "box_mini", "box_mini1"}:
                     from droplogic.hardware.box_mini1 import BOXMini
 
+                    self._front_panel_claim(
+                        "mcp",
+                        expression="thinking",
+                        immediate=True,
+                        start_animation=True,
+                    )
                     self.system = BOXMini(
                         config_file=config_file,
                         log_level=log_level,
                         reset_matrix=reset_matrix,
+                        front_panel_service=self.front_panel,
                     )
                     self.system_name = "boxmini"
                 else:
@@ -496,6 +882,10 @@ class DropLogicMCPRuntime:
                         f"Unknown system '{system}'. Use simulator, dmlite, or boxmini."
                     )
             except Exception:
+                self.system = None
+                self.system_name = None
+                self.loaded_at = None
+                self._front_panel_error_recovery()
                 self._release_real_hardware_lock()
                 raise
 
@@ -505,6 +895,8 @@ class DropLogicMCPRuntime:
             self.config_file = config_file
             self.log_level = log_level
             self.loaded_at = time.time()
+            if self.system_name != "boxmini":
+                self._front_panel_claim("mcp", expression="idle", immediate=True, start_animation=True)
             self.last_visualizer_prepare_result = None
             if self.system_name == "boxmini":
                 try:
@@ -543,6 +935,7 @@ class DropLogicMCPRuntime:
 
             system = self.system
             if system is not None:
+                self._stop_mjpeg_server()
                 self._detach_dashboard_scene_writer(system)
                 for visualizer_name in ("streamer", "matrix"):
                     instance = self._get_visualizer_instance(system, visualizer_name)
@@ -559,8 +952,17 @@ class DropLogicMCPRuntime:
             self.system_name = None
             self.loaded_at = None
             self.last_visualizer_prepare_result = None
+            self._dashboard_live_state_cache = None
+            self._dashboard_live_state_cached_at = 0.0
+            self._front_panel_release_to_mcp("sleep")
             self._release_real_hardware_lock()
             return self.status()
+
+    def shutdown(self) -> Dict[str, Any]:
+        """Close the loaded system and blank the front panel for MCP shutdown."""
+        status = self.close_system()
+        self._front_panel_blackout()
+        return status
 
     def require_system(self):
         if self.system is None:
@@ -590,22 +992,12 @@ class DropLogicMCPRuntime:
     def _attach_dashboard_scene_writer(self, system: Any) -> None:
         if not self.dashboard_scene_path:
             return
-        executor = getattr(getattr(system, "advanced_drop", None), "executor", None)
-        if executor is None:
-            return
-
-        def _write_scene(_event: Optional[Dict[str, Any]] = None) -> None:
-            self.request_dashboard_scene_snapshot()
-
-        try:
-            self._start_dashboard_scene_writer_thread()
-            executor.on_frame_applied = _write_scene
-        except Exception:
-            pass
+        self._start_dashboard_scene_writer_thread()
 
     def _detach_dashboard_scene_writer(self, system: Any) -> None:
         executor = getattr(getattr(system, "advanced_drop", None), "executor", None)
         if executor is None:
+            self._stop_dashboard_scene_writer_thread()
             return
         try:
             if getattr(executor, "on_frame_applied", None) is not None:
@@ -618,7 +1010,6 @@ class DropLogicMCPRuntime:
         if not self.dashboard_scene_path:
             return
         self._start_dashboard_scene_writer_thread()
-        self._dashboard_scene_writer_event.set()
 
     def _start_dashboard_scene_writer_thread(self) -> None:
         if not self.dashboard_scene_path:
@@ -627,7 +1018,6 @@ class DropLogicMCPRuntime:
         if thread is not None and thread.is_alive():
             return
         self._dashboard_scene_writer_stop_event.clear()
-        self._dashboard_scene_writer_event.clear()
         self._dashboard_scene_writer_thread = threading.Thread(
             target=self._dashboard_scene_writer_loop,
             name=f"DropLogicDashboardSceneWriter-{self.session_id}",
@@ -637,29 +1027,40 @@ class DropLogicMCPRuntime:
 
     def _stop_dashboard_scene_writer_thread(self) -> None:
         self._dashboard_scene_writer_stop_event.set()
-        self._dashboard_scene_writer_event.set()
         thread = self._dashboard_scene_writer_thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=1.0)
         self._dashboard_scene_writer_thread = None
 
-    def _dashboard_scene_writer_loop(self) -> None:
-        last_write = 0.0
-        while not self._dashboard_scene_writer_stop_event.is_set():
-            if not self._dashboard_scene_writer_event.wait(timeout=0.5):
-                continue
-            self._dashboard_scene_writer_event.clear()
-            if self._dashboard_scene_writer_stop_event.is_set():
-                break
-            elapsed = time.monotonic() - last_write
-            remaining = float(self._dashboard_scene_writer_min_interval_seconds) - elapsed
-            if remaining > 0 and self._dashboard_scene_writer_stop_event.wait(remaining):
-                break
+    def _stop_mjpeg_server(self) -> None:
+        with self._mjpeg_lock:
+            server = self._mjpeg_server
+            thread = self._mjpeg_thread
+            self._mjpeg_server = None
+            self._mjpeg_thread = None
+            self._mjpeg_host = None
+            self._mjpeg_port = None
+        if server is not None:
             try:
-                self.write_dashboard_scene_snapshot()
-                last_write = time.monotonic()
+                server.shutdown()
             except Exception:
                 pass
+            try:
+                server.server_close()
+            except Exception:
+                pass
+        if thread is not None and thread.is_alive() and threading.current_thread() is not thread:
+            thread.join(timeout=1.0)
+
+    def _dashboard_scene_writer_loop(self) -> None:
+        while not self._dashboard_scene_writer_stop_event.is_set():
+            try:
+                self.write_dashboard_scene_snapshot()
+            except Exception:
+                pass
+            interval = max(0.05, float(getattr(self, "_dashboard_scene_interval_seconds", 0.1)))
+            if self._dashboard_scene_writer_stop_event.wait(interval):
+                break
 
     # ---------------------------------------------------------------------
     # Read/observe
@@ -725,6 +1126,10 @@ class DropLogicMCPRuntime:
                     "snapshots_dir": self.snapshots_dir,
                 },
                 "last_error": self.to_jsonable(self.last_error),
+                "front_panel": {
+                    "enabled": self.front_panel is not None,
+                    "owner": self._front_panel_owner,
+                },
                 "system": system_status,
                 "executor": executor_status,
                 "plan": plan_summary,
@@ -1999,12 +2404,24 @@ class DropLogicMCPRuntime:
         image_quality: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Return a current visualizer frame as base64 and/or a saved image path."""
-        system = self.require_system()
+        system = self.system
+        if system is None:
+            return {
+                "ok": False,
+                "frame_available": False,
+                "visualizer": visualizer,
+                "frame_source": frame_source,
+                "reason": "No system loaded.",
+            }
         frame = self._get_visualizer_frame(system, visualizer, frame_source)
         if frame is None:
-            raise DropLogicMCPError(
-                f"No {frame_source} frame available for visualizer '{visualizer}'."
-            )
+            return {
+                "ok": False,
+                "frame_available": False,
+                "visualizer": visualizer,
+                "frame_source": frame_source,
+                "reason": f"No {frame_source} frame available for visualizer '{visualizer}'.",
+            }
 
         try:
             import cv2
@@ -2027,6 +2444,8 @@ class DropLogicMCPRuntime:
             raise DropLogicMCPError(f"Failed to encode visualizer frame as {ext}.")
 
         result = {
+            "ok": True,
+            "frame_available": True,
             "visualizer": visualizer,
             "frame_source": frame_source,
             "shape": list(frame.shape),
@@ -3989,11 +4408,6 @@ class DropLogicMCPRuntime:
                 updated = advanced_drop.droplets.update_droplet_position(
                     droplet_id, position_pair
                 )
-            if updated:
-                try:
-                    self.write_dashboard_scene_snapshot()
-                except Exception:
-                    pass
             return {
                 "updated": bool(updated),
                 "position": self.to_jsonable(position_pair),
@@ -4014,10 +4428,6 @@ class DropLogicMCPRuntime:
                 raise DropLogicMCPError(str(exc)) from exc
             plan = result.get("plan", getattr(advanced_drop, "plan", None))
             executor_status = self.to_jsonable(result.get("executor_status") or {})
-            try:
-                self.write_dashboard_scene_snapshot()
-            except Exception:
-                pass
 
             return {
                 "ok": True,
@@ -7226,7 +7636,7 @@ class DropLogicMCPRuntime:
         max_path_points: int = 256,
         max_droplet_cells: int = 1024,
     ) -> Dict[str, Any]:
-        """Return the internal dashboard scene, using the shared execution scene builder."""
+        """Return the central live dashboard snapshot for file/WebSocket transport."""
         scene = self.execution_scene(
             max_path_points=max_path_points,
             max_droplet_cells=max_droplet_cells,
@@ -7236,6 +7646,20 @@ class DropLogicMCPRuntime:
         )
         scene["surface"] = "dashboard_internal"
         scene["agent_visible"] = False
+        scene["live_snapshot"] = {
+            "schema_version": 1,
+            "source": "droplogic_runtime_publisher",
+            "interval_seconds": self._dashboard_scene_interval_seconds,
+            "state_interval_seconds": self._dashboard_state_interval_seconds,
+        }
+        live_state = self._dashboard_live_state_snapshot()
+        if isinstance(live_state, dict):
+            if "runtime" in live_state:
+                scene["runtime"] = live_state.get("runtime")
+            if "state" in live_state:
+                scene["state"] = live_state.get("state")
+            if "visualizers" in live_state:
+                scene["visualizers"] = live_state.get("visualizers")
         try:
             scene["timeline"] = self._dashboard_scene_timeline()
         except Exception as exc:
@@ -7245,6 +7669,69 @@ class DropLogicMCPRuntime:
                 "error": str(exc),
             }
         return scene
+
+    def _dashboard_live_state_snapshot(self) -> Dict[str, Any]:
+        now = time.monotonic()
+        with self._dashboard_live_state_lock:
+            cache = self._dashboard_live_state_cache
+            age = now - self._dashboard_live_state_cached_at
+            if isinstance(cache, dict) and age < self._dashboard_state_interval_seconds:
+                cached = copy.deepcopy(cache)
+                cached["cache_age_seconds"] = round(age, 3)
+                return cached
+
+            captured_at = time.time()
+            runtime: Any
+            state: Any
+            visualizers: Any
+            try:
+                runtime = self.status(detail="compact")
+                visualizers = runtime.get("visualizers") if isinstance(runtime, dict) else None
+            except Exception as exc:
+                runtime = {"error": str(exc)}
+                visualizers = None
+            try:
+                state = self.state_summary()
+                try:
+                    voltage_status = self.matrix_voltage_status()
+                except Exception as exc:
+                    voltage_status = {"ok": False, "error": str(exc), "source": "dashboard_live_snapshot"}
+                state = self._attach_voltage_status_to_state(state, voltage_status)
+            except Exception as exc:
+                state = {"available": False, "error": str(exc)}
+            if visualizers is None:
+                try:
+                    visualizers = self.visualizer_status()
+                except Exception as exc:
+                    visualizers = {"error": str(exc)}
+
+            cache = {
+                "captured_at": captured_at,
+                "cache_age_seconds": 0.0,
+                "runtime": self.to_jsonable(runtime),
+                "state": self.to_jsonable(state),
+                "visualizers": self.to_jsonable(visualizers),
+            }
+            self._dashboard_live_state_cache = copy.deepcopy(cache)
+            self._dashboard_live_state_cached_at = now
+            return cache
+
+    def _attach_voltage_status_to_state(self, state: Any, voltage_status: Any) -> Any:
+        if not isinstance(state, dict):
+            return state
+        root = state.get("value") if isinstance(state.get("value"), dict) else None
+        if root is None:
+            return state
+        matrix = root.get("electrode_matrix")
+        if not isinstance(matrix, dict):
+            return state
+        next_state = dict(state)
+        next_root = dict(root)
+        next_matrix = dict(matrix)
+        next_matrix["voltage_status"] = self.to_jsonable(voltage_status)
+        next_root["electrode_matrix"] = next_matrix
+        next_state["value"] = next_root
+        return next_state
 
     def _dashboard_scene_timeline(self) -> Dict[str, Any]:
         """Return frame-indexed plan data for the browser timeline scrubber."""
@@ -8207,7 +8694,7 @@ class DropLogicMCPRuntime:
         return None
 
     def write_dashboard_scene_snapshot(self) -> None:
-        """Write an internal dashboard scene file without affecting MCP calls."""
+        """Publish the latest dashboard scene file as live UI transport."""
         path = (self.dashboard_scene_path or "").strip()
         if not path:
             return
@@ -8240,7 +8727,6 @@ class DropLogicMCPRuntime:
                         separators=(",", ":"),
                     )
                     handle.flush()
-                    os.fsync(handle.fileno())
                 os.replace(temp_path, output_path)
             except Exception:
                 if temp_path:

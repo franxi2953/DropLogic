@@ -64,6 +64,38 @@
         "upled_serial": "M01289453",
         "version": "LightV2"
     },
+    "front_panel": {
+        "enabled": true,
+        "version": "DroptiBot v1.0",
+        "Port": "COM16",
+        "baudrate": 57600,
+        "address": "001",
+        "width": 48,
+        "height": 16,
+        "color": 1,
+        "dll_color_style": 0,
+        "font_size": 16,
+        "horizontal_align": 2,
+        "vertical_align": 2,
+        "require_ack": true,
+        "bitmap_enabled": true,
+        "bitmap_transport": "eq_dll_realtime",
+        "bitmap_visual_confirmed": true,
+        "text_fallback_enabled": false,
+        "bitmap_dll_path": "runs/eq2013_sdk_probe/runtime/EQ2008_Dll.dll",
+        "asset_library_path": "runs/eq2013_sdk_probe/test_sdk_clean/front_panel_state_library",
+        "asset_mode_enabled": true,
+        "animations_enabled": true,
+        "default_expression": "idle",
+        "expression": "idle",
+        "frame_interval": 0.8,
+        "action_expression_duration": 3.5,
+        "sleep_after_seconds": 12.0,
+        "sleep_expression": "sleep",
+        "show_on_startup": true,
+        "text": "",
+        "last_response": ""
+    },
     "presets": {
         "stage": {
             "manual_injection": {

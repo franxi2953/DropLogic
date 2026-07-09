@@ -49,9 +49,12 @@ class LightV2:
             # self._send_command(command)
 
         except Exception as e:
-                self.logger.error(f"Failed to apply initial light settings: {e}")
-                self.close()
-                raise
+                # The ring-light USB endpoint is flaky on some benches. Keep
+                # BOXMini alive and degrade gracefully so other modules such as
+                # the front panel can still start.
+                self.logger.warning(f"Failed to apply initial light settings: {e}")
+                self.serial = None
+                self.ring_serial = None
             
     def _add_crc16_modbus(self, command_bytes):
         """Adds CRC16-MODBUS checksum to the command."""
@@ -78,9 +81,10 @@ class LightV2:
             response = self.serial.read(0x81, 64, timeout=5000)
             return response
         except Exception as e:
-            self.logger.error(f"Communication failed: {e}")
-            self.close()
-            raise
+            self.logger.warning(f"Ring light communication failed, disabling ring channel: {e}")
+            self.serial = None
+            self.ring_serial = None
+            return None
 
     def switch_light(self, on=True):
         """Turns the light source ON or OFF while preserving other bits."""
@@ -107,7 +111,7 @@ class LightV2:
             self.state["light_on"] = on  # Update internal state
             return response
         except Exception as e:
-            self.close()
+            self.logger.warning(f"Failed to switch ring light state: {e}")
             raise
 
     def set_coaxial_light(self, intensity):
@@ -147,7 +151,6 @@ class LightV2:
             return response
         except Exception as e:
             self.logger.error(f"Failed to set ring light intensity to {intensity}: {e}")
-            self.close()
             raise
 
     def get_state(self):
