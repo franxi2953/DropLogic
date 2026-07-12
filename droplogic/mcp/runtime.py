@@ -253,6 +253,8 @@ class DropLogicMCPRuntime:
     EXECUTE_SEGMENT_INLINE_WAIT_MARGIN_SECONDS = 8.0
     EXECUTION_WAIT_STATUS_MAX_WAIT_SECONDS = 30.0
     EXECUTION_WAIT_STATUS_MIN_WAIT_SECONDS = 2.0
+    PLANNING_JOB_STATUS_MAX_WAIT_SECONDS = 15.0
+    PLANNING_JOB_STATUS_MIN_WAIT_SECONDS = 3.0
     LARGE_STATE_PATHS = {
         "electrode_matrix.matrix",
     }
@@ -4741,7 +4743,7 @@ class DropLogicMCPRuntime:
             return self.advanced_drop_job_status()
 
     def advanced_drop_job_status(self) -> Dict[str, Any]:
-        """Return compact status for the active or last AdvancedDrop background job."""
+        """Return compact status and recommended wait timing for a background job."""
         with self._advanced_drop_job_lock:
             status = dict(self._advanced_drop_job_status or {})
             if not status:
@@ -4795,11 +4797,51 @@ class DropLogicMCPRuntime:
             compact["next_step"] = status.get("next_step")
         elif isinstance(result, dict) and result.get("next_step"):
             compact["next_step"] = result.get("next_step")
+        if compact.get("running"):
+            recommended_wait_seconds = self._planning_job_recommended_wait_seconds(status)
+            compact["recommended_wait_seconds"] = recommended_wait_seconds
+            compact["next_check_after_seconds"] = recommended_wait_seconds
+            compact["recommended_status_call"] = {
+                "tool": "planning_job_status",
+                "arguments": {},
+            }
+            compact["next"] = (
+                "Planning is still running; wait recommended_wait_seconds before "
+                "calling planning_job_status again instead of immediate polling."
+            )
         if isinstance(result, dict):
             compact["result"] = self._compact_advanced_drop_job_result(result)
         elif result is not None:
             compact["result"] = self._summarize_state_value(result)
         return compact
+
+    def _planning_job_recommended_wait_seconds(self, status: Dict[str, Any]) -> float:
+        arguments = status.get("arguments")
+        planning_timeout = None
+        if isinstance(arguments, dict):
+            try:
+                planning_timeout = float(arguments.get("planning_timeout"))
+            except (TypeError, ValueError):
+                planning_timeout = None
+        try:
+            started_at = float(status.get("started_at"))
+        except (TypeError, ValueError):
+            started_at = time.time()
+        elapsed = max(0.0, time.time() - started_at)
+        remaining = None
+        if planning_timeout is not None and planning_timeout > 0:
+            remaining = max(0.0, planning_timeout - elapsed)
+        candidates = [self.PLANNING_JOB_STATUS_MAX_WAIT_SECONDS]
+        if remaining is not None:
+            candidates.append(max(self.PLANNING_JOB_STATUS_MIN_WAIT_SECONDS, min(remaining, remaining / 3.0)))
+        seconds = min(candidates)
+        return round(
+            max(
+                self.PLANNING_JOB_STATUS_MIN_WAIT_SECONDS,
+                min(seconds, self.PLANNING_JOB_STATUS_MAX_WAIT_SECONDS),
+            ),
+            3,
+        )
 
     def _compact_advanced_drop_arguments(
         self,

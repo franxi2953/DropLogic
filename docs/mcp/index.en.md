@@ -131,12 +131,12 @@ Use these to add one logical planning primitive to the current plan. They do not
 | `plan_isometric_split` | Plan an isometric split |
 | `plan_mix` | Plan a mixing sequence |
 | `plan_merge` | Plan droplet merge |
-| `planning_job_status` | Poll a background planning job |
+| `planning_job_status` | Check a background planning job and returned wait guidance |
 | `cancel_planning_job` | Request cancellation of a background planning job |
 | `plan_summary` | Inspect frame count, events, trajectories, and planning result |
 | `save_protocol` | Save the current plan and droplets to a pickle file |
 
-For large moves or difficult plans, use `background=true` and poll `planning_job_status()` rather than holding one MCP request open.
+For large moves or difficult plans, use `background=true` and call `planning_job_status()` rather than holding one MCP request open. While the job is running, the status response includes `recommended_wait_seconds`, `next_check_after_seconds`, and `recommended_status_call`; wait that long before checking again instead of repeatedly polling.
 
 On real hardware systems such as DMLite and BOXMini, `plan_move` refuses more than 10 active moving droplets in one call. Split movement into executed batches of 5-10 droplets, preferring 5 for dense layouts, crossings, long routes, or 2 x 2 droplets.
 

@@ -1,0 +1,54 @@
+## Planning And Execution Rhythm
+Planning only changes logical state. Hardware moves only through `execute_segment_to_breakpoint`, `start_plan`, `resume_plan`, or explicit hardware calls.
+
+Default real-hardware rhythm:
+1. Plan one physical segment or checkpoint.
+2. Inspect `plan_summary()`.
+3. Execute to the segment target with `execute_segment_to_breakpoint(frame_number=null)`.
+4. If the result is `wait_mode="inline"`, use its `wait_status` directly. If it starts a background wait, call `execution_wait_status(wait_seconds=<recommended_wait_seconds>)` once and let that timer return.
+5. Verify or inspect, then plan the next segment.
+
+Rules:
+- For a clean new matrix protocol, benchmark, or user-requested reset, do not delete droplets one by one and continue from the old executor cursor. First stop/deactivate hardware if needed with `emergency_stop(deactivate_electrodes=true)`, then call `clear_droplet_state(reset_executor=true)`. Confirm `plan.frame_count=0`, no active droplets, and executor `current_frame=0,total_frames=0` before creating the first new droplet. This prevents new plan frames from being appended after an already executed previous run.
+- For real hardware, dry electrode-only primitive tests, and matrix display tests, execute each planned physical segment before retargeting or planning the next segment unless the user explicitly asks for offline/batch planning.
+- Planned-only actions are invisible to the physical system, and batch planning prevents adaptation to physical feedback.
+- Do not plan all legs of a square path and execute once. Create/activate and execute; retarget leg 1, plan, execute, inspect; repeat for remaining legs.
+- Treat requested final droplet count as the experimental goal, not permission for one large SIPP move. Extract and route in small physical batches.
+- For `plan_move` on real hardware, retarget and plan at most `5-10` active droplets per call. Prefer `5` when droplets have multi-electrode footprints, large `vital_space`, routes cross/reorder, the layout is dense, or targets are near another droplet's vital space. Execute and inspect each movement batch before assigning targets for the next batch. This limit still applies to benchmarks, display tests, and well-spaced-looking layouts. Do not override a batching warning from `update_droplet_targets`; split into executed batches instead.
+- Plan only to the next visual/temperature check, injection confirmation, extraction validation, user decision, or risky transition.
+- Leave `remove_duplicate_frames=false` during normal real-hardware operation. Use it only for explicit duplicate-frame debugging after inspecting the resulting plan.
+- Prefer `execute_segment_to_breakpoint` for normal segment execution. It clears old breakpoints by default, adds the target breakpoint, chooses `start_plan` for a new run or `resume_plan` for a partial run, and uses `wait_mode="auto"` so short segments finish inline and long segments run as a background wait.
+- Default execution frame delay is `1.0` second, and that is the correct normal operating pace. Omit `frame_delay` unless the user explicitly asks for another speed; never invent a faster or slower non-default delay.
+- For background execution waits, do not make repeated immediate `execution_wait_status()` calls. Use the returned `recommended_wait_seconds`, `next_check_after_seconds`, or `recommended_status_call`; if the timer returns `running=true`, repeat one timer wait using the new recommendation.
+- Use manual `add_breakpoint` plus `start_plan`/`resume_plan` plus `start_execute_until_breakpoint` only when you need non-default breakpoint handling.
+- Use `resume_timeline(reason=...)` before starting a new active work block if `timeline_status()` says the logical timeline is paused and `system_loaded` is not `false`. If `system_loaded=false`, load the DropLogic system first; the timeline is intentionally off while no system exists. Use `pause_timeline(reason=...)` when the user goal is complete, when you are about to stop working, or when waiting for a human decision. This records a stopped interval in the dashboard timeline without adding plan frames or pausing hardware execution; use `pause_plan()` for real hardware execution pauses.
+- `start_plan` starts from frame `0`. Never use it directly to continue a paused or partially executed run.
+- `resume_plan` is for unusual recovery/debug cases. If `start_plan` says it would restart from frame `0`, treat that as a safety stop.
+- `current_frame` is the next frame to execute; `executor_status.last_frame.index` is the last physical frame sent. After a breakpoint, resume should continue from the next unexecuted frame.
+- `start_plan`, `resume_plan`, and `execute_segment_to_breakpoint` refuse `planning_success=false` by default. Fix the plan first; use `allow_failed_plan=true` only for explicit supervised debugging.
+- Long blocking waits can exceed client timeouts while hardware keeps its last state. Use the bounded background timer form `execution_wait_status(wait_seconds=...)` instead of immediate polling.
+- If `executor_status` reports `is_executing=false` and `current_frame >= total_frames`, execution is already stopped/complete. Do not call `stop_plan` as a final confirmation; use status as completion evidence.
+- `cancel_execution_wait()` cancels only the MCP wait job. Use `pause_plan()` or `stop_plan()` to affect hardware execution.
+- `cancel_planning_job()` requests cooperative cancellation; CPU-bound SIPP may finish its current planning call first.
+- If a long call times out and later tools say `No system loaded`, assume MCP may have restarted. Reload only after physical state is safe, then reconstruct logical droplets from physical/visual state.
+
+Planning primitive tools:
+- Use `plan_activation_frame(event_type="activation")` after creating a reservoir or droplets that only need footprint activation.
+- Use `plan_move(...)` after setting droplet targets with `update_droplet_target(s)`.
+- Use `trim_plan_tail(keep_frames=N)` only to delete unexecuted planned tail frames. It rejects cuts that would remove already executed/applied frames; after trimming, inspect the timeline before planning new frames.
+- For large coordinated moves that are still within the `5-10` droplet hardware batch limit, use `plan_move(planning_timeout=1200, background=true)`, then call `planning_job_status()` and wait according to its returned `recommended_wait_seconds`/`next_check_after_seconds`; do not poll it every few seconds. Dashboard agent calls may force `background=true` with a bounded timeout for safety. If a request involves more droplets, split it into executed movement batches instead of increasing the timeout and planning all droplets together.
+- Do not put labels, checkpoints, notes, or other metadata in `plan_move(options=...)`. Only documented planner options belong there; unknown options are ignored by MCP and reported as `ignored_options`.
+- Use `plan_reservoir_extraction(...)` for extracting one or more droplets from a reservoir.
+- Use `plan_isometric_split(...)`, `plan_mix(...)`, and `plan_merge(...)` for those named operations.
+- These tools only append/update the logical plan. Always inspect the tool result/`plan_summary()` before execution.
+- For `plan_reservoir_extraction`, `plan_isometric_split`, `plan_mix`, and `plan_merge`, treat `ok=false`, `primitive_validation.ok=false`, `result=null`, or `planning_success=false` as a failed primitive. Do not execute it, do not continue as if it succeeded, and do not use it as completion evidence.
+- If planning fails, times out, or returns `planning_success=false`, split into waypoints or smaller groups.
+- `plan_move` plans every active droplet whose target differs from its current position. It does not only plan the droplets named in the most recent `update_droplet_targets` call. Before each movement batch, reset non-batch droplets to their current positions or include them deliberately in the staged move.
+- `update_droplet_target(s)` validates the proposed final active-droplet layout and current-space reservations before mutating targets. Read `target_validation`: if `ok=false`, do not call `plan_move`; use `target_validation.suggested_targets` when present, or choose different targets/intermediate parking positions. Warnings such as `pending_targets_not_in_request` mean an older pending target will still move if you call `plan_move`.
+- After each `plan_move`/`planning_job_status`/execution result, treat `targets_reached` as authoritative for that segment. If only droplets `2-6` are listed as reached, only that batch moved; do not claim or proceed as if droplets `7-26` reached final positions until their own batches have been retargeted, planned, executed, and reported in `targets_reached`.
+- For `plan_merge`, first move non-merge droplets away from the merge target and avoid targets inside another droplet's vital space. Prefer merging into an open hub 4-8 electrodes away from nearby droplets, then execute the merge segment before any `plan_mix` or final routing. If a failed merge returns `primitive_validation.merge_target_validation`, follow it: move any `blocker_parking_suggestions` first, or retry with `suggested_target.retry_arguments` when present, falling back to `suggested_target.target` only when `retry_arguments` is absent.
+- A successful `plan_merge` must return the merged droplet id. The merged-away input droplets can remain in `droplets_summary()` for history, but their `active=false` flag and absence from `plan.active_droplet_ids` means they are not planning candidates. Plan only active droplets unless the user explicitly asks to restore or correct an inactive one.
+- After a failed merge/split/mix attempt, refresh `execution_status_summary(include_droplets=true, include_plan=true)` and reason from the last executed frame. Do not trust logical droplet positions from a failed, unexecuted plan; correct them only from visual/user confirmation.
+- SIPP reserves active droplets' current/initial footprints while planning. Do not expect one droplet to move into another active droplet's starting footprint in the same `plan_move()` call just because that other droplet will eventually leave.
+- For swaps, crossings, reordering, or any move where a target/vital space overlaps another moving droplet's current footprint, use staged moves: first retarget the blocking droplets to intermediate parking positions that free the contested starts/targets, plan and execute that segment, then retarget from those intermediate positions to the final targets in one or more later `plan_move()` calls.
+- For visual crossing tests, use intermediate staging lanes or parking cells to make space first, then route through the crossing area. A successful crossing may require multiple executed move segments; do not force all crossings and final targets into one coordinated move.
