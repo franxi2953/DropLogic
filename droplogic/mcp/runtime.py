@@ -1070,85 +1070,87 @@ class DropLogicMCPRuntime:
     def status(self, detail: str = "compact") -> Dict[str, Any]:
         """Return a compact runtime status."""
         detail = str(detail or "compact").lower()
-        with self._lock:
-            system = self.system
-            system_status = {
-                "loaded": system is not None,
-                "system": self.system_name,
-                "loaded_at": self.loaded_at,
-            }
-            if system is not None:
-                system_status.update(
-                    {
-                        "name": getattr(system, "name", None),
-                        "host_os": getattr(system, "host_os", None),
-                        "host_platform": self.to_jsonable(
-                            getattr(system, "host_platform", None)
-                        ),
-                    }
-                )
-                if detail == "full" and hasattr(system, "get_queue_status"):
-                    system_status["queues"] = self.to_jsonable(system.get_queue_status())
-
-            visualizer_status = None
-            if system is not None:
-                try:
-                    visualizer_status = self.visualizer_status()
-                except Exception as exc:
-                    visualizer_status = {"error": str(exc)}
-
-            executor_status = None
-            plan_summary = None
-            droplet_summary = None
-            timeline_control = (
-                self._no_system_timeline_status()
-                if system is None
-                else self._no_advanced_drop_timeline_status()
+        # Keep runtime snapshots readable while a background planner holds the
+        # main mutation lock. Slightly stale/in-between read state is acceptable
+        # for dashboard observation; blocking the live poll loop is not.
+        system = self.system
+        system_status = {
+            "loaded": system is not None,
+            "system": self.system_name,
+            "loaded_at": self.loaded_at,
+        }
+        if system is not None:
+            system_status.update(
+                {
+                    "name": getattr(system, "name", None),
+                    "host_os": getattr(system, "host_os", None),
+                    "host_platform": self.to_jsonable(
+                        getattr(system, "host_platform", None)
+                    ),
+                }
             )
-            if system is not None and hasattr(system, "advanced_drop"):
-                advanced_drop = system.advanced_drop
-                executor = getattr(advanced_drop, "executor", None)
-                if executor is not None:
-                    executor_status = self.to_jsonable(executor.status())
-                plan_summary = self.plan_summary(getattr(advanced_drop, "plan", None))
-                timeline_control = self._advanced_drop_timeline_status(advanced_drop)
-                droplets = getattr(advanced_drop, "droplets", None)
-                if droplets is not None and hasattr(droplets, "get_droplets_summary"):
-                    droplet_summary = self.to_jsonable(droplets.get_droplets_summary())
+            if detail == "full" and hasattr(system, "get_queue_status"):
+                system_status["queues"] = self.to_jsonable(system.get_queue_status())
 
-            status = {
-                "session_id": self.session_id,
-                "runtime_mode": self._runtime_mode(),
-                "allow_real_hardware": self.allow_real_hardware,
-                "allow_unsafe_tools": self.allow_unsafe_tools,
-                "config_file": self.config_file,
-                "context": self.context_status(),
-                "capture": {
-                    "root": self.capture_root,
-                    "snapshots_dir": self.snapshots_dir,
-                },
-                "last_error": self.to_jsonable(self.last_error),
-                "front_panel": {
-                    "enabled": self.front_panel is not None,
-                    "owner": self._front_panel_owner,
-                },
-                "system": system_status,
-                "executor": executor_status,
-                "plan": plan_summary,
-                "droplets": droplet_summary,
-                "timeline_control": timeline_control,
-                "visualizers": visualizer_status,
-                "last_visualizer_prepare_result": self.to_jsonable(
-                    self.last_visualizer_prepare_result
-                ),
-            }
-            if detail != "full":
-                status["executor"] = self._compact_executor_status(executor_status)
-                status["plan"] = self._compact_plan_status(plan_summary)
-                status["droplets"] = self._compact_droplets_status(droplet_summary)
-                status["visualizers"] = self._compact_visualizer_status(visualizer_status)
-                status.pop("last_visualizer_prepare_result", None)
-            return status
+        visualizer_status = None
+        if system is not None:
+            try:
+                visualizer_status = self.visualizer_status()
+            except Exception as exc:
+                visualizer_status = {"error": str(exc)}
+
+        executor_status = None
+        plan_summary = None
+        droplet_summary = None
+        timeline_control = (
+            self._no_system_timeline_status()
+            if system is None
+            else self._no_advanced_drop_timeline_status()
+        )
+        if system is not None and hasattr(system, "advanced_drop"):
+            advanced_drop = system.advanced_drop
+            executor = getattr(advanced_drop, "executor", None)
+            if executor is not None:
+                executor_status = self.to_jsonable(executor.status())
+            plan_summary = self.plan_summary(getattr(advanced_drop, "plan", None))
+            timeline_control = self._advanced_drop_timeline_status(advanced_drop)
+            droplets = getattr(advanced_drop, "droplets", None)
+            if droplets is not None and hasattr(droplets, "get_droplets_summary"):
+                droplet_summary = self.to_jsonable(droplets.get_droplets_summary())
+
+        status = {
+            "session_id": self.session_id,
+            "runtime_mode": self._runtime_mode(),
+            "allow_real_hardware": self.allow_real_hardware,
+            "allow_unsafe_tools": self.allow_unsafe_tools,
+            "config_file": self.config_file,
+            "context": self.context_status(),
+            "capture": {
+                "root": self.capture_root,
+                "snapshots_dir": self.snapshots_dir,
+            },
+            "last_error": self.to_jsonable(self.last_error),
+            "front_panel": {
+                "enabled": self.front_panel is not None,
+                "owner": self._front_panel_owner,
+            },
+            "system": system_status,
+            "executor": executor_status,
+            "plan": plan_summary,
+            "droplets": droplet_summary,
+            "timeline_control": timeline_control,
+            "visualizers": visualizer_status,
+            "last_visualizer_prepare_result": self.to_jsonable(
+                self.last_visualizer_prepare_result
+            ),
+        }
+        if detail != "full":
+            status["executor"] = self._compact_executor_status(executor_status)
+            status["plan"] = self._compact_plan_status(plan_summary)
+            status["droplets"] = self._compact_droplets_status(droplet_summary)
+            status["visualizers"] = self._compact_visualizer_status(visualizer_status)
+            status.pop("last_visualizer_prepare_result", None)
+        return status
 
     def _compact_executor_status(self, status: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         if not isinstance(status, dict):
@@ -5133,26 +5135,11 @@ class DropLogicMCPRuntime:
         allow_long = bool(arguments.pop("allow_long_sync", False))
         if allow_long:
             return
-
-        active_count = self._advanced_drop_active_move_count()
-        if "planning_timeout" not in arguments:
-            arguments["planning_timeout"] = self.ADVANCED_DROP_SYNC_MOVE_MAX_TIMEOUT
-        planning_timeout = float(arguments["planning_timeout"])
-        if (
-            active_count > self.ADVANCED_DROP_SYNC_MOVE_MAX_ACTIVE
-            or planning_timeout > self.ADVANCED_DROP_SYNC_MOVE_MAX_TIMEOUT
-        ):
-            raise DropLogicMCPError(
-                "Refusing blocking AdvancedDrop move because it may exceed the "
-                "MCP client request timeout and restart the server. Use "
-                "plan_move(..., background=true) and poll planning_job_status(). "
-                f"active_moving_droplets={active_count}, "
-                f"planning_timeout={planning_timeout:g}s, "
-                f"sync_limits={self.ADVANCED_DROP_SYNC_MOVE_MAX_ACTIVE} droplets/"
-                f"{self.ADVANCED_DROP_SYNC_MOVE_MAX_TIMEOUT:g}s. "
-                "For an intentional local debug-only blocking run, pass "
-                "allow_long_sync=true."
-            )
+        raise DropLogicMCPError(
+            "Blocking AdvancedDrop move is disabled for normal MCP operation. "
+            "Use plan_move(..., background=true) and poll planning_job_status(). "
+            "For an intentional local debug-only blocking run, pass allow_long_sync=true."
+        )
 
     def _guard_hardware_plan_move_batch(self, background: bool) -> None:
         if str(self.system_name or "").lower() not in self.REAL_SYSTEMS:
