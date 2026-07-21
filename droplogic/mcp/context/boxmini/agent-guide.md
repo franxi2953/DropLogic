@@ -17,6 +17,7 @@ This is the pinned BoxMini operating guide entrypoint. It should be sent on ever
 - Do not claim physical success unless execution/status/vision/user feedback confirms it.
 - Use logical matrix coordinates `[row, column]`. Do not mix electrode, stage, and camera coordinates.
 - Use presets for stage and imaging. Do not invent absolute stage coordinates, exposure/gain/light values, or calibration math.
+- Normal executor operation is microscope brightfield with `follow_droplets`. Do not switch to `whole_chip_camera` unless the user explicitly asks for whole-cartridge/whole-chip visualization or the protocol clearly needs a fixed-view segment.
 
 ## Hardware And Coordinates
 - System: `boxmini`; matrix: Acxel 16k, `128 x 128` logical electrodes.
@@ -65,8 +66,9 @@ This is the pinned BoxMini operating guide entrypoint. It should be sent on ever
 - Do not reduce row/column clear spacing below the droplet-scaled safe minimum on BoxMini hardware just to make a batch fit.
 
 ## Views, Imaging, And Temperature Contract
-- Use `set_execution_view_mode(mode="whole_chip_camera")` or `execute_segment_to_breakpoint(execution_view_mode="whole_chip_camera", verify_positions=false)` for whole-cartridge overview.
-- Use `follow_droplets`/microscope for droplet checks. `whole_chip_camera` and `follow_droplets` are mutually exclusive during execution.
+- Normal execution should stay in `follow_droplets`/microscope brightfield. If the current executor view might have been changed earlier, explicitly restore `follow_droplets` before normal droplet execution instead of assuming omission will switch it back.
+- Use `set_execution_view_mode(mode="whole_chip_camera")` or `execute_segment_to_breakpoint(execution_view_mode="whole_chip_camera", verify_positions=false)` only for user-requested whole-cartridge overview or another clearly fixed-view segment.
+- `whole_chip_camera` and `follow_droplets` are mutually exclusive during execution.
 - In `whole_chip_camera` fixed execution, keep `verify_positions=false`; verification moves the stage and changes imaging.
 - Use `capture_droplet_images` for repeated droplet imaging and `start_melting_curve_capture` for temperature curves with photos at each step.
 - Use `temperature_hold` for short single setpoints and `start_temperature_routine` only for temperature-only routines with no per-step imaging.
