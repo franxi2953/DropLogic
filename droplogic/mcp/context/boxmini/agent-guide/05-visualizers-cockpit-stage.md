@@ -12,7 +12,6 @@
 
 Stage movement:
 - Prefer `move_stage(...)` for direct stage moves. Examples: `move_stage(preset="manual_injection")` or `move_stage(preset="whole_chip_camera")`.
-- Treat `timed_out=true` or `motion_complete=false` as failure even when a final readback happens to match the target. Only a drained queue with an explicit stage-command error and matching readback may return `ok=true` with a false-negative warning; inspect that warning rather than treating other queue failures as success.
 - Prefer execution view modes for viewing during execution. For normal droplet work, use `execute_segment_to_breakpoint(execution_view_mode="follow_droplets")`. Use `execute_segment_to_breakpoint(execution_view_mode="whole_chip_camera", verify_positions=false)` only for explicitly requested fixed whole-chip execution.
 - Use `set_execution_view_mode(mode="follow_droplets")` before microscope verification, droplet-scale imaging, and any normal execution after a previous fixed whole-chip segment.
 - Use `set_execution_view_mode(mode="whole_chip_camera")` for whole-cartridge/whole-chip overview before a fixed-view segment. This applies the camera source, camera/light preset, fixed stage position, and disables droplet-follow stage tracking.
