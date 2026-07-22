@@ -1068,87 +1068,116 @@ class DropLogicMCPRuntime:
     # Read/observe
 
     def status(self, detail: str = "compact") -> Dict[str, Any]:
-        """Return a compact runtime status."""
+        """Return lightweight runtime status without starting the MJPEG server.
+
+        Queue-capable systems always include ``system.queue_summary``. Full
+        detail additionally includes the raw per-queue diagnostics.
+        """
         detail = str(detail or "compact").lower()
-        with self._lock:
-            system = self.system
-            system_status = {
-                "loaded": system is not None,
-                "system": self.system_name,
-                "loaded_at": self.loaded_at,
-            }
-            if system is not None:
-                system_status.update(
-                    {
-                        "name": getattr(system, "name", None),
-                        "host_os": getattr(system, "host_os", None),
-                        "host_platform": self.to_jsonable(
-                            getattr(system, "host_platform", None)
-                        ),
-                    }
-                )
-                if detail == "full" and hasattr(system, "get_queue_status"):
-                    system_status["queues"] = self.to_jsonable(system.get_queue_status())
-
-            visualizer_status = None
-            if system is not None:
-                try:
-                    visualizer_status = self.visualizer_status()
-                except Exception as exc:
-                    visualizer_status = {"error": str(exc)}
-
-            executor_status = None
-            plan_summary = None
-            droplet_summary = None
-            timeline_control = (
-                self._no_system_timeline_status()
-                if system is None
-                else self._no_advanced_drop_timeline_status()
+        system = self.system
+        system_status = {
+            "loaded": system is not None,
+            "system": self.system_name,
+            "loaded_at": self.loaded_at,
+        }
+        if system is not None:
+            system_status.update(
+                {
+                    "name": getattr(system, "name", None),
+                    "host_os": getattr(system, "host_os", None),
+                    "host_platform": self.to_jsonable(
+                        getattr(system, "host_platform", None)
+                    ),
+                }
             )
-            if system is not None and hasattr(system, "advanced_drop"):
-                advanced_drop = system.advanced_drop
-                executor = getattr(advanced_drop, "executor", None)
-                if executor is not None:
-                    executor_status = self.to_jsonable(executor.status())
-                plan_summary = self.plan_summary(getattr(advanced_drop, "plan", None))
-                timeline_control = self._advanced_drop_timeline_status(advanced_drop)
-                droplets = getattr(advanced_drop, "droplets", None)
-                if droplets is not None and hasattr(droplets, "get_droplets_summary"):
-                    droplet_summary = self.to_jsonable(droplets.get_droplets_summary())
+            if hasattr(system, "get_queue_status"):
+                queue_status = self.to_jsonable(system.get_queue_status())
+                system_status["queue_summary"] = self._compact_hardware_queue_status(queue_status)
+                if detail == "full":
+                    system_status["queues"] = queue_status
 
-            status = {
-                "session_id": self.session_id,
-                "runtime_mode": self._runtime_mode(),
-                "allow_real_hardware": self.allow_real_hardware,
-                "allow_unsafe_tools": self.allow_unsafe_tools,
-                "config_file": self.config_file,
-                "context": self.context_status(),
-                "capture": {
-                    "root": self.capture_root,
-                    "snapshots_dir": self.snapshots_dir,
-                },
-                "last_error": self.to_jsonable(self.last_error),
-                "front_panel": {
-                    "enabled": self.front_panel is not None,
-                    "owner": self._front_panel_owner,
-                },
-                "system": system_status,
-                "executor": executor_status,
-                "plan": plan_summary,
-                "droplets": droplet_summary,
-                "timeline_control": timeline_control,
-                "visualizers": visualizer_status,
-                "last_visualizer_prepare_result": self.to_jsonable(
-                    self.last_visualizer_prepare_result
-                ),
+        visualizer_status = None
+        if system is not None:
+            try:
+                visualizer_status = self.visualizer_status(
+                    start_stream_server=False,
+                    system=system,
+                )
+            except Exception as exc:
+                visualizer_status = {"error": str(exc)}
+
+        executor_status = None
+        plan_summary = None
+        droplet_summary = None
+        timeline_control = (
+            self._no_system_timeline_status()
+            if system is None
+            else self._no_advanced_drop_timeline_status()
+        )
+        if system is not None and hasattr(system, "advanced_drop"):
+            advanced_drop = system.advanced_drop
+            executor = getattr(advanced_drop, "executor", None)
+            if executor is not None:
+                executor_status = self.to_jsonable(executor.status())
+            plan_summary = self.plan_summary(getattr(advanced_drop, "plan", None))
+            timeline_control = self._advanced_drop_timeline_status(advanced_drop)
+            droplets = getattr(advanced_drop, "droplets", None)
+            if droplets is not None and hasattr(droplets, "get_droplets_summary"):
+                droplet_summary = self.to_jsonable(droplets.get_droplets_summary())
+
+        status = {
+            "session_id": self.session_id,
+            "runtime_mode": self._runtime_mode(),
+            "allow_real_hardware": self.allow_real_hardware,
+            "allow_unsafe_tools": self.allow_unsafe_tools,
+            "config_file": self.config_file,
+            "context": self.context_status(),
+            "capture": {
+                "root": self.capture_root,
+                "snapshots_dir": self.snapshots_dir,
+            },
+            "last_error": self.to_jsonable(self.last_error),
+            "front_panel": {
+                "enabled": self.front_panel is not None,
+                "owner": self._front_panel_owner,
+            },
+            "system": system_status,
+            "executor": executor_status,
+            "plan": plan_summary,
+            "droplets": droplet_summary,
+            "timeline_control": timeline_control,
+            "visualizers": visualizer_status,
+            "last_visualizer_prepare_result": self.to_jsonable(
+                self.last_visualizer_prepare_result
+            ),
+        }
+        if detail != "full":
+            status["executor"] = self._compact_executor_status(executor_status)
+            status["plan"] = self._compact_plan_status(plan_summary)
+            status["droplets"] = self._compact_droplets_status(droplet_summary)
+            status["visualizers"] = self._compact_visualizer_status(visualizer_status)
+            status.pop("last_visualizer_prepare_result", None)
+        return status
+
+    def _compact_hardware_queue_status(self, queues: Any) -> Dict[str, Any]:
+        priority_names = {"CRITICAL", "HIGH", "MEDIUM", "LOW"}
+        compact = {}
+        pending_commands = 0
+        for name, queue_status in (queues or {}).items():
+            if str(name).upper() not in priority_names or not isinstance(queue_status, dict):
+                continue
+            pending = queue_status.get("unfinished_tasks", queue_status.get("queue_size", 0))
+            try:
+                pending = max(0, int(pending or 0))
+            except (TypeError, ValueError):
+                pending = 0
+            compact[str(name).upper()] = {
+                "pending_commands": pending,
+                "worker_alive": bool(queue_status.get("worker_alive")),
+                "interval_ms": queue_status.get("interval_ms"),
             }
-            if detail != "full":
-                status["executor"] = self._compact_executor_status(executor_status)
-                status["plan"] = self._compact_plan_status(plan_summary)
-                status["droplets"] = self._compact_droplets_status(droplet_summary)
-                status["visualizers"] = self._compact_visualizer_status(visualizer_status)
-                status.pop("last_visualizer_prepare_result", None)
-            return status
+            pending_commands += pending
+        return {"pending_commands": pending_commands, "queues": compact}
 
     def _compact_executor_status(self, status: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         if not isinstance(status, dict):
@@ -2655,11 +2684,24 @@ class DropLogicMCPRuntime:
             return None
         return parsed if parsed > 0 else None
 
-    def visualizer_status(self) -> Dict[str, Any]:
-        """Return status for available visualizers."""
-        system = self.require_system()
+    def visualizer_status(
+        self,
+        start_stream_server: bool = True,
+        system: Any = None,
+    ) -> Dict[str, Any]:
+        """Return visualizer status, optionally starting the MJPEG server.
+
+        ``system`` lets status polling use a captured system reference without
+        re-reading mutable runtime ownership state.
+        """
+        if system is None:
+            system = self.require_system()
         status = {}
-        stream_server = self.ensure_mjpeg_server()
+        stream_server = (
+            self.ensure_mjpeg_server()
+            if start_stream_server
+            else self.mjpeg_server_status()
+        )
         for visualizer_name in ("matrix", "streamer"):
             instance = self._get_visualizer_instance(system, visualizer_name)
             if instance is None:
@@ -6057,7 +6099,12 @@ class DropLogicMCPRuntime:
         wait_for_queue: bool = True,
         wait_for_completion: bool = True,
     ) -> Dict[str, Any]:
-        """Move the XY stage using a named preset or explicit X/Y/Z axis values."""
+        """Move the XY stage using a preset or explicit X/Y/Z axis values.
+
+        A timeout remains a failure. A drained queue's explicit stage-command
+        error may be reported as a warning when readback proves the target was
+        reached.
+        """
         system = self.require_system()
         if position is not None and preset is not None:
             raise DropLogicMCPError("Use either position or preset, not both.")
@@ -6170,12 +6217,16 @@ class DropLogicMCPRuntime:
             try:
                 if all(xy_stage.is_motion_complete(axis) for axis in ("X", "Y", "Z")):
                     actual_position = self._read_stage_position(xy_stage)
-                    ok = bool(queue_wait.get("ok", True)) and self._stage_positions_close(
+                    reached_target = self._stage_positions_close(
                         target_position,
                         actual_position,
                     )
+                    ok = bool(queue_wait.get("ok", True)) and reached_target
                     response = {
-                        "ok": ok,
+                        "ok": ok or (
+                            reached_target
+                            and self._queue_wait_false_but_stage_reached_target(queue_wait)
+                        ),
                         "preset": preset,
                         "resolved_preset": self.to_jsonable(resolved_preset),
                         "target_position": target_position,
@@ -6184,7 +6235,13 @@ class DropLogicMCPRuntime:
                         "queue_wait": queue_wait,
                         "motion_complete": True,
                     }
-                    if ok:
+                    if not ok and response["ok"]:
+                        response["warning"] = (
+                            "Stage reached the requested position, but the hardware queue "
+                            "reported a false-negative command error. Treat as successful "
+                            "motion and inspect queue diagnostics separately."
+                        )
+                    if response["ok"]:
                         view_update = self._configure_stage_preset_execution_view(
                             resolved_preset,
                             target_position,
@@ -10339,12 +10396,16 @@ class DropLogicMCPRuntime:
             try:
                 if all(xy_stage.is_motion_complete(axis) for axis in ("X", "Y", "Z")):
                     actual_position = self._read_stage_position(xy_stage)
-                    ok = bool(queue_wait.get("ok", True)) and self._stage_positions_close(
+                    reached_target = self._stage_positions_close(
                         target_position,
                         actual_position,
                     )
-                    return {
-                        "ok": ok,
+                    ok = bool(queue_wait.get("ok", True)) and reached_target
+                    response = {
+                        "ok": ok or (
+                            reached_target
+                            and self._queue_wait_false_but_stage_reached_target(queue_wait)
+                        ),
                         "position": target_position,
                         "target_position": target_position,
                         "actual_position": actual_position,
@@ -10352,6 +10413,13 @@ class DropLogicMCPRuntime:
                         "queue_wait": queue_wait,
                         "motion_complete": True,
                     }
+                    if not ok and response["ok"]:
+                        response["warning"] = (
+                            "Stage reached the requested position, but the hardware queue "
+                            "reported a false-negative command error. Treat as successful "
+                            "motion and inspect queue diagnostics separately."
+                        )
+                    return response
             except Exception as exc:
                 actual_position = self._read_stage_position(xy_stage)
                 return {
@@ -10395,6 +10463,33 @@ class DropLogicMCPRuntime:
                 return None
             values[axis] = int(position)
         return values
+
+    def _queue_wait_false_but_stage_reached_target(
+        self, queue_wait: Optional[Dict[str, Any]]
+    ) -> bool:
+        if not isinstance(queue_wait, dict):
+            return False
+        if queue_wait.get("ok", True) is not False:
+            return False
+        if queue_wait.get("timed_out") is not False:
+            return False
+        if "pending_commands" not in queue_wait:
+            return False
+        try:
+            if int(queue_wait.get("pending_commands") or 0) != 0:
+                return False
+        except (TypeError, ValueError):
+            return False
+        hardware_errors = queue_wait.get("hardware_errors")
+        if not isinstance(hardware_errors, list) or not hardware_errors:
+            return False
+        for item in hardware_errors:
+            if not isinstance(item, dict):
+                return False
+            path = str(item.get("path") or "")
+            if not path.startswith("xy_stage.position"):
+                return False
+        return True
 
     def _cached_stage_position(self, system=None) -> Optional[Dict[str, int]]:
         """Return the last known stage position without touching hardware."""

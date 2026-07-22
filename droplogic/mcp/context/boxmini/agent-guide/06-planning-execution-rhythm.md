@@ -4,7 +4,7 @@ Planning only changes logical state. Hardware moves only through `execute_segmen
 Default real-hardware rhythm:
 1. Plan one physical segment or checkpoint.
 2. Inspect `plan_summary()`.
-3. Execute to the segment target with `execute_segment_to_breakpoint(frame_number=null)`.
+3. Execute to the segment target with normal droplet-follow execution. If the current view is not already known-good for normal work, call `execute_segment_to_breakpoint(frame_number=null, execution_view_mode="follow_droplets")` or restore `set_execution_view_mode(mode="follow_droplets")` first.
 4. If the result is `wait_mode="inline"`, use its `wait_status` directly. If it starts a background wait, call `execution_wait_status(wait_seconds=<recommended_wait_seconds>)` once and let that timer return.
 5. Verify or inspect, then plan the next segment.
 
@@ -18,6 +18,7 @@ Rules:
 - Plan only to the next visual/temperature check, injection confirmation, extraction validation, user decision, or risky transition.
 - Leave `remove_duplicate_frames=false` during normal real-hardware operation. Use it only for explicit duplicate-frame debugging after inspecting the resulting plan.
 - Prefer `execute_segment_to_breakpoint` for normal segment execution. It clears old breakpoints by default, adds the target breakpoint, chooses `start_plan` for a new run or `resume_plan` for a partial run, and uses `wait_mode="auto"` so short segments finish inline and long segments run as a background wait.
+- Normal segment execution means `follow_droplets` with the executor's microscope brightfield behavior. Do not proactively choose `whole_chip_camera` for ordinary droplet routing, extraction, mixing, or verification segments.
 - Default execution frame delay is `1.0` second, and that is the correct normal operating pace. Omit `frame_delay` unless the user explicitly asks for another speed; never invent a faster or slower non-default delay.
 - For background execution waits, do not make repeated immediate `execution_wait_status()` calls. Use the returned `recommended_wait_seconds`, `next_check_after_seconds`, or `recommended_status_call`; if the timer returns `running=true`, repeat one timer wait using the new recommendation.
 - Use manual `add_breakpoint` plus `start_plan`/`resume_plan` plus `start_execute_until_breakpoint` only when you need non-default breakpoint handling.

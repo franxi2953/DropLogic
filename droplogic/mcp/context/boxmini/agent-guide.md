@@ -13,10 +13,12 @@ This is the pinned BoxMini operating guide entrypoint. It should be sent on ever
 ## Core Operating Rules
 - Control BoxMini through top-level MCP tools. Avoid generic AdvancedDrop/module/raw calls unless explicitly debugging.
 - Start with `runtime_status()`; call `load_system(system="boxmini")` only when needed. Do not reset the matrix unless the user clearly asks.
+- Compact `runtime_status()` includes `system.queue_summary`: the aggregate unfinished-command count and CRITICAL/HIGH/MEDIUM/LOW worker liveness, pending counts, and configured intervals. Use full detail when command-error diagnostics are needed.
 - Before hardware actions, use a fresh `execution_status_summary()` or a targeted status tool unless a recent tool result already proves the needed state.
 - Do not claim physical success unless execution/status/vision/user feedback confirms it.
 - Use logical matrix coordinates `[row, column]`. Do not mix electrode, stage, and camera coordinates.
 - Use presets for stage and imaging. Do not invent absolute stage coordinates, exposure/gain/light values, or calibration math.
+- Normal executor operation is microscope brightfield with `follow_droplets`. Do not switch to `whole_chip_camera` unless the user explicitly asks for whole-cartridge/whole-chip visualization or the protocol clearly needs a fixed-view segment.
 
 ## Hardware And Coordinates
 - System: `boxmini`; matrix: Acxel 16k, `128 x 128` logical electrodes.
@@ -51,6 +53,7 @@ This is the pinned BoxMini operating guide entrypoint. It should be sent on ever
 - Treat warnings such as `large_move_batch` and `pending_targets_not_in_request` as operational blockers for hardware unless you intentionally split/reset targets first.
 - For swaps/crossings/overlaps, use staged parking moves. Do not expect SIPP to move one droplet into another active start footprint in one call.
 - After each segment, trust `targets_reached` only for the droplets reported in that segment.
+- Except for injection/loading regions and explicit waste/trash routing, when safely possible, place outer droplets within about `5` electrodes of the chip sides while avoiding the exact border electrodes.
 
 ## Reservoir, Injection, And Extraction Contract
 - Injection holes and matrix geometry come from `cartridge.default.json`.
@@ -65,14 +68,16 @@ This is the pinned BoxMini operating guide entrypoint. It should be sent on ever
 - Do not reduce row/column clear spacing below the droplet-scaled safe minimum on BoxMini hardware just to make a batch fit.
 
 ## Views, Imaging, And Temperature Contract
-- Use `set_execution_view_mode(mode="whole_chip_camera")` or `execute_segment_to_breakpoint(execution_view_mode="whole_chip_camera", verify_positions=false)` for whole-cartridge overview.
-- Use `follow_droplets`/microscope for droplet checks. `whole_chip_camera` and `follow_droplets` are mutually exclusive during execution.
+- Normal execution should stay in `follow_droplets`/microscope brightfield. If the current executor view might have been changed earlier, explicitly restore `follow_droplets` before normal droplet execution instead of assuming omission will switch it back.
+- Use `set_execution_view_mode(mode="whole_chip_camera")` or `execute_segment_to_breakpoint(execution_view_mode="whole_chip_camera", verify_positions=false)` only for user-requested whole-cartridge overview or another clearly fixed-view segment.
+- `whole_chip_camera` and `follow_droplets` are mutually exclusive during execution.
 - In `whole_chip_camera` fixed execution, keep `verify_positions=false`; verification moves the stage and changes imaging.
 - Use `capture_droplet_images` for repeated droplet imaging and `start_melting_curve_capture` for temperature curves with photos at each step.
 - Use `temperature_hold` for short single setpoints and `start_temperature_routine` only for temperature-only routines with no per-step imaging.
 
 ## Fault Handling Contract
 - Use `emergency_stop` for urgent stop/deactivation.
+- A BoxMini load is successful only after every core module, including the XY stage, initializes. A failed load releases the partial singleton and workers; report the error and do not retry real hardware automatically.
 - Do not continue after visual/vision mismatch without correction or user confirmation.
 - Do not automatically restart/reinitialize real hardware after a fault.
 - If MCP restarts and state is lost, reload only after physical state is safe, then reconstruct logical droplets from current physical/visual state.

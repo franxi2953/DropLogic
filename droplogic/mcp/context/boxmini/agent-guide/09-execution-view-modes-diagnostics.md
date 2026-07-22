@@ -1,10 +1,12 @@
 ## Execution View Modes And Diagnostics
-- Default execution view for a fresh run is `follow_droplets`. If a fixed view such as `whole_chip_camera` is already configured, omitting `execution_view_mode` preserves that current view; do not rely on omission to switch views.
+- Default execution view for a fresh run is `follow_droplets`, and that is the normal mode for BoxMini droplet work because the executor follows droplets under the microscope brightfield preset. If a fixed view such as `whole_chip_camera` is already configured, omitting `execution_view_mode` preserves that current view; do not rely on omission to switch views.
+- If a previous step used `whole_chip_camera` or the current view is uncertain, explicitly restore `follow_droplets` with `set_execution_view_mode(mode="follow_droplets")` or `execute_segment_to_breakpoint(execution_view_mode="follow_droplets")` before normal execution.
 - Use `execute_segment_to_breakpoint(execution_view_mode="whole_chip_camera", verify_positions=false)` for fixed whole-chip execution. This applies `config.json.presets.imaging.whole_chip_camera`, switches streamer to camera, moves to fixed overview stage position, and disables droplet-follow tracking.
 - Use `execute_segment_to_breakpoint(execution_view_mode="follow_droplets")` for normal microscope-follow execution.
 - Use `set_execution_view_mode(mode="follow_droplets")` before microscope droplet checks, visual correction, or model verification.
 - `whole_chip_camera` and `follow_droplets` are mutually exclusive. Do not switch streamer/stage while a segment is running.
 - In `whole_chip_camera` or fixed-stage execution, keep `verify_positions=false`. Executor verification is not passive: it moves stage, changes light, and calls microscope droplet verification.
+- Use `whole_chip_camera` only when the user explicitly asks for whole cartridge/chip visualization or a protocol step clearly requires fixed whole-chip observation. Do not choose it as the default executor view for ordinary droplet movement.
 - If the user asks for whole cartridge/chip visualization, call `set_execution_view_mode(mode="whole_chip_camera")` or execute with `execution_view_mode="whole_chip_camera", verify_positions=false`; do not compute a stage position from electrode calibration or camera/microscope geometry.
 - If execution returns `started_wait=false` or `reason="execution_view_not_ready"`, do not restart hardware. Inspect diagnostics, wait/correct the view, then retry execution.
 - In `whole_chip_camera`, execution should not move XY stage frame-by-frame or change camera/light preset. If frames are far slower than `frame_delay`, view goes black, stage moves, or light changes, pause/stop and inspect diagnostics.

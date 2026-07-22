@@ -1,8 +1,8 @@
 {
-  "name": "boxmini_default",
+  "name": "left_injection_cartridge",
   "system": "boxmini",
   "version": 1,
-  "notes": "TODO-FRAN: short description of the cartridge.",
+  "notes": "Left injection cartridge with four manual injection holes on the left side, spanning columns 0-4.",
   "matrix": {
     "rows": 128,
     "columns": 128
@@ -18,40 +18,40 @@
       "role": "manual_injection",
       "side": "left",
       "electrode_region": {
-        "column": 0,
-        "rows": [42, 45]
+        "columns": [0, 4],
+        "rows": [24, 27]
       },
-      "notes": "Upper left-side injection hole band."
+      "notes": "Left-side injection hole band 1."
+    },
+    {
+      "id": "left_mid_upper",
+      "role": "manual_injection",
+      "side": "left",
+      "electrode_region": {
+        "columns": [0, 4],
+        "rows": [49, 53]
+      },
+      "notes": "Left-side injection hole band 2."
+    },
+    {
+      "id": "left_mid_lower",
+      "role": "manual_injection",
+      "side": "left",
+      "electrode_region": {
+        "columns": [0, 4],
+        "rows": [74, 76]
+      },
+      "notes": "Left-side injection hole band 3."
     },
     {
       "id": "left_lower",
       "role": "manual_injection",
       "side": "left",
       "electrode_region": {
-        "column": 0,
-        "rows": [82, 85]
+        "columns": [0, 4],
+        "rows": [100, 104]
       },
-      "notes": "Lower left-side injection hole band."
-    },
-    {
-      "id": "right_upper",
-      "role": "manual_injection",
-      "side": "right",
-      "electrode_region": {
-        "column": 127,
-        "rows": [42, 45]
-      },
-      "notes": "Upper right-side injection hole band."
-    },
-    {
-      "id": "right_lower",
-      "role": "manual_injection",
-      "side": "right",
-      "electrode_region": {
-        "column": 127,
-        "rows": [82, 85]
-      },
-      "notes": "Lower right-side injection hole band."
+      "notes": "Left-side injection hole band 4."
     }
   ],
   "usable_regions": [],
