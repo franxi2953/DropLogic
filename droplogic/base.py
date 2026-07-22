@@ -410,7 +410,7 @@ class DropSystem(ABC):
             try:
                 cmd = self._hardware_queues[priority].get(timeout=priority.interval)
             except queue.Empty:
-                time.sleep(priority.interval)
+                self._queue_stop_event.wait(priority.interval)
                 continue
 
             try:
