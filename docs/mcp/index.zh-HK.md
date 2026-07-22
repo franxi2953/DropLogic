@@ -89,14 +89,16 @@ agent 通常應該透過 `AdvancedDrop` 同 `PlanExecutor` 控制實驗，而唔
 | --- | --- |
 | `load_system` | 載入 `simulator`、`dmlite` 或 `boxmini` |
 | `close_system` | 關閉目前系統 |
-| `runtime_status` | 返回 system、executor、plan 同 droplet status |
+| `runtime_status` | 返回適合輪詢嘅 system、queue、executor、plan 同 droplet status |
 | `health_check` | 檢查 queue workers、executor state、module busy state 同 last error |
 | `restart_system` | 失敗後關閉並重新載入系統 |
 | `capabilities` | 列出目前 agent-facing functions |
 | `read_state` | 讀取全部 state 或 dotted path |
 | `emergency_stop` | 停止執行、清空 queues，並可選關閉電極 |
 
-`capabilities()` 係 agent 嘅最佳第一步，因為可用模組取決於已載入嘅系統。
+`capabilities()` 係 agent 嘅最佳第一步，因為可用模組取決於已載入嘅系統。載入 BOXMini 時，包括 XY stage 在內嘅所有核心模組都必須成功初始化；載入失敗會關閉部分初始化資源，亦唔會留下可供 caller 使用或自動重啟嘅已載入 system。
+
+`runtime_status()` 預設使用 `detail="compact"`，適合 dashboard 頻密輪詢，即使 planner 正忙亦可以使用。佢唔會啟動 MJPEG stream server。對支援 queue 嘅 system，`system.queue_summary.pending_commands` 係未完成命令總數（包括處理中嘅命令），而 `system.queue_summary.queues` 包含 `CRITICAL`、`HIGH`、`MEDIUM` 同 `LOW` entries，每項提供 `pending_commands`、`worker_alive` 同 `interval_ms`。使用 `detail="full"` 可以查看原始 queue size、last-command error 同 state-save diagnostics。
 
 ### Droplet Definition Tools
 
@@ -127,12 +129,12 @@ agent 通常應該透過 `AdvancedDrop` 同 `PlanExecutor` 控制實驗，而唔
 | `plan_isometric_split` | 規劃 isometric split |
 | `plan_mix` | 規劃 mixing sequence |
 | `plan_merge` | 規劃 droplet merge |
-| `planning_job_status` | 輪詢 background planning job |
+| `planning_job_status` | 檢查 background planning job 同建議等待時間 |
 | `cancel_planning_job` | 要求取消 background planning job |
 | `plan_summary` | 檢查 frame count、events、trajectories 同結果 |
 | `save_protocol` | 將目前 plan 同 droplets 保存到 pickle |
 
-大型或困難規劃應使用 `background=true`，然後輪詢 `planning_job_status()`，唔好令一個 MCP request 長時間阻塞。通用 `advanced_drop_call` / `list_advanced_drop_methods` 只會喺 `--allow-unsafe-tools` 下作為 debug surface 註冊。
+大型或困難規劃應使用 `background=true`，然後調用 `planning_job_status()`，唔好令一個 MCP request 長時間阻塞。job 仍在運行時，status response 會包含 `recommended_wait_seconds`、`next_check_after_seconds` 同 `recommended_status_call`；按該間隔等候後再檢查，唔好反覆即時輪詢。通用 `advanced_drop_call` / `list_advanced_drop_methods` 只會喺 `--allow-unsafe-tools` 下作為 debug surface 註冊。
 
 喺 DMLite 同 BOXMini 等真實硬件上，`plan_move` 會拒絕單次調用中超過 10 個 active moving droplets。將移動拆成已執行嘅 5-10 個液滴批次；密集 layout、交叉、長路徑或 2 x 2 液滴優先用 5 個一批。
 
@@ -175,13 +177,13 @@ agent 通常應該透過 `AdvancedDrop` 同 `PlanExecutor` 控制實驗，而唔
 
 | Tool | 用途 |
 | --- | --- |
-| `visualizer_status` | 檢查 matrix 同 streamer 是否可用 |
+| `visualizer_status` | 檢查 visualizers 並啟動輔助 MJPEG endpoint |
 | `visualizer_frame` | 返回目前 frame 嘅 base64 或保存到磁碟 |
 | `start_visualizer` | 支援時啟動 visualizer window |
 | `stop_visualizer` | 停止 visualizer window |
 | `bring_visualizer_to_front` | 支援時將 visualizer window 帶到前台 |
 
-MCP server 唔係影片串流伺服器。agents 可以輪詢 `visualizer_frame` 取得目前 frames。
+agents 可以輪詢 `visualizer_frame` 取得目前 frames。瀏覽器 client 可以呼叫 `visualizer_status()`，確保輔助 direct-MJPEG endpoint 已運行並取得 matrix 同 streamer URLs；普通 `runtime_status()` 輪詢唔會啟動該 endpoint。硬件命令仍然經 MCP 執行。
 
 ### Vision Tools
 

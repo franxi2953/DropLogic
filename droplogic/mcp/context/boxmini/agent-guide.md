@@ -13,6 +13,7 @@ This is the pinned BoxMini operating guide entrypoint. It should be sent on ever
 ## Core Operating Rules
 - Control BoxMini through top-level MCP tools. Avoid generic AdvancedDrop/module/raw calls unless explicitly debugging.
 - Start with `runtime_status()`; call `load_system(system="boxmini")` only when needed. Do not reset the matrix unless the user clearly asks.
+- Compact `runtime_status()` includes `system.queue_summary`: the aggregate unfinished-command count and CRITICAL/HIGH/MEDIUM/LOW worker liveness, pending counts, and configured intervals. Use full detail when command-error diagnostics are needed.
 - Before hardware actions, use a fresh `execution_status_summary()` or a targeted status tool unless a recent tool result already proves the needed state.
 - Do not claim physical success unless execution/status/vision/user feedback confirms it.
 - Use logical matrix coordinates `[row, column]`. Do not mix electrode, stage, and camera coordinates.
@@ -52,6 +53,7 @@ This is the pinned BoxMini operating guide entrypoint. It should be sent on ever
 - Treat warnings such as `large_move_batch` and `pending_targets_not_in_request` as operational blockers for hardware unless you intentionally split/reset targets first.
 - For swaps/crossings/overlaps, use staged parking moves. Do not expect SIPP to move one droplet into another active start footprint in one call.
 - After each segment, trust `targets_reached` only for the droplets reported in that segment.
+- Except for injection/loading regions and explicit waste/trash routing, when safely possible, place outer droplets within about `5` electrodes of the chip sides while avoiding the exact border electrodes.
 
 ## Reservoir, Injection, And Extraction Contract
 - Injection holes and matrix geometry come from `cartridge.default.json`.
@@ -75,6 +77,7 @@ This is the pinned BoxMini operating guide entrypoint. It should be sent on ever
 
 ## Fault Handling Contract
 - Use `emergency_stop` for urgent stop/deactivation.
+- A BoxMini load is successful only after every core module, including the XY stage, initializes. A failed load releases the partial singleton and workers; report the error and do not retry real hardware automatically.
 - Do not continue after visual/vision mismatch without correction or user confirmation.
 - Do not automatically restart/reinitialize real hardware after a fault.
 - If MCP restarts and state is lost, reload only after physical state is safe, then reconstruct logical droplets from current physical/visual state.

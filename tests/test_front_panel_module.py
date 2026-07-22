@@ -1,3 +1,5 @@
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -248,25 +250,43 @@ class FrontPanelModuleTests(unittest.TestCase):
         self.assertIn(("blackout", None), calls)
 
     def test_asset_library_can_drive_bitmap_frame_selection(self):
-        asset_root = Path(__file__).resolve().parents[1] / "runs" / "eq2013_sdk_probe" / "test_sdk_clean" / "front_panel_state_library"
-        panel = FrontPanelModule(
-            animations_enabled=False,
-            bitmap_enabled=True,
-            bitmap_transport="eq_dll_realtime",
-            bitmap_visual_confirmed=True,
-            asset_library_path=str(asset_root),
-            asset_mode_enabled=True,
-        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            asset_root = Path(temp_dir) / "front_panel_state_library"
+            state_root = asset_root / "idle"
+            state_root.mkdir(parents=True)
+            (asset_root / "manifest.json").write_text(
+                json.dumps({"idle": {"manifest": "manifest.json"}}),
+                encoding="utf-8",
+            )
+            (state_root / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "entry_frame": "idle.bmp",
+                        "frames": {"idle.bmp": {"next": ["idle.bmp"]}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (state_root / "idle.bmp").write_bytes(b"BM")
 
-        panel.front_panel._expression = "idle"
-        panel.front_panel._asset_state = "idle"
-        panel.front_panel._asset_frame_name = panel.front_panel._asset_entry_frame("idle")
-        frame, expression, _text_frame, _delay = panel.front_panel._next_animation_frame()
+            panel = FrontPanelModule(
+                animations_enabled=False,
+                bitmap_enabled=True,
+                bitmap_transport="eq_dll_realtime",
+                bitmap_visual_confirmed=True,
+                asset_library_path=str(asset_root),
+                asset_mode_enabled=True,
+            )
 
-        self.assertEqual(expression, "idle")
-        self.assertIsInstance(frame, Path)
-        self.assertEqual(frame.suffix.lower(), ".bmp")
-        self.assertIn("front_panel_state_library", str(frame))
+            panel.front_panel._expression = "idle"
+            panel.front_panel._asset_state = "idle"
+            panel.front_panel._asset_frame_name = panel.front_panel._asset_entry_frame("idle")
+            frame, expression, _text_frame, _delay = panel.front_panel._next_animation_frame()
+
+            self.assertEqual(expression, "idle")
+            self.assertIsInstance(frame, Path)
+            self.assertEqual(frame.suffix.lower(), ".bmp")
+            self.assertIn("front_panel_state_library", str(frame))
 
 
 if __name__ == "__main__":

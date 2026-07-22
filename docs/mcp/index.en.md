@@ -93,14 +93,16 @@ Use these to load systems and inspect the server:
 | --- | --- |
 | `load_system` | Load `simulator`, `dmlite`, or `boxmini` |
 | `close_system` | Close the current system |
-| `runtime_status` | Return system, executor, plan, and droplet status |
+| `runtime_status` | Return lightweight system, queue, executor, plan, and droplet status |
 | `health_check` | Check queue workers, executor state, module busy state, and last error |
 | `restart_system` | Close and reload the current or requested system after a failure |
 | `capabilities` | List the currently available agent-facing functions |
 | `read_state` | Read all state or a dotted path such as `electrode_matrix.voltage` |
 | `emergency_stop` | Stop execution, clear queues, and optionally deactivate electrodes |
 
-When the server starts, no system is loaded. Use `load_system(...)` to create one, `close_system()` to release it, and `restart_system(...)` only after an observed failure. `capabilities()` is useful after loading because available modules depend on the active system.
+When the server starts, no system is loaded. Use `load_system(...)` to create one, `close_system()` to release it, and `restart_system(...)` only after an observed failure. `capabilities()` is useful after loading because available modules depend on the active system. BOXMini loading requires every core module, including the XY stage, to initialize; a failed load closes partial resources and leaves no loaded system for the caller to use or restart automatically.
+
+`runtime_status()` defaults to `detail="compact"` and is suitable for frequent dashboard polling, including while a planner is busy. It does not start the MJPEG stream server. For queue-capable systems, `system.queue_summary.pending_commands` is the total number of unfinished commands, including commands currently being processed, and `system.queue_summary.queues` contains `CRITICAL`, `HIGH`, `MEDIUM`, and `LOW` entries with `pending_commands`, `worker_alive`, and `interval_ms`. Use `detail="full"` for raw queue sizes, last-command errors, and state-save diagnostics.
 
 ### Droplet Definition Tools
 
@@ -131,12 +133,12 @@ Use these to add one logical planning primitive to the current plan. They do not
 | `plan_isometric_split` | Plan an isometric split |
 | `plan_mix` | Plan a mixing sequence |
 | `plan_merge` | Plan droplet merge |
-| `planning_job_status` | Poll a background planning job |
+| `planning_job_status` | Check a background planning job and returned wait guidance |
 | `cancel_planning_job` | Request cancellation of a background planning job |
 | `plan_summary` | Inspect frame count, events, trajectories, and planning result |
 | `save_protocol` | Save the current plan and droplets to a pickle file |
 
-For large moves or difficult plans, use `background=true` and poll `planning_job_status()` rather than holding one MCP request open.
+For large moves or difficult plans, use `background=true` and call `planning_job_status()` rather than holding one MCP request open. While the job is running, the status response includes `recommended_wait_seconds`, `next_check_after_seconds`, and `recommended_status_call`; wait that long before checking again instead of repeatedly polling.
 
 On real hardware systems such as DMLite and BOXMini, `plan_move` refuses more than 10 active moving droplets in one call. Split movement into executed batches of 5-10 droplets, preferring 5 for dense layouts, crossings, long routes, or 2 x 2 droplets.
 
@@ -210,7 +212,7 @@ Use these when an agent needs to see the current state:
 
 | Tool | Purpose |
 | --- | --- |
-| `visualizer_status` | Inspect matrix and streamer availability |
+| `visualizer_status` | Inspect visualizers and start the auxiliary MJPEG endpoint |
 | `visualizer_frame` | Return a current frame as base64 and/or save it to disk |
 | `start_visualizer` | Start a visualizer window when supported |
 | `stop_visualizer` | Stop a visualizer window |
@@ -240,7 +242,7 @@ For live camera or microscope state:
 
 `StreamerVisualizer` frame sources can include `raw`, `processed`, and `snapshot` depending on whether live frames are available. The simulator only has the matrix visualizer.
 
-The MCP server is not a video streaming server. Agents can poll `visualizer_frame` for current frames. If continuous high-frame-rate streaming is needed later, it should be added as an auxiliary endpoint while keeping commands inside MCP.
+Agents can poll `visualizer_frame` for current frames. Browser clients can call `visualizer_status()` to ensure the auxiliary direct-MJPEG endpoint is running and obtain its matrix and streamer URLs; ordinary `runtime_status()` polling does not start that endpoint. Hardware commands remain inside MCP.
 
 ### Vision Tools
 

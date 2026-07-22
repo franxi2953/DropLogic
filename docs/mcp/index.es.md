@@ -91,14 +91,16 @@ El servidor expone varios grupos de tools.
 | --- | --- |
 | `load_system` | Carga `simulator`, `dmlite` o `boxmini` |
 | `close_system` | Cierra el sistema actual |
-| `runtime_status` | Devuelve estado de sistema, executor, plan y gotas |
+| `runtime_status` | Devuelve estado de sistema, colas, executor, plan y gotas apto para polling |
 | `health_check` | Comprueba workers de cola, executor, modulos ocupados y ultimo error |
 | `restart_system` | Cierra y recarga el sistema actual o solicitado tras un fallo |
 | `capabilities` | Lista las funciones disponibles para agentes |
 | `read_state` | Lee todo el estado o una ruta como `electrode_matrix.voltage` |
 | `emergency_stop` | Para ejecucion, limpia colas y opcionalmente apaga electrodos |
 
-Cuando el servidor arranca, no hay ningun sistema cargado. Usa `load_system(...)` para crear uno, `close_system()` para liberarlo y `restart_system(...)` solo tras un fallo observado. `capabilities()` es util despues de cargar, porque los modulos disponibles dependen del sistema activo.
+Cuando el servidor arranca, no hay ningun sistema cargado. Usa `load_system(...)` para crear uno, `close_system()` para liberarlo y `restart_system(...)` solo tras un fallo observado. `capabilities()` es util despues de cargar, porque los modulos disponibles dependen del sistema activo. La carga de BOXMini requiere que se inicialicen todos los modulos principales, incluido el XY stage; una carga fallida cierra los recursos parciales y no deja ningun sistema cargado que el caller pueda usar o reiniciar automaticamente.
+
+`runtime_status()` usa `detail="compact"` por defecto y es adecuado para polling frecuente del dashboard, incluso mientras el planner esta ocupado. No inicia el servidor MJPEG. En sistemas con colas, `system.queue_summary.pending_commands` es el numero total de comandos sin finalizar, incluidos los que se estan procesando, y `system.queue_summary.queues` contiene entradas `CRITICAL`, `HIGH`, `MEDIUM` y `LOW` con `pending_commands`, `worker_alive` e `interval_ms`. Usa `detail="full"` para ver tamanos de cola sin resumir, errores del ultimo comando y diagnosticos de guardado de estado.
 
 ### Definicion De Gotas
 
@@ -129,12 +131,12 @@ Usa estas tools para anadir una primitiva logica al plan actual. No ejecutan har
 | `plan_isometric_split` | Planifica un split isometrico |
 | `plan_mix` | Planifica una secuencia de mezcla |
 | `plan_merge` | Planifica merge de gotas |
-| `planning_job_status` | Consulta un job de planificacion en background |
+| `planning_job_status` | Consulta un job de planificacion y la espera recomendada |
 | `cancel_planning_job` | Solicita cancelar un job de planificacion |
 | `plan_summary` | Inspecciona frames, eventos, trayectorias y resultado |
 | `save_protocol` | Guarda plan y gotas en un pickle |
 
-Para movimientos grandes o planes dificiles, usa `background=true` y consulta `planning_job_status()` en vez de mantener una llamada MCP abierta.
+Para movimientos grandes o planes dificiles, usa `background=true` y consulta `planning_job_status()` en vez de mantener una llamada MCP abierta. Mientras el job sigue ejecutandose, la respuesta incluye `recommended_wait_seconds`, `next_check_after_seconds` y `recommended_status_call`; espera ese intervalo antes de consultar de nuevo en vez de hacer polling repetido.
 
 En hardware real como DMLite y BOXMini, `plan_move` rechaza mas de 10 gotas activas moviendose en una sola llamada. Divide el movimiento en lotes ejecutados de 5-10 gotas, prefiriendo 5 para layouts densos, cruces, rutas largas o gotas 2 x 2.
 
@@ -204,7 +206,7 @@ Las lecturas crudas de matriz 128 x 128 estan protegidas porque el transporte MC
 
 | Tool | Uso |
 | --- | --- |
-| `visualizer_status` | Inspecciona disponibilidad de matriz y streamer |
+| `visualizer_status` | Inspecciona visualizadores e inicia el endpoint MJPEG auxiliar |
 | `visualizer_frame` | Devuelve un frame como base64 y/o lo guarda a disco |
 | `start_visualizer` | Abre una ventana si el OS lo permite |
 | `stop_visualizer` | Cierra una ventana |
@@ -234,7 +236,7 @@ Para ver camara o microscopio:
 
 `StreamerVisualizer` puede ofrecer `raw`, `processed` y `snapshot` segun haya frames vivos. El simulador solo tiene visualizador de matriz.
 
-El servidor MCP no es un servidor de video. Los agentes pueden consultar `visualizer_frame` repetidamente. Si mas adelante necesitamos streaming continuo a alto FPS, deberia ser un endpoint auxiliar, manteniendo los comandos dentro de MCP.
+Los agentes pueden consultar `visualizer_frame` para obtener frames actuales. Los clientes de navegador pueden llamar `visualizer_status()` para asegurar que el endpoint direct-MJPEG auxiliar este activo y obtener sus URLs de matriz y streamer; el polling normal de `runtime_status()` no inicia ese endpoint. Los comandos de hardware permanecen dentro de MCP.
 
 ### Vision
 

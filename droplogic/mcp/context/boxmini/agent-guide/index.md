@@ -8,7 +8,7 @@ This directory contains task-scoped expansions of `../agent-guide.md`. The dashb
 - `agent-guide/03-startup-state-large-values.md`: Startup, State, And Large Values (3935 chars)
 - `agent-guide/04-calibration-geometry.md`: Calibration And Geometry (819 chars)
 - `agent-guide/05-visualizers-cockpit-stage.md`: Visualizers, Cockpit, And Stage (2448 chars)
-- `agent-guide/06-planning-execution-rhythm.md`: Planning And Execution Rhythm (10744 chars)
+- `agent-guide/06-planning-execution-rhythm.md`: Planning And Execution Rhythm (10867 chars)
 - `agent-guide/07-droplets-reservoirs-injection.md`: Droplets, Reservoirs, And Injection (4863 chars)
 - `agent-guide/08-reservoir-extraction.md`: Reservoir Extraction (6087 chars)
 - `agent-guide/09-execution-view-modes-diagnostics.md`: Execution View Modes And Diagnostics (2884 chars)
