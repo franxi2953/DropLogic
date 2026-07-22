@@ -89,14 +89,16 @@ agent 通常应通过 `AdvancedDrop` 和 `PlanExecutor` 控制实验，而不是
 | --- | --- |
 | `load_system` | 加载 `simulator`、`dmlite` 或 `boxmini` |
 | `close_system` | 关闭当前系统 |
-| `runtime_status` | 返回 system、executor、plan 和 droplet status |
+| `runtime_status` | 返回适合轮询的 system、queue、executor、plan 和 droplet status |
 | `health_check` | 检查 queue workers、executor state、module busy state 和 last error |
 | `restart_system` | 失败后关闭并重新加载系统 |
 | `capabilities` | 列出当前 agent-facing functions |
 | `read_state` | 读取全部 state 或 dotted path |
 | `emergency_stop` | 停止执行、清空 queues，并可选关闭电极 |
 
-`capabilities()` 是 agent 的最佳第一步，因为可用模块取决于加载的系统。
+`capabilities()` 是 agent 的最佳第一步，因为可用模块取决于加载的系统。加载 BOXMini 时，包括 XY stage 在内的所有核心模块都必须成功初始化；加载失败会关闭部分初始化的资源，并且不会留下可供调用方使用或自动重启的已加载系统。
+
+`runtime_status()` 默认使用 `detail="compact"`，适合 dashboard 频繁轮询，即使 planner 正忙也可以使用。它不会启动 MJPEG stream server。对于支持 queue 的系统，`system.queue_summary.pending_commands` 是尚未完成的命令总数（包括正在处理的命令），`system.queue_summary.queues` 包含 `CRITICAL`、`HIGH`、`MEDIUM` 和 `LOW` 条目，每项提供 `pending_commands`、`worker_alive` 和 `interval_ms`。使用 `detail="full"` 可查看原始 queue size、last-command error 和 state-save diagnostics。
 
 ### Droplet Definition Tools
 
@@ -175,13 +177,13 @@ agent 通常应通过 `AdvancedDrop` 和 `PlanExecutor` 控制实验，而不是
 
 | Tool | 用途 |
 | --- | --- |
-| `visualizer_status` | 检查 matrix 和 streamer 是否可用 |
+| `visualizer_status` | 检查 visualizers 并启动辅助 MJPEG endpoint |
 | `visualizer_frame` | 返回当前 frame 的 base64 或保存到磁盘 |
 | `start_visualizer` | 在支持时启动 visualizer window |
 | `stop_visualizer` | 停止 visualizer window |
 | `bring_visualizer_to_front` | 在支持时将 visualizer window 带到前台 |
 
-MCP server 不是视频流服务器。agents 可以轮询 `visualizer_frame` 获取当前 frames。
+agents 可以轮询 `visualizer_frame` 获取当前 frames。浏览器客户端可以调用 `visualizer_status()`，确保辅助 direct-MJPEG endpoint 已运行并取得 matrix 和 streamer URLs；普通 `runtime_status()` 轮询不会启动该 endpoint。硬件命令仍通过 MCP 执行。
 
 ### Vision Tools
 

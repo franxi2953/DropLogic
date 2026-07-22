@@ -24,7 +24,12 @@ import logging
 
 
 class BOXMini(DropSystem):
-    """Represents the BOXMini hardware system as a singleton."""
+    """Represent BOXMini as a singleton with atomic hardware initialization.
+
+    All core modules, including the XY stage, must initialize successfully.
+    Failed construction closes partial resources and releases the singleton so
+    a later explicit retry can create a fresh instance.
+    """
 
     TEMPERATURE_VERSION = "TemperatureV1"
     FRONT_PANEL_LOW_QUEUE_LIMIT = 5

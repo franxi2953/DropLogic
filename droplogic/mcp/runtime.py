@@ -1068,7 +1068,11 @@ class DropLogicMCPRuntime:
     # Read/observe
 
     def status(self, detail: str = "compact") -> Dict[str, Any]:
-        """Return a compact runtime status."""
+        """Return lightweight runtime status without starting the MJPEG server.
+
+        Queue-capable systems always include ``system.queue_summary``. Full
+        detail additionally includes the raw per-queue diagnostics.
+        """
         detail = str(detail or "compact").lower()
         system = self.system
         system_status = {
@@ -2685,7 +2689,11 @@ class DropLogicMCPRuntime:
         start_stream_server: bool = True,
         system: Any = None,
     ) -> Dict[str, Any]:
-        """Return status for available visualizers."""
+        """Return visualizer status, optionally starting the MJPEG server.
+
+        ``system`` lets status polling use a captured system reference without
+        re-reading mutable runtime ownership state.
+        """
         if system is None:
             system = self.require_system()
         status = {}
@@ -6091,7 +6099,12 @@ class DropLogicMCPRuntime:
         wait_for_queue: bool = True,
         wait_for_completion: bool = True,
     ) -> Dict[str, Any]:
-        """Move the XY stage using a named preset or explicit X/Y/Z axis values."""
+        """Move the XY stage using a preset or explicit X/Y/Z axis values.
+
+        A timeout remains a failure. A drained queue's explicit stage-command
+        error may be reported as a warning when readback proves the target was
+        reached.
+        """
         system = self.require_system()
         if position is not None and preset is not None:
             raise DropLogicMCPError("Use either position or preset, not both.")

@@ -259,7 +259,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
 
     @mcp.tool()
     def runtime_status(detail: str = "compact") -> Dict[str, Any]:
-        """Return server, system, executor, plan and droplet status."""
+        """Return lightweight runtime status; compact detail includes hardware queue totals."""
         return _runtime_call(runtime.status, detail=detail)
 
     @mcp.tool()
@@ -461,7 +461,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
 
     @mcp.tool()
     def visualizer_status() -> Dict[str, Any]:
-        """Return matrix and streamer visualizer status."""
+        """Return visualizer status and ensure the auxiliary MJPEG server is available."""
         return _runtime_call(runtime.visualizer_status)
 
     @mcp.tool()
@@ -1205,7 +1205,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         wait_for_queue: bool = True,
         wait_for_completion: bool = True,
     ) -> Dict[str, Any]:
-        """Move the XY stage using a named preset or explicit X/Y/Z axis values."""
+        """Move the XY stage; timeouts fail, while proven queue false negatives warn."""
         return _runtime_call(
             runtime.move_stage,
             position=position,

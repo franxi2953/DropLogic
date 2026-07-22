@@ -31,4 +31,4 @@ Large matrix guardrails:
 - For combined plan/executor/matrix/droplet reasoning, use `execution_status_summary()` first. Use `execution_scene()` for rendering-focused geometry; it returns compact active-row encoding, executor cursor, current/last frame, droplet bboxes, targets, and bounded paths.
 - `state_summary(path="electrode_matrix.matrix")` and matrix visualizer frames are also compact options.
 - Raw full-matrix access requires explicit large-state permission. Do not request it during normal agent operation.
-- If diagnosing queue failures, call `runtime_status(detail="full")`; compact `runtime_status()` intentionally omits queue internals.
+- Compact `runtime_status()` includes aggregate and per-priority pending counts, worker liveness, and configured intervals under `system.queue_summary`. If diagnosing command failures, call `runtime_status(detail="full")` for raw queue state and `last_command_error` details.
