@@ -1089,8 +1089,11 @@ class DropLogicMCPRuntime:
                     ),
                 }
             )
-            if detail == "full" and hasattr(system, "get_queue_status"):
-                system_status["queues"] = self.to_jsonable(system.get_queue_status())
+            if hasattr(system, "get_queue_status"):
+                queue_status = self.to_jsonable(system.get_queue_status())
+                system_status["queue_summary"] = self._compact_hardware_queue_status(queue_status)
+                if detail == "full":
+                    system_status["queues"] = queue_status
 
         visualizer_status = None
         if system is not None:
@@ -1151,6 +1154,26 @@ class DropLogicMCPRuntime:
             status["visualizers"] = self._compact_visualizer_status(visualizer_status)
             status.pop("last_visualizer_prepare_result", None)
         return status
+
+    def _compact_hardware_queue_status(self, queues: Any) -> Dict[str, Any]:
+        priority_names = {"CRITICAL", "HIGH", "MEDIUM", "LOW"}
+        compact = {}
+        pending_commands = 0
+        for name, queue_status in (queues or {}).items():
+            if str(name).upper() not in priority_names or not isinstance(queue_status, dict):
+                continue
+            pending = queue_status.get("unfinished_tasks", queue_status.get("queue_size", 0))
+            try:
+                pending = max(0, int(pending or 0))
+            except (TypeError, ValueError):
+                pending = 0
+            compact[str(name).upper()] = {
+                "pending_commands": pending,
+                "worker_alive": bool(queue_status.get("worker_alive")),
+                "interval_ms": queue_status.get("interval_ms"),
+            }
+            pending_commands += pending
+        return {"pending_commands": pending_commands, "queues": compact}
 
     def _compact_executor_status(self, status: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         if not isinstance(status, dict):
@@ -6157,12 +6180,16 @@ class DropLogicMCPRuntime:
             try:
                 if all(xy_stage.is_motion_complete(axis) for axis in ("X", "Y", "Z")):
                     actual_position = self._read_stage_position(xy_stage)
-                    ok = bool(queue_wait.get("ok", True)) and self._stage_positions_close(
+                    reached_target = self._stage_positions_close(
                         target_position,
                         actual_position,
                     )
+                    ok = bool(queue_wait.get("ok", True)) and reached_target
                     response = {
-                        "ok": ok,
+                        "ok": ok or (
+                            reached_target
+                            and self._queue_wait_false_but_stage_reached_target(queue_wait)
+                        ),
                         "preset": preset,
                         "resolved_preset": self.to_jsonable(resolved_preset),
                         "target_position": target_position,
@@ -6171,7 +6198,13 @@ class DropLogicMCPRuntime:
                         "queue_wait": queue_wait,
                         "motion_complete": True,
                     }
-                    if ok:
+                    if not ok and response["ok"]:
+                        response["warning"] = (
+                            "Stage reached the requested position, but the hardware queue "
+                            "reported a false-negative command error. Treat as successful "
+                            "motion and inspect queue diagnostics separately."
+                        )
+                    if response["ok"]:
                         view_update = self._configure_stage_preset_execution_view(
                             resolved_preset,
                             target_position,
@@ -10326,12 +10359,16 @@ class DropLogicMCPRuntime:
             try:
                 if all(xy_stage.is_motion_complete(axis) for axis in ("X", "Y", "Z")):
                     actual_position = self._read_stage_position(xy_stage)
-                    ok = bool(queue_wait.get("ok", True)) and self._stage_positions_close(
+                    reached_target = self._stage_positions_close(
                         target_position,
                         actual_position,
                     )
-                    return {
-                        "ok": ok,
+                    ok = bool(queue_wait.get("ok", True)) and reached_target
+                    response = {
+                        "ok": ok or (
+                            reached_target
+                            and self._queue_wait_false_but_stage_reached_target(queue_wait)
+                        ),
                         "position": target_position,
                         "target_position": target_position,
                         "actual_position": actual_position,
@@ -10339,6 +10376,13 @@ class DropLogicMCPRuntime:
                         "queue_wait": queue_wait,
                         "motion_complete": True,
                     }
+                    if not ok and response["ok"]:
+                        response["warning"] = (
+                            "Stage reached the requested position, but the hardware queue "
+                            "reported a false-negative command error. Treat as successful "
+                            "motion and inspect queue diagnostics separately."
+                        )
+                    return response
             except Exception as exc:
                 actual_position = self._read_stage_position(xy_stage)
                 return {
@@ -10382,6 +10426,26 @@ class DropLogicMCPRuntime:
                 return None
             values[axis] = int(position)
         return values
+
+    def _queue_wait_false_but_stage_reached_target(
+        self, queue_wait: Optional[Dict[str, Any]]
+    ) -> bool:
+        if not isinstance(queue_wait, dict):
+            return False
+        if queue_wait.get("ok", True) is not False:
+            return False
+        hardware_errors = queue_wait.get("hardware_errors")
+        if hardware_errors is None:
+            return True
+        if not isinstance(hardware_errors, list) or not hardware_errors:
+            return False
+        for item in hardware_errors:
+            if not isinstance(item, dict):
+                return False
+            path = str(item.get("path") or "")
+            if not path.startswith("xy_stage.position"):
+                return False
+        return True
 
     def _cached_stage_position(self, system=None) -> Optional[Dict[str, int]]:
         """Return the last known stage position without touching hardware."""

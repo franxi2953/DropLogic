@@ -52,6 +52,7 @@ This is the pinned BoxMini operating guide entrypoint. It should be sent on ever
 - Treat warnings such as `large_move_batch` and `pending_targets_not_in_request` as operational blockers for hardware unless you intentionally split/reset targets first.
 - For swaps/crossings/overlaps, use staged parking moves. Do not expect SIPP to move one droplet into another active start footprint in one call.
 - After each segment, trust `targets_reached` only for the droplets reported in that segment.
+- Except for injection/loading regions and explicit waste/trash routing, when safely possible, place outer droplets within about `5` electrodes of the chip sides while avoiding the exact border electrodes.
 
 ## Reservoir, Injection, And Extraction Contract
 - Injection holes and matrix geometry come from `cartridge.default.json`.

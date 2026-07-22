@@ -101,7 +101,8 @@ class BOXMini(DropSystem):
             self.xy_stage = XYStageModule(self, self.state.get("xy_stage", {}).get("version", "XYStageV1"))
         except Exception as exc:
             self.xy_stage = None
-            self.logger.error("XY stage initialization failed; continuing without motion control: %s", exc)
+            self.logger.error("XY stage initialization failed: %s", exc)
+            raise
         self.microscope = MicroscopeModule(self, self.microscope_serial, self.state.get("microscope_settings", {}).get("version", "MicroscopeV1"))
         self.camera = CameraModule(self, self.state.get("camera_settings", {}).get("version", "CameraV1"))
         self.temperature = TemperatureModule(self, self.temperature_serial, self.TEMPERATURE_VERSION)
