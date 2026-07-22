@@ -37,6 +37,28 @@ class BOXMini(DropSystem):
         return cls._instance
 
     def __init__(self, config_file="config.json", log_level=logging.INFO, reset_matrix=False, front_panel_service=None):
+        try:
+            self._initialize(
+                config_file=config_file,
+                log_level=log_level,
+                reset_matrix=reset_matrix,
+                front_panel_service=front_panel_service,
+            )
+        except Exception:
+            self._initialized = False
+            try:
+                self.close()
+            finally:
+                type(self)._instance = None
+            raise
+
+    def _initialize(
+        self,
+        config_file="config.json",
+        log_level=logging.INFO,
+        reset_matrix=False,
+        front_panel_service=None,
+    ):
         if isinstance(log_level, str):
             log_level = getattr(logging, log_level.upper(), logging.INFO)
         
@@ -97,12 +119,7 @@ class BOXMini(DropSystem):
             debug=False
         )
         self.capacitive_feedback = CapacitiveFeedbackModule(self, self.state.get("capacitive_feedback", {}).get("version", "CapacitiveFeedbackV1"))
-        try:
-            self.xy_stage = XYStageModule(self, self.state.get("xy_stage", {}).get("version", "XYStageV1"))
-        except Exception as exc:
-            self.xy_stage = None
-            self.logger.error("XY stage initialization failed: %s", exc)
-            raise
+        self.xy_stage = XYStageModule(self, self.state.get("xy_stage", {}).get("version", "XYStageV1"))
         self.microscope = MicroscopeModule(self, self.microscope_serial, self.state.get("microscope_settings", {}).get("version", "MicroscopeV1"))
         self.camera = CameraModule(self, self.state.get("camera_settings", {}).get("version", "CameraV1"))
         self.temperature = TemperatureModule(self, self.temperature_serial, self.TEMPERATURE_VERSION)
@@ -137,9 +154,6 @@ class BOXMini(DropSystem):
         self._temperature_update_thread = None
         self._temperature_update_stop = threading.Event()
 
-        self._initialized = True
-        self.logger.info("BOXMini initialized successfully")
-        
         # Initialize hardware modules with config values
         self._initialize_hardware_from_config()
 
@@ -152,6 +166,9 @@ class BOXMini(DropSystem):
 
         # Start temperature update thread
         self._start_temperature_update_thread()
+
+        self._initialized = True
+        self.logger.info("BOXMini initialized successfully")
         
     def _process_hardware_command(self, path: str, value: Any, priority: Priority):
         """Process hardware commands for BOXMini - routes to specific module processors."""
@@ -866,10 +883,11 @@ class BOXMini(DropSystem):
         BOXMini._instance = None
 
         # Stop temperature update thread
-        if self._temperature_update_thread and self._temperature_update_thread.is_alive():
+        temperature_update_thread = getattr(self, "_temperature_update_thread", None)
+        if temperature_update_thread and temperature_update_thread.is_alive():
             self._temperature_update_stop.set()
-            if threading.current_thread() is not self._temperature_update_thread:
-                self._temperature_update_thread.join(timeout=2.0)
+            if threading.current_thread() is not temperature_update_thread:
+                temperature_update_thread.join(timeout=2.0)
             self.logger.debug("Temperature update thread stopped")
 
         # Close visualizers first so movie writers flush before their camera/microscope disappears.

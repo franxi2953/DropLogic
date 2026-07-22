@@ -1070,9 +1070,6 @@ class DropLogicMCPRuntime:
     def status(self, detail: str = "compact") -> Dict[str, Any]:
         """Return a compact runtime status."""
         detail = str(detail or "compact").lower()
-        # Keep runtime snapshots readable while a background planner holds the
-        # main mutation lock. Slightly stale/in-between read state is acceptable
-        # for dashboard observation; blocking the live poll loop is not.
         system = self.system
         system_status = {
             "loaded": system is not None,
@@ -1098,7 +1095,10 @@ class DropLogicMCPRuntime:
         visualizer_status = None
         if system is not None:
             try:
-                visualizer_status = self.visualizer_status()
+                visualizer_status = self.visualizer_status(
+                    start_stream_server=False,
+                    system=system,
+                )
             except Exception as exc:
                 visualizer_status = {"error": str(exc)}
 
@@ -2680,11 +2680,20 @@ class DropLogicMCPRuntime:
             return None
         return parsed if parsed > 0 else None
 
-    def visualizer_status(self) -> Dict[str, Any]:
+    def visualizer_status(
+        self,
+        start_stream_server: bool = True,
+        system: Any = None,
+    ) -> Dict[str, Any]:
         """Return status for available visualizers."""
-        system = self.require_system()
+        if system is None:
+            system = self.require_system()
         status = {}
-        stream_server = self.ensure_mjpeg_server()
+        stream_server = (
+            self.ensure_mjpeg_server()
+            if start_stream_server
+            else self.mjpeg_server_status()
+        )
         for visualizer_name in ("matrix", "streamer"):
             instance = self._get_visualizer_instance(system, visualizer_name)
             if instance is None:
@@ -5158,11 +5167,26 @@ class DropLogicMCPRuntime:
         allow_long = bool(arguments.pop("allow_long_sync", False))
         if allow_long:
             return
-        raise DropLogicMCPError(
-            "Blocking AdvancedDrop move is disabled for normal MCP operation. "
-            "Use plan_move(..., background=true) and poll planning_job_status(). "
-            "For an intentional local debug-only blocking run, pass allow_long_sync=true."
-        )
+
+        active_count = self._advanced_drop_active_move_count()
+        if "planning_timeout" not in arguments:
+            arguments["planning_timeout"] = self.ADVANCED_DROP_SYNC_MOVE_MAX_TIMEOUT
+        planning_timeout = float(arguments["planning_timeout"])
+        if (
+            active_count > self.ADVANCED_DROP_SYNC_MOVE_MAX_ACTIVE
+            or planning_timeout > self.ADVANCED_DROP_SYNC_MOVE_MAX_TIMEOUT
+        ):
+            raise DropLogicMCPError(
+                "Refusing blocking AdvancedDrop move because it may exceed the "
+                "MCP client request timeout and restart the server. Use "
+                "plan_move(..., background=true) and poll planning_job_status(). "
+                f"active_moving_droplets={active_count}, "
+                f"planning_timeout={planning_timeout:g}s, "
+                f"sync_limits={self.ADVANCED_DROP_SYNC_MOVE_MAX_ACTIVE} droplets/"
+                f"{self.ADVANCED_DROP_SYNC_MOVE_MAX_TIMEOUT:g}s. "
+                "For an intentional local debug-only blocking run, pass "
+                "allow_long_sync=true."
+            )
 
     def _guard_hardware_plan_move_batch(self, background: bool) -> None:
         if str(self.system_name or "").lower() not in self.REAL_SYSTEMS:
@@ -10434,9 +10458,16 @@ class DropLogicMCPRuntime:
             return False
         if queue_wait.get("ok", True) is not False:
             return False
+        if queue_wait.get("timed_out") is not False:
+            return False
+        if "pending_commands" not in queue_wait:
+            return False
+        try:
+            if int(queue_wait.get("pending_commands") or 0) != 0:
+                return False
+        except (TypeError, ValueError):
+            return False
         hardware_errors = queue_wait.get("hardware_errors")
-        if hardware_errors is None:
-            return True
         if not isinstance(hardware_errors, list) or not hardware_errors:
             return False
         for item in hardware_errors:
