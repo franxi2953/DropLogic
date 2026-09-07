@@ -1,6 +1,7 @@
 ## Droplets, Reservoirs, And Injection
 Droplet tools:
-- Use `clear_droplet_state(reset_executor=true)` to start a clean logical protocol: it clears all AdvancedDrop droplets, removes old plan frames, and resets the PlanExecutor cursor. It does not replace visual verification or physical deactivation; use `emergency_stop(deactivate_electrodes=true)` first when electrodes must be turned off.
+- A requested fresh BoxMini start with deactivated electrodes should use `load_system(system="boxmini", reset_matrix=true)` or `restart_system(system="boxmini", reset_matrix=true)`, according to whether a system is already loaded. Do not follow a successful clean initialization with `clear_droplet_state` or `emergency_stop`.
+- Use `clear_droplet_state(reset_executor=true)` only to discard a known logical droplet/plan state while intentionally keeping the current loaded runtime. It does not deactivate physical electrodes. Use `emergency_stop` only for an explicit emergency or an MCP-directed fault response, not as a routine deactivation tool.
 - Use `create_droplet(droplet_id=1, origin=[row, col], target=[row, col], width=1, height=1)` for one droplet.
 - Use `add_droplets(droplets=[...])` for batches. Each entry needs `id`/`droplet_id` and `origin`; include `target` unless explicitly optional.
 - Valid batch entry: `{"id": 1, "origin": [42, 1], "target": [30, 30], "width": 1, "height": 1}`.

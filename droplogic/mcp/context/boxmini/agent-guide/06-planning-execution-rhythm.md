@@ -4,12 +4,13 @@ Planning only changes logical state. Hardware moves only through `execute_segmen
 Default real-hardware rhythm:
 1. Plan one physical segment or checkpoint.
 2. Inspect `plan_summary()`.
-3. Execute to the segment target with normal droplet-follow execution. If the current view is not already known-good for normal work, call `execute_segment_to_breakpoint(frame_number=null, execution_view_mode="follow_droplets")` or restore `set_execution_view_mode(mode="follow_droplets")` first.
+3. Execute to the segment target in the active protocol view. Use normal droplet-follow execution unless the user requested a persistent view such as whole-cartridge display; in that case preserve that view for every segment.
 4. If the result is `wait_mode="inline"`, use its `wait_status` directly. If it starts a background wait, call `execution_wait_status(wait_seconds=<recommended_wait_seconds>)` once and let that timer return.
 5. Verify or inspect, then plan the next segment.
 
 Rules:
-- For a clean new matrix protocol, benchmark, or user-requested reset, do not delete droplets one by one and continue from the old executor cursor. First stop/deactivate hardware if needed with `emergency_stop(deactivate_electrodes=true)`, then call `clear_droplet_state(reset_executor=true)`. Confirm `plan.frame_count=0`, no active droplets, and executor `current_frame=0,total_frames=0` before creating the first new droplet. This prevents new plan frames from being appended after an already executed previous run.
+- For an explicitly requested clean BoxMini initialization, use one call: `load_system(system="boxmini", reset_matrix=true)` when no system is loaded, or `restart_system(system="boxmini", reset_matrix=true)` when it is already loaded. A successful result means the electrodes are deactivated and the new runtime has no previous logical plan; do not then call `emergency_stop` or `clear_droplet_state`. Use `clear_droplet_state(reset_executor=true)` only when deliberately preserving the current loaded runtime while discarding a known logical plan, after physical safety has been established independently.
+- Reserve `emergency_stop` for an explicit human emergency request or an MCP fault result that recommends it. Routine initialization, clearing, and normal completion are not emergencies.
 - For real hardware, dry electrode-only primitive tests, and matrix display tests, execute each planned physical segment before retargeting or planning the next segment unless the user explicitly asks for offline/batch planning.
 - Planned-only actions are invisible to the physical system, and batch planning prevents adaptation to physical feedback.
 - Do not plan all legs of a square path and execute once. Create/activate and execute; retarget leg 1, plan, execute, inspect; repeat for remaining legs.
@@ -18,7 +19,7 @@ Rules:
 - Plan only to the next visual/temperature check, injection confirmation, extraction validation, user decision, or risky transition.
 - Leave `remove_duplicate_frames=false` during normal real-hardware operation. Use it only for explicit duplicate-frame debugging after inspecting the resulting plan.
 - Prefer `execute_segment_to_breakpoint` for normal segment execution. It clears old breakpoints by default, adds the target breakpoint, chooses `start_plan` for a new run or `resume_plan` for a partial run, and uses `wait_mode="auto"` so short segments finish inline and long segments run as a background wait.
-- Normal segment execution means `follow_droplets` with the executor's microscope brightfield behavior. Do not proactively choose `whole_chip_camera` for ordinary droplet routing, extraction, mixing, or verification segments.
+- Normal segment execution means `follow_droplets` with the executor's microscope brightfield behavior when no other view was requested. Do not proactively choose `whole_chip_camera` for ordinary droplet work, but when the user explicitly asks to show the whole cartridge throughout the protocol, keep `whole_chip_camera` for all segments and keep `verify_positions=false`.
 - Default execution frame delay is `1.0` second, and that is the correct normal operating pace. Omit `frame_delay` unless the user explicitly asks for another speed; never invent a faster or slower non-default delay.
 - For background execution waits, do not make repeated immediate `execution_wait_status()` calls. Use the returned `recommended_wait_seconds`, `next_check_after_seconds`, or `recommended_status_call`; if the timer returns `running=true`, repeat one timer wait using the new recommendation.
 - Use manual `add_breakpoint` plus `start_plan`/`resume_plan` plus `start_execute_until_breakpoint` only when you need non-default breakpoint handling.
