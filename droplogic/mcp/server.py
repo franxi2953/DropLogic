@@ -117,8 +117,15 @@ def _redirect_native_stdout_to_stderr():
     saved_stdout_handle = None
     kernel32 = None
 
+    redirected = False
     try:
-        saved_stdout_fd = os.dup(stdout_fd)
+        try:
+            saved_stdout_fd = os.dup(stdout_fd)
+        except OSError:
+            # A detached Windows parent can leave inherited console handles
+            # invalid. Do not prevent the requested MCP tool from running.
+            yield
+            return
 
         if os.name == "nt":
             try:
@@ -129,7 +136,15 @@ def _redirect_native_stdout_to_stderr():
 
         sys.stdout.flush()
         sys.stderr.flush()
-        os.dup2(stderr_fd, stdout_fd)
+        try:
+            os.dup2(stderr_fd, stdout_fd)
+            redirected = True
+        except OSError:
+            # The MCP protocol uses its own duplicate of the original stdout.
+            # If stderr became invalid after startup, leaving native stdout as
+            # is is safer than failing every tool before it reaches runtime.
+            yield
+            return
         if kernel32 is not None:
             try:
                 kernel32.SetStdHandle(-11, kernel32.GetStdHandle(-12))
@@ -144,8 +159,15 @@ def _redirect_native_stdout_to_stderr():
         except Exception:
             pass
         if saved_stdout_fd is not None:
-            os.dup2(saved_stdout_fd, stdout_fd)
-            os.close(saved_stdout_fd)
+            if redirected:
+                try:
+                    os.dup2(saved_stdout_fd, stdout_fd)
+                except OSError:
+                    pass
+            try:
+                os.close(saved_stdout_fd)
+            except OSError:
+                pass
         if kernel32 is not None and saved_stdout_handle is not None:
             try:
                 kernel32.SetStdHandle(-11, saved_stdout_handle)
