@@ -32,13 +32,14 @@ class CameraV1:
         self.parent = parent
         self.cam = None
         self._is_grabbing = False
+        self._closed = False
 
         try:
             self.device_list = self.enum_devices()
             self.open_camera(device_index)
             self.logger.info("Camera initialized and powered on.")
         except Exception as e:
-            self.logger.error(f"Failed to enumerate devices: {e}")
+            self.logger.error(f"Failed to initialize camera {device_index}: {e}")
             self.close()
             raise  
 
@@ -64,35 +65,83 @@ class CameraV1:
     def open_camera(self, device_index=0):
         """Opens the selected camera."""
         self.logger.info(f"Initializing camera {device_index}")
+        last_error = None
+        # GigE cameras can briefly return MV_E_PARAMETER while their transport
+        # layer is settling after another process closes a handle. Re-enumerate
+        # and retry only this transient class of open failure; never spin on a
+        # missing device or an unrelated SDK error.
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            self._closed = False
+            try:
+                self.device_list = self.enum_devices()
+                if self.device_list is None:
+                    raise RuntimeError("No cameras found")
+                device_count = int(self.device_list.nDeviceNum)
+                if device_index < 0 or device_index >= device_count:
+                    raise IndexError(
+                        f"Camera index {device_index} unavailable; enumerated {device_count} device(s)"
+                    )
+
+                self.cam = MvCamera()
+                st_device_info = cast(
+                    self.device_list.pDeviceInfo[device_index],
+                    POINTER(MV_CC_DEVICE_INFO),
+                ).contents
+                ret = self.cam.MV_CC_CreateHandle(st_device_info)
+                if ret != 0:
+                    raise RuntimeError(f"Failed to create camera handle: {parse_mvs_error(ret)}")
+
+                ret = self.cam.MV_CC_OpenDevice(MV_ACCESS_Exclusive, 0)
+                if ret != 0:
+                    raise RuntimeError(f"Failed to open camera: {parse_mvs_error(ret)}")
+
+                # Ensure manual exposure mode is enabled
+                self.set_exposure_auto(False)
+
+                # Start grabbing
+                ret = self.cam.MV_CC_StartGrabbing()
+                if ret != 0:
+                    raise RuntimeError(f"Failed to start grabbing: {parse_mvs_error(ret)}")
+                self._is_grabbing = True
+                self.logger.info(
+                    f"Started grabbing on camera {device_index} (attempt {attempt}/{max_attempts})"
+                )
+                return
+            except Exception as exc:
+                last_error = exc
+                self.logger.error(
+                    f"Failed to open camera {device_index} on attempt "
+                    f"{attempt}/{max_attempts}: {exc}"
+                )
+                self._release_handle()
+                transient = "Incorrect parameter" in str(exc)
+                if not transient or attempt >= max_attempts:
+                    raise
+                time.sleep(0.75 * attempt)
+
+        if last_error is not None:
+            raise last_error
+
+    def _release_handle(self):
+        """Stop, close, and destroy a partially opened SDK handle."""
+        camera = getattr(self, "cam", None)
+        self._is_grabbing = False
+        self.cam = None
+        if camera is None:
+            return
         try:
-            if self.device_list is None:
-                raise RuntimeError("No devices found!")
-
-            self.cam = MvCamera()
-            st_device_list = cast(self.device_list.pDeviceInfo[device_index], POINTER(MV_CC_DEVICE_INFO)).contents
-            ret = self.cam.MV_CC_CreateHandle(st_device_list)
-            if ret != 0:
-                raise RuntimeError(f"Failed to create camera handle: {parse_mvs_error(ret)}")
-
-            ret = self.cam.MV_CC_OpenDevice(MV_ACCESS_Exclusive, 0)
-            if ret != 0:
-                raise RuntimeError(f"Failed to open camera: {parse_mvs_error(ret)}")
-
-            # Ensure manual exposure mode is enabled
-            self.set_exposure_auto(False)
-
-            # Start grabbing
-            ret = self.cam.MV_CC_StartGrabbing()
-            if ret != 0:
-                raise RuntimeError(f"Failed to start grabbing: {parse_mvs_error(ret)}")
-            self._is_grabbing = True
-            self.logger.info(f"Started grabbing on camera {device_index}")
-
-        except Exception as e:
-            self.logger.error(f"Failed to open camera {device_index}: {e}")
-            time.sleep(1)
-            self.close()
-            raise  
+            camera.MV_CC_StopGrabbing()
+        except Exception:
+            pass
+        try:
+            camera.MV_CC_CloseDevice()
+        except Exception:
+            pass
+        try:
+            camera.MV_CC_DestroyHandle()
+        except Exception:
+            pass
 
     def set_exposure_auto(self, enable=False):
         """Enables or disables auto exposure mode."""
@@ -235,6 +284,9 @@ class CameraV1:
 
     def close(self):
         """Closes the camera safely."""
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
         try:
             if self.cam:
                 if getattr(self, "_is_grabbing", False):
@@ -244,8 +296,11 @@ class CameraV1:
                 self.cam.MV_CC_CloseDevice()
                 self.cam.MV_CC_DestroyHandle()
                 self.logger.info("Camera closed and handle destroyed")
+                self.cam = None
         except Exception as e:
             self.logger.error(f"Error while closing camera: {e}")
+        finally:
+            self._is_grabbing = False
 
     def __del__(self):
         """Ensure the camera is closed when the object is deleted."""
