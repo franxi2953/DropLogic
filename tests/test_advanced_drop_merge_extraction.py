@@ -406,6 +406,72 @@ class MergeRegressionTests(unittest.TestCase):
         self.assertEqual(with_duplicate["blocking_issues"], normalized["blocking_issues"])
 
 
+class OneToTwoExtractionRegressionTests(unittest.TestCase):
+    def make_case(self, blocker=None, vital_space=1):
+        reservoir_shape = {(row, col) for row in range(4) for col in range(4)}
+        reservoir = make_droplet(100, (40, 40), reservoir_shape, vital_space=vital_space)
+        droplets = [reservoir] if blocker is None else [reservoir, blocker]
+        return reservoir, droplets, make_plan(droplets, active_ids=[droplet.id for droplet in droplets])
+
+    def test_rejects_final_position_collision_before_mutating_reservoir(self):
+        blocker = make_droplet(200, (40, 33), {(0, 0)}, vital_space=0)
+        reservoir, droplets, plan = self.make_case(blocker, vital_space=0)
+        original_shape = set(reservoir.shape)
+        original_origin = reservoir.origin_corner
+
+        with self.assertRaisesRegex(ValueError, "direct overlap with droplet 200"):
+            reservoir_extraction(
+                droplets, MATRIX, 100, "1to2", steps=(0, -7), split_size={(0, 0)}, existing_plan=plan
+            )
+
+        self.assertEqual(reservoir.shape, original_shape)
+        self.assertEqual(reservoir.origin_corner, original_origin)
+        self.assertEqual([droplet.id for droplet in droplets], [100, 200])
+
+    def test_rejects_intermediate_path_collision(self):
+        blocker = make_droplet(200, (40, 35), {(0, 0)}, vital_space=0)
+        _, droplets, plan = self.make_case(blocker, vital_space=0)
+
+        with self.assertRaisesRegex(ValueError, r"step 5 position \(40, 35\)"):
+            reservoir_extraction(
+                droplets, MATRIX, 100, "1to2", steps=(0, -9), split_size={(0, 0)}, existing_plan=plan
+            )
+
+    def test_rejects_vital_space_conflict_without_direct_overlap(self):
+        blocker = make_droplet(200, (40, 32), {(0, 0)}, vital_space=1)
+        _, droplets, plan = self.make_case(blocker)
+
+        with self.assertRaisesRegex(ValueError, "vital-space conflict with droplet 200"):
+            reservoir_extraction(
+                droplets, MATRIX, 100, "1to2", steps=(0, -7), split_size={(0, 0)}, existing_plan=plan
+            )
+
+    def test_default_product_is_extracted_from_the_reservoir_center(self):
+        reservoir_shape = {(row, col) for row in range(5) for col in range(5)}
+        reservoir = make_droplet(100, (40, 40), reservoir_shape, vital_space=0)
+        droplets = [reservoir]
+        plan = make_plan(droplets, active_ids=[100])
+
+        updated, _ = reservoir_extraction(droplets, MATRIX, 100, "1to2", steps=(0, -6), existing_plan=plan)
+
+        extracted = next(droplet for droplet in updated if droplet.id != 100)
+        self.assertEqual(extracted.shape, {(0, 0)})
+        self.assertEqual(extracted.origin_corner, (42, 36))
+
+    def test_normalizes_and_relaxes_a_small_remaining_reservoir(self):
+        reservoir = make_droplet(100, (50, 50), {(0, 0), (0, 1)}, vital_space=1)
+        droplets = [reservoir]
+        plan = make_plan(droplets, active_ids=[100])
+
+        updated, _ = reservoir_extraction(droplets, MATRIX, 100, "1to2", steps=(0, -4), existing_plan=plan)
+
+        remaining = next(droplet for droplet in updated if droplet.id == 100)
+        extracted = next(droplet for droplet in updated if droplet.id != 100)
+        self.assertEqual(remaining.origin_corner, (50, 51))
+        self.assertEqual(remaining.shape, {(0, 0)})
+        self.assertEqual(extracted.origin_corner, (50, 46))
+
+
 class LinearExtractionRegressionTests(unittest.TestCase):
     def make_reservoir_case(self):
         reservoir_shape = {(row, col) for row in range(6) for col in range(8)}
@@ -486,6 +552,29 @@ class LinearExtractionRegressionTests(unittest.TestCase):
 
         self.assertEqual({droplet.id for droplet in updated}, {100, 101, 102, 103, 104})
         self.assertTrue({100, 101, 102, 103, 104}.issubset(new_plan.active_droplets_per_frame[-1]))
+
+    def test_linear_extraction_accepts_an_explicit_2x2_shape(self):
+        droplets, plan = self.make_reservoir_case()
+        shape = {(0, 0), (0, 1), (1, 0), (1, 1)}
+
+        updated, _ = reservoir_extraction(
+            droplets,
+            MATRIX,
+            100,
+            "linear",
+            existing_plan=plan,
+            linear_direction=(0, 1),
+            linear_drop_shape=shape,
+            linear_drops_number=4,
+            linear_offset=0,
+            linear_space_per_col=4,
+            linear_space_per_row=4,
+            linear_vital_space=2,
+        )
+
+        extracted = [droplet for droplet in updated if droplet.id != 100]
+        self.assertEqual(len(extracted), 4)
+        self.assertTrue(all(droplet.shape == shape for droplet in extracted))
 
     def test_linear_extraction_post_separation_moves_reservoir_extra_steps(self):
         droplets_without_extra, plan_without_extra = self.make_reservoir_case()
@@ -1633,6 +1722,18 @@ class MCPServerWrapperRegressionTests(unittest.TestCase):
         ):
             signature = inspect.signature(tools[tool_name])
             self.assertEqual(signature.parameters["tolerance_c"].default, 0.2)
+        self.assertEqual(
+            inspect.signature(tools["start_melting_curve_capture"])
+            .parameters["capture_source"]
+            .default,
+            "pause_streamer",
+        )
+        self.assertEqual(
+            inspect.signature(tools["capture_droplet_images"])
+            .parameters["capture_source"]
+            .default,
+            "pause_streamer",
+        )
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # BoxMini Agent Guide Shards
 
-This directory contains task-scoped expansions of `../agent-guide.md`. The dashboard may attach selected files for a single model turn; agents may also read them with `read_context_file(path)` when details matter.
+This directory contains task-scoped expansions of `../agent-guide.md`. An MCP host may apply the `context_update` returned by `select_guide_context` for a single model turn; agents may also read them with `read_context_file(path)` when details matter.
 
 ## Files
 - `agent-guide/01-mission-tool-boundaries.md`: Mission And Tool Boundaries (1810 chars)
@@ -13,5 +13,5 @@ This directory contains task-scoped expansions of `../agent-guide.md`. The dashb
 - `agent-guide/08-reservoir-extraction.md`: Reservoir Extraction (6087 chars)
 - `agent-guide/09-execution-view-modes-diagnostics.md`: Execution View Modes And Diagnostics (2884 chars)
 - `agent-guide/10-imaging-light-vision.md`: Imaging, Light, And Vision (5603 chars)
-- `agent-guide/11-temperature.md`: Temperature (1361 chars)
+- `agent-guide/11-temperature.md`: Temperature (2689 chars)
 - `agent-guide/12-faults-safety-stops.md`: Faults And Safety Stops (635 chars)

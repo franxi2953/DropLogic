@@ -422,7 +422,8 @@ def _split_1to2(
                Final position = reservoir_corner + steps. Must not overlap with reservoir.
         split_size: Shape of the droplet to extract as relative coordinates from reservoir corner.
                    Must be a subset of the reservoir's shape. Coordinates are relative to the
-                   reservoir's origin_corner. Can be a set of (row, col) tuples or None for default {(0, 0)}
+                   reservoir's origin_corner. Can be a set of (row, col) tuples or None to extract the
+                   reservoir cell nearest its geometric centre.
         new_droplet_id: ID for the new droplet (None = auto-generate next available ID)
         halo_size: Size of unactivated electrode halo around extracted droplet
         logger: Logger instance for logging
@@ -477,26 +478,60 @@ def _split_1to2(
 
     # 2. Calculate split shapes (reservoir - split_size, new_droplet = split_size)
     if split_size is None:
-        new_droplet_shape = {(0, 0)}  # Default to single electrode
+        new_droplet_shape = _centered_1to2_split_shape(reservoir_droplet.shape)
     elif isinstance(split_size, set):
         new_droplet_shape = split_size
     else:
         # split_size is a tuple (height, width) - convert to set of coordinates
         height, width = split_size
         new_droplet_shape = {(i, j) for i in range(height) for j in range(width)}
+    if not new_droplet_shape.issubset(reservoir_droplet.shape):
+        raise ValueError("split_size must be a subset of the reservoir shape for 1to2 extraction")
     updated_reservoir_shape = reservoir_droplet.shape - new_droplet_shape
+    if not updated_reservoir_shape:
+        raise ValueError("1to2 extraction must leave at least one electrode in the reservoir")
 
-    # Relax reservoir shape to be more compact and rectangular before trajectory calculation
-    reservoir_droplet.shape = updated_reservoir_shape
-    relax_droplet_shape(reservoir_droplet, new_plan, droplets, logger)
+    # The product always leaves from the original split location. A residual reservoir
+    # can be normalized during relaxation, but that must not move the product's path.
+    extraction_origin = reservoir_droplet.origin_corner
+    final_position = _add_position_offset(extraction_origin, steps)
+    trajectory = _calculate_trajectory(extraction_origin, final_position)
+    _validate_1to2_trajectory_clearance(
+        reservoir_droplet,
+        new_droplet_shape,
+        trajectory,
+        droplets,
+        existing_plan,
+        logger,
+    )
 
-    # 3. Calculate trajectory from reservoir to final position (now from relaxed origin)
-    final_position = _add_position_offset(reservoir_droplet.origin_corner, steps)
+    # Relax the residual reservoir only after the product path is known to be clear.
+    # Restore the caller-visible droplet when a later residual-reservoir validation fails.
+    original_reservoir_shape = set(reservoir_droplet.shape)
+    original_reservoir_origin = reservoir_droplet.origin_corner
+    try:
+        reservoir_droplet.shape = set(updated_reservoir_shape)
+        _normalize_droplet_origin(reservoir_droplet)
+        relax_droplet_shape(reservoir_droplet, new_plan, droplets, logger)
 
-    # Validate that final position doesn't overlap with reservoir
-    _validate_no_overlap(final_position, new_droplet_shape, reservoir_droplet.origin_corner, reservoir_droplet.shape, logger)
-
-    trajectory = _calculate_trajectory(reservoir_droplet.origin_corner, final_position)
+        # Validate the settled product against the actual relaxed residual reservoir.
+        _validate_no_overlap(
+            final_position,
+            new_droplet_shape,
+            reservoir_droplet.origin_corner,
+            reservoir_droplet.shape,
+            logger,
+        )
+        _validate_1to2_final_reservoir_clearance(
+            reservoir_droplet,
+            new_droplet_shape,
+            final_position,
+            logger,
+        )
+    except Exception:
+        reservoir_droplet.shape = original_reservoir_shape
+        reservoir_droplet.origin_corner = original_reservoir_origin
+        raise
 
     # 4. Generate frames for each step of the trajectory and create droplet
     actual_new_droplet_id = _generate_extraction_frames(
@@ -1417,10 +1452,10 @@ def _split_linear(
         if cfg.droplet_vital_space is not None
         else reservoir_droplet.vital_space
     )
+    drop_height, drop_width = _linear_drop_dimensions(cfg.drop_shape)
     while created_droplets < cfg.drops_number:
         # Create droplet shape
         if isinstance(cfg.drop_shape, (tuple, list)):
-            drop_height, drop_width = cfg.drop_shape
             drop_shape = {(r, c) for r in range(drop_height) for c in range(drop_width)}
         else:
             drop_shape = cfg.drop_shape
@@ -2031,6 +2066,102 @@ def _validate_1to2_inputs(steps: Tuple[int, int], split_size: Optional[Union[Tup
     else:
         logger.error(f"Invalid split_size type '{type(split_size)}'. Must be tuple or set")
         raise ValueError(f"Invalid split_size type '{type(split_size)}'. Must be tuple or set")
+
+
+def _centered_1to2_split_shape(reservoir_shape: Set[Tuple[int, int]]) -> Set[Tuple[int, int]]:
+    """Choose one occupied reservoir cell nearest the geometric centre for the default 1to2 product."""
+    if not reservoir_shape:
+        raise ValueError("Cannot extract from an empty reservoir")
+    rows = [row for row, _ in reservoir_shape]
+    cols = [col for _, col in reservoir_shape]
+    center_row = (min(rows) + max(rows)) / 2
+    center_col = (min(cols) + max(cols)) / 2
+    center = min(
+        reservoir_shape,
+        key=lambda point: (
+            (point[0] - center_row) ** 2 + (point[1] - center_col) ** 2,
+            point[0],
+            point[1],
+        ),
+    )
+    return {center}
+
+
+def _validate_1to2_trajectory_clearance(
+    reservoir_droplet: Droplet,
+    product_shape: Set[Tuple[int, int]],
+    trajectory: List[Tuple[int, int]],
+    droplets: List[Droplet],
+    existing_plan: Optional[DropletPlan],
+    logger,
+) -> None:
+    """Reject a product path that enters another active droplet or either vital space."""
+    if existing_plan and existing_plan.active_droplets_per_frame:
+        obstacle_ids = set(existing_plan.active_droplets_per_frame[-1])
+    else:
+        obstacle_ids = {droplet.id for droplet in droplets}
+    obstacle_ids.discard(reservoir_droplet.id)
+    obstacles = [droplet for droplet in droplets if droplet.id in obstacle_ids]
+    if not obstacles:
+        return
+
+    product = create_droplet(
+        droplet_id=-1,
+        origin=trajectory[0],
+        target=trajectory[-1],
+        shape=product_shape,
+        priority=reservoir_droplet.priority,
+        vital_space=reservoir_droplet.vital_space,
+    )
+    for step_index, position in enumerate(trajectory):
+        for obstacle in obstacles:
+            if not check_vital_space_conflict(product, position, obstacle, obstacle.origin_corner):
+                continue
+            direct_overlap = get_droplet_positions(product, position) & get_droplet_positions(
+                obstacle,
+                obstacle.origin_corner,
+            )
+            conflict_type = "direct overlap" if direct_overlap else "vital-space conflict"
+            message = (
+                f"1to2 extraction trajectory has {conflict_type} with droplet {obstacle.id} "
+                f"at step {step_index} position {position}"
+            )
+            logger.error(message)
+            raise ValueError(message)
+
+
+def _validate_1to2_final_reservoir_clearance(
+    reservoir_droplet: Droplet,
+    product_shape: Set[Tuple[int, int]],
+    final_position: Tuple[int, int],
+    logger,
+) -> None:
+    """The settled extracted product must also clear the residual reservoir's vital space."""
+    product = create_droplet(
+        droplet_id=-1,
+        origin=final_position,
+        target=final_position,
+        shape=product_shape,
+        priority=reservoir_droplet.priority,
+        vital_space=reservoir_droplet.vital_space,
+    )
+    if check_vital_space_conflict(product, final_position, reservoir_droplet, reservoir_droplet.origin_corner):
+        message = "1to2 final product violates the residual reservoir vital space"
+        logger.error(message)
+        raise ValueError(message)
+
+
+def _normalize_droplet_origin(droplet: Droplet) -> None:
+    """Keep a residual droplet's reference corner on its occupied top-left cell."""
+    min_row = min(row for row, _ in droplet.shape)
+    min_col = min(col for _, col in droplet.shape)
+    if min_row == 0 and min_col == 0:
+        return
+    droplet.origin_corner = (
+        droplet.origin_corner[0] + min_row,
+        droplet.origin_corner[1] + min_col,
+    )
+    droplet.shape = {(row - min_row, col - min_col) for row, col in droplet.shape}
 
 def _trim_reservoir_shape_based_on_created_droplets(
     reservoir_droplet: Droplet,

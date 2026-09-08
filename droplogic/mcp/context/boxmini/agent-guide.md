@@ -1,13 +1,21 @@
 # BoxMini Agent Guide
 
-This is the pinned BoxMini operating guide entrypoint. It should be sent on every agent turn as authoritative context, outside the compactable event log. Detailed rules live in `agent-guide/*.md` and may be attached for one turn by the dashboard guide selector or read explicitly with `read_context_file(path)`.
+This is the pinned BoxMini operating guide entrypoint. It should be sent on every agent turn as authoritative context, outside the compactable event log. Detailed rules live in `agent-guide/*.md`; an MCP host can apply the `context_update` from `select_guide_context` for one turn, or an agent can read a file explicitly with `read_context_file(path)`.
 
 ## Guide Expansion Protocol
 - Treat this file as the stable operating contract and index.
 - Before hardware work, refresh detailed knowledge by selecting or reading the relevant `agent-guide/*.md` files.
-- Detailed guide expansions are turn-scoped: do not assume a section expanded in a previous turn is still present.
-- If a tool result shows `ok=false`, `planning_success=false`, `primitive_validation.ok=false`, `target_validation.ok=false`, `large_move_batch`, `pending_targets_not_in_request`, `suggested_targets`, `targets_reached`, execution-view trouble, imaging trouble, or any safety/fault condition, expand the relevant guide files before continuing.
-- If the user asks for routing, extraction, merging, splitting, mixing, whole-cartridge visualization, matrix visualization, imaging, temperature, calibration, or recovery from a failed plan, expand the matching guide files before acting.
+- `select_guide_context` returns a portable `context_update` for MCP hosts that expose manual guide handoffs. The DropLogic Dashboard selects and applies detailed guides with a separate internal AI query before each agent turn; it is not part of the agent conversation, tool trace, or goal progress.
+- Detailed guide expansions are scoped to the current reasoning context. A change of operational phase is a mandatory context boundary. Dashboard hosts refresh the detailed set automatically after each tool result; other MCP hosts should apply `select_guide_context(paths=[...], reason="...")` before their next model turn.
+- Do not use `read_context_file` as a substitute for the host guide-selection protocol. Use it only for an additional narrow detail after the relevant replacement is selected.
+- Select only the shards needed for the next phase (at most five). Do not retain unrelated extraction or routing shards merely because they were useful earlier. Use these required sets:
+  - Planning/routing/splitting/mixing: `06-planning-execution-rhythm.md` plus the relevant `07-droplets-reservoirs-injection.md` or `08-reservoir-extraction.md`.
+  - Whole-chip/fixed-view execution or view diagnosis: `09-execution-view-modes-diagnostics.md`.
+  - Imaging, lighting, vision, or image capture: `10-imaging-light-vision.md`.
+  - Temperature, melting, temperature holds/routines, or melting-curve capture: `11-temperature.md`; include `10-imaging-light-vision.md` when the operation captures images.
+  - Recovery after a failed plan, validation failure, fault, or execution-view problem: `06-planning-execution-rhythm.md` plus `12-faults-safety-stops.md` and the guide for the failed primitive.
+- If a tool result shows `ok=false`, `planning_success=false`, `primitive_validation.ok=false`, `target_validation.ok=false`, `large_move_batch`, `pending_targets_not_in_request`, `suggested_targets`, `targets_reached`, execution-view trouble, imaging trouble, or any safety/fault condition, stop normal progression, replace the detailed guide context for recovery, then reason again. Do not retry the failed action first.
+- If the user asks for routing, extraction, merging, splitting, mixing, whole-cartridge visualization, matrix visualization, imaging, temperature, calibration, or recovery from a failed plan, apply the matching required set before acting.
 - If no expanded guide section covers the next risky action, call `read_context_file(path)` for the relevant shard.
 
 ## Core Operating Rules
@@ -60,7 +68,7 @@ This is the pinned BoxMini operating guide entrypoint. It should be sent on ever
 - Before asking the user to inject, create/activate the reservoir on the real matrix, execute activation, verify/inspect, then `move_stage(preset="manual_injection")`.
 - Wait for user confirmation after manual injection.
 - Before extraction, relocate an injected reservoir `5-10` electrodes from the edge, execute, and verify.
-- Size reservoirs for consumed area plus at least `20` electrodes. Consumed area is approximately `count * width * height`; add extra area for residual liquid, edge loss, imperfect splitting, and dead volume.
+- Before `create_droplet` or reservoir activation, budget the entire extraction campaign: product count, product footprint, extraction direction/batches, and residual margin. For product area `count * width * height`, choose a reservoir with at least `max(2 * product_area, product_area + 20)` electrodes and an orthogonal sweep dimension that can contain the planned staggered products and vital-space clearance. Do not create a provisional undersized reservoir and hope later smaller batches will compensate; if the required reservoir cannot fit at the injection geometry, stop before activation and choose a different loading/refill plan.
 - Use `plan_reservoir_extraction`. Default `split_mode="linear"` for fast batches; use `1to2`/`1to3` for validation or hard liquids.
 - Plan only the next extraction batch, inspect, execute, then verify before routing unless the user explicitly asks to skip verification or sets a maximum number of verification steps.
 - For linear extraction, set `linear_drop_shape` to the intended droplet footprint, set `linear_vital_space` to the droplet vital space, keep clear row/column gaps scaled to the droplet dimensions, use `linear_post_separation_steps=3`, and stagger with `linear_offset` when possible.
