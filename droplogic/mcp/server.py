@@ -439,6 +439,14 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         """Read one agent context file."""
         return _runtime_call(runtime.read_context_file, path)
 
+    @mcp.tool()
+    def select_guide_context(paths: List[str], reason: str) -> Dict[str, Any]:
+        """Select one to five agent-guide/NN-*.md shards for the next model turn.
+
+        agent-guide.md is a pinned entrypoint loaded automatically and must never be selected.
+        """
+        return _runtime_call(runtime.select_guide_context, paths, reason)
+
     if getattr(runtime, "allow_unsafe_tools", False):
         @mcp.tool()
         def set_system_state(path: str, value: Any) -> Dict[str, Any]:
@@ -620,14 +628,14 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         output_dir: Optional[str] = None,
         temperature_label: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
-        capture_source: str = "streamer",
+        capture_source: str = "pause_streamer",
         restart_streamer: bool = True,
         restore_low_light: bool = True,
         image_format: str = "png",
         wait_before_check: float = 0.5,
         wait_after_check: float = 0.5,
     ) -> Dict[str, Any]:
-        """Move to droplets and save images; channel strings like FAM resolve current saved imaging presets.
+        """Move to droplets and save direct microscope images; channel strings like FAM resolve current saved imaging presets.
 
         If output_dir is omitted or relative, images are saved under the managed
         DropLogic capture directory instead of the repository root.
@@ -721,7 +729,7 @@ def build_server(runtime: DropLogicMCPRuntime, host: str = "127.0.0.1", port: in
         max_samples_per_step: int = 20,
         stop_on_error: bool = True,
         metadata: Optional[Dict[str, Any]] = None,
-        capture_source: str = "streamer",
+        capture_source: str = "pause_streamer",
         restart_streamer: bool = True,
         restore_low_light: bool = True,
         image_format: str = "png",

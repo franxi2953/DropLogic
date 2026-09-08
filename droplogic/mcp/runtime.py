@@ -717,6 +717,7 @@ class DropLogicMCPRuntime:
             "context_status",
             "list_context_files",
             "read_context_file",
+            "select_guide_context",
             "health_check",
             "capabilities",
             "read_state",
@@ -2096,6 +2097,10 @@ class DropLogicMCPRuntime:
         """Read one agent context file."""
         return self.context.read_text(path)
 
+    def select_guide_context(self, paths: List[str], reason: str) -> Dict[str, Any]:
+        """Select detailed guides and return a context update for the next model turn."""
+        return self.context.select_guide_context(paths, reason)
+
     def capabilities(self) -> Dict[str, Any]:
         """Return the functions and observability surfaces available to agents."""
         system = self.system
@@ -2158,6 +2163,7 @@ class DropLogicMCPRuntime:
                     "context_status",
                     "list_context_files",
                     "read_context_file",
+                    "select_guide_context",
                 ],
                 "state_observation": [
                     "state_summary",
@@ -3207,7 +3213,7 @@ class DropLogicMCPRuntime:
         output_dir: Optional[str] = None,
         temperature_label: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
-        capture_source: str = "streamer",
+        capture_source: str = "pause_streamer",
         restart_streamer: bool = True,
         restore_low_light: bool = True,
         image_format: str = "png",
@@ -3218,9 +3224,12 @@ class DropLogicMCPRuntime:
         system = self.require_system()
         advanced_drop = self.require_advanced_drop()
 
-        capture_source = (capture_source or "streamer").lower()
-        if capture_source not in {"pause_streamer", "streamer"}:
-            raise DropLogicMCPError("capture_source must be 'pause_streamer' or 'streamer'.")
+        capture_source = (capture_source or "pause_streamer").lower()
+        if capture_source != "pause_streamer":
+            raise DropLogicMCPError(
+                "Persisted microscope captures must use capture_source='pause_streamer'. "
+                "The live streamer is for viewing, not experimental image acquisition."
+            )
 
         ext = (image_format or "png").lstrip(".").lower()
         if ext == "jpeg":
@@ -3259,7 +3268,7 @@ class DropLogicMCPRuntime:
                 streamer_was_running = False
 
         stopped_streamer = False
-        if capture_source == "pause_streamer" and streamer is not None and hasattr(streamer, "stop"):
+        if streamer is not None and hasattr(streamer, "stop"):
             try:
                 streamer.stop()
                 stopped_streamer = True
@@ -3268,21 +3277,6 @@ class DropLogicMCPRuntime:
                     "Could not stop streamer before direct/full-resolution capture: "
                     f"{exc}"
                 ) from exc
-        elif capture_source == "streamer":
-            try:
-                self.set_streamer_source(
-                    source="microscope",
-                    electrode_overlay=True,
-                    bring_to_front=False,
-                )
-                if streamer is not None:
-                    self.start_visualizer("streamer")
-            except Exception as exc:
-                raise DropLogicMCPError(
-                    "Could not prepare streamer before batch image capture: "
-                    f"{exc}"
-                ) from exc
-
         captures = []
         errors = []
         started_at = datetime.now().isoformat()
@@ -3606,7 +3600,7 @@ class DropLogicMCPRuntime:
         max_samples_per_step: int = 20,
         stop_on_error: bool = True,
         metadata: Optional[Dict[str, Any]] = None,
-        capture_source: str = "streamer",
+        capture_source: str = "pause_streamer",
         restart_streamer: bool = True,
         restore_low_light: bool = True,
         image_format: str = "png",

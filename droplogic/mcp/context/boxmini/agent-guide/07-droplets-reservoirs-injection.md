@@ -31,6 +31,9 @@ Reservoir and injection rules:
 - Keep experiment-specific stage or imaging overrides in a protocol profile.
 
 Reservoir sizing:
-- Size reservoirs for consumed electrode area plus at least `20` extra electrodes unless specified otherwise.
-- Consumed area is approximately `count * width * height`; use that formula for any droplet footprint rather than assuming a fixed shape.
-- Extra area covers residual liquid, edge loss, imperfect splitting, and dead volume.
+- Decide reservoir size before `create_droplet`, activation, or any move. Do not start with a convenient small reservoir and defer this decision to the extraction planner.
+- First budget the entire protocol from this reservoir: every intended product count and footprint, expected failed/retry allowance, planned extraction direction, batch geometry, and residual liquid.
+- Product area is `count * width * height`; use that formula for any droplet footprint rather than assuming a fixed shape. The reservoir area must be at least `max(2 * product_area, product_area + 20)` electrodes unless the user explicitly gives a different volume budget. The doubled term is the default operational margin; the extra-20 term protects small protocols.
+- Select explicit `width` and `height` that meet that area minimum and also fit the planned extraction geometry. For horizontal linear extraction, the reservoir height must contain the product height, stagger/offset, and vital-space clearance; for vertical extraction, apply the same requirement to reservoir width. Do this before the first extraction plan, not after it rejects a batch.
+- Example: 20 products of `2 x 2` consume `20 * 2 * 2 = 80` electrodes, so the minimum reservoir budget is `max(160, 100) = 160` electrodes. A `4 x 4` reservoir has 16 electrodes and is invalid for that protocol even if a small first batch can be planned.
+- Extra area covers residual liquid, edge loss, imperfect splitting, and dead volume. If the required footprint cannot fit at the chosen injection geometry, stop before activation and choose another injection/loading or refill strategy; never silently downsize the reservoir.
